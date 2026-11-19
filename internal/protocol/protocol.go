@@ -44,35 +44,40 @@ const EventUpdated = "agentsrc.updated"
 
 // club.* methods, full names.
 const (
-	MethodClubInfo                = "club.info"
-	MethodClubAccountsAdd         = "club.accounts.add"
-	MethodClubAccountsUpdate      = "club.accounts.update"
-	MethodClubAccountsRemove      = "club.accounts.remove"
-	MethodClubAccountsReplaceCred = "club.accounts.replace_credential"
-	MethodClubAccountsSync        = "club.accounts.sync"
-	MethodClubLive                = "club.live"
-	MethodClubSettingsGet         = "club.settings.get"
-	MethodClubSettingsSet         = "club.settings.set"
-	MethodClubSessionsStart       = "club.sessions.start"
-	MethodClubSessionsInterrupt   = "club.sessions.interrupt"
-	MethodClubImport              = "club.import"
-	MethodClubExport              = "club.export"
-	MethodClubLoginsGrokBotStart  = "club.logins.grok_bot.start"
-	MethodClubLoginsGrokBotPoll   = "club.logins.grok_bot.poll"
-	MethodClubLoginsGrokBotCancel = "club.logins.grok_bot.cancel"
-	MethodClubLoginsBrowserStart  = "club.logins.browser.start"
-	MethodClubLoginsBrowserFrame  = "club.logins.browser.frame"
-	MethodClubLoginsBrowserInput  = "club.logins.browser.input"
-	MethodClubLoginsBrowserFinish = "club.logins.browser.finish"
-	MethodClubLoginsBrowserCancel = "club.logins.browser.cancel"
-	MethodClubOutboxDismiss       = "club.outbox.dismiss"
+	MethodClubInfo                      = "club.info"
+	MethodClubAccountsAdd               = "club.accounts.add"
+	MethodClubAccountsUpdate            = "club.accounts.update"
+	MethodClubAccountsRemove            = "club.accounts.remove"
+	MethodClubAccountsReplaceCred       = "club.accounts.replace_credential"
+	MethodClubAccountsSync              = "club.accounts.sync"
+	MethodClubLive                      = "club.live"
+	MethodClubSettingsGet               = "club.settings.get"
+	MethodClubSettingsSet               = "club.settings.set"
+	MethodClubSessionsStart             = "club.sessions.start"
+	MethodClubSessionsInterrupt         = "club.sessions.interrupt"
+	MethodClubImport                    = "club.import"
+	MethodClubExport                    = "club.export"
+	MethodClubLoginsGrokBotStart        = "club.logins.grok_bot.start"
+	MethodClubLoginsGrokBotPoll         = "club.logins.grok_bot.poll"
+	MethodClubLoginsGrokBotCancel       = "club.logins.grok_bot.cancel"
+	MethodClubLoginsAntigravityStart    = "club.logins.antigravity.start"
+	MethodClubLoginsAntigravityComplete = "club.logins.antigravity.complete"
+	MethodClubLoginsAntigravityCancel   = "club.logins.antigravity.cancel"
+	MethodClubAntigravityInstall        = "club.antigravity.install"
+	MethodClubLoginsBrowserStart        = "club.logins.browser.start"
+	MethodClubLoginsBrowserFrame        = "club.logins.browser.frame"
+	MethodClubLoginsBrowserInput        = "club.logins.browser.input"
+	MethodClubLoginsBrowserFinish       = "club.logins.browser.finish"
+	MethodClubLoginsBrowserCancel       = "club.logins.browser.cancel"
+	MethodClubOutboxDismiss             = "club.outbox.dismiss"
 )
 
 // ClubMethods are the club.* methods this version answers.
 var ClubMethods = []string{MethodClubInfo, MethodClubAccountsAdd, MethodClubAccountsUpdate, MethodClubAccountsRemove,
 	MethodClubAccountsReplaceCred, MethodClubAccountsSync, MethodClubLive, MethodClubSettingsGet, MethodClubSettingsSet,
 	MethodClubImport, MethodClubLoginsGrokBotStart, MethodClubLoginsGrokBotPoll, MethodClubLoginsGrokBotCancel,
-	MethodClubOutboxDismiss}
+	MethodClubLoginsAntigravityStart, MethodClubLoginsAntigravityComplete, MethodClubLoginsAntigravityCancel,
+	MethodClubAntigravityInstall, MethodClubOutboxDismiss}
 
 // ClubStubMethods are the club.* methods the design names that this version answers with unsupported.
 var ClubStubMethods = []string{MethodClubSessionsStart, MethodClubSessionsInterrupt, MethodClubExport,
@@ -469,6 +474,37 @@ type GrokBotLoginStart struct {
 type LoginParams struct {
 	LoginID     string `json:"login_id"`
 	DisplayName string `json:"display_name,omitempty"`
+}
+
+// AntigravityLoginStartParams are club.logins.antigravity.start's: account_id signs that account in again.
+type AntigravityLoginStartParams struct {
+	AccountID string `json:"account_id,omitempty"`
+}
+
+// AntigravityLoginStart is club.logins.antigravity.start's answer: the page the user approves on.
+type AntigravityLoginStart struct {
+	LoginID  string `json:"loginId"`
+	LoginURL string `json:"loginUrl"`
+}
+
+// AntigravityLoginCompleteParams are club.logins.antigravity.complete's: the authorization code the user pasted.
+type AntigravityLoginCompleteParams struct {
+	LoginID     string `json:"login_id"`
+	Code        string `json:"code"`
+	DisplayName string `json:"display_name,omitempty"`
+}
+
+// AntigravityInstallParams are club.antigravity.install's: write one paired account's sign-in where an agy CLI reads
+// it. Home is that machine's home directory; "" is the process's own.
+type AntigravityInstallParams struct {
+	AccountID string `json:"account_id"`
+	Home      string `json:"home,omitempty"`
+}
+
+// AntigravityInstall is club.antigravity.install's answer: where the file was written, never its contents.
+type AntigravityInstall struct {
+	Path  string `json:"path"`
+	Email string `json:"email,omitempty"`
 }
 
 // Login poll statuses.

@@ -63,7 +63,7 @@ question). It contributes:
 - the page **Settings › Extensions › Personal Agent Club › Accounts**;
 - the connector `club`, which carries the assistant's `club_agent_*` tools;
 
-and asks for network access to `api.manus.ai` (Cue), `api2.cursor.sh` (Grok Bot) and `api.groq.com` (Groq).
+and asks for network access to `api.manus.ai` (Cue), `api2.cursor.sh` (Grok Bot), `oauth2.googleapis.com`, `www.googleapis.com` and `cloudcode-pa.googleapis.com` (Antigravity) and `api.groq.com` (Groq).
 
 **No hub restart is needed.** The hub starts the extension right after the install (it runs from startup on, as
 agent sources must) and the source appears on the Agents page within seconds. `personad extension list` should show
@@ -87,6 +87,11 @@ sync and last error, and pairs new ones:
   cannot fill it in, and the extension never shows, returns or logs a saved key.
 - **Grok Bot**: start the sign-in, approve on the page that opens in your browser, and the page checks the result every
   30 seconds (or at once with *check now*).
+- **Antigravity**: *Take over an Antigravity sign-in* opens the Google page the agy CLI uses. Approve, paste the
+  authorization code the page shows into the secret field, and the sign-in (with its refresh token) is kept encrypted
+  on this hub. The exchange needs the public OAuth client secret in `PERSONAL_AGENT_CLUB_ANTIGRAVITY_CLIENT_SECRET` (the agy binary does not carry it as text, and it is not shipped here). On the account's page, *Write into this machine's agy* writes it where the agy CLI reads it
+  (`~/.gemini/antigravity-cli/antigravity-oauth-token`, or another home directory); a file already there is left
+  untouched.
 
 An account's page syncs it now, pauses or resumes its syncing, unpairs it (keeping or deleting its sessions and
 messages) and sets its **assistant control**. When the club behind the page cannot do something yet, the page says

@@ -31,6 +31,7 @@ const (
 	pageAccount = "account"
 	pagePair    = "pair"
 	pageGrok    = "grok"
+	pageAgy     = "agy"
 )
 
 // Actions of the accounts UI.
@@ -45,6 +46,10 @@ const (
 	actGrokStart = "grok_start"
 	actGrokCheck = "grok_check"
 	actGrokStop  = "grok_cancel"
+	actAgyStart  = "agy_start"
+	actAgyFinish = "agy_finish"
+	actAgyStop   = "agy_cancel"
+	actAgyWrite  = "agy_write"
 )
 
 // Field names on the pages.
@@ -52,6 +57,8 @@ const (
 	fieldCredential = "credential"
 	fieldName       = "display_name"
 	fieldControl    = "assistant_control"
+	fieldCode       = "code"
+	fieldHome       = "home"
 )
 
 // pageState is the page's state as the apps send it back: which page, about what, and the last action's outcome.
@@ -70,6 +77,7 @@ type pageState struct {
 var keyProviders = []string{"cue", "groq"}
 
 const grokBot = "grok_bot"
+const antigravityProvider = "antigravity"
 
 // Reasons a Grok Bot sign-in poll fails for now and may still succeed: the sign-in is kept, and asked again.
 var retryableLogin = []string{"NETWORK_ERROR", "UPSTREAM_ERROR", "RATE_LIMITED"}
@@ -98,6 +106,8 @@ func (a *accounts) view(ctx context.Context, r *ext.UIRequest, st pageState) *wi
 		v = a.pairView(l, st)
 	case pageGrok:
 		v = a.grokView(ctx, l, &st)
+	case pageAgy:
+		v = a.agyView(l, st)
 	default:
 		v = a.listView(ctx, r, l)
 	}
@@ -159,6 +169,7 @@ func (a *accounts) listView(ctx context.Context, r *ext.UIRequest, l lang) *wire
 		pairRow(p, l.t("粘贴 API Key", "Paste an API key"), pageState{Page: pagePair, Provider: p})
 	}
 	pairRow(grokBot, l.t("在浏览器里登录", "Sign in in the browser"), pageState{Page: pageGrok})
+	pairRow(antigravityProvider, l.t("夺舍登录 Antigravity", "Take over an Antigravity sign-in"), pageState{Page: pageAgy})
 	if _, ok := a.club.Registry().Get(echo.Name); ok {
 		pairRow(echo.Name, l.t("演示：任意以 echo- 开头的字符串", "Demo: any text starting with echo-"), pageState{Page: pagePair, Provider: echo.Name})
 	}
@@ -214,6 +225,15 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 		actions.Items = append(actions.Items, wire.Component{Type: "button", Title: l.t("重新登录", "Sign in again"),
 			Action: &wire.Action{ID: "open", Push: &wire.Push{UI: AccountsUI, Title: providerName(l, grokBot),
 				State: ext.EncodeState(pageState{Page: pageGrok, Account: acct.AccountID})}}})
+	}
+	if acct.Provider == antigravityProvider {
+		actions.Items = append(actions.Items,
+			wire.Component{Type: "button", Title: l.t("重新登录", "Sign in again"),
+				Action: &wire.Action{ID: "open", Push: &wire.Push{UI: AccountsUI, Title: providerName(l, antigravityProvider),
+					State: ext.EncodeState(pageState{Page: pageAgy, Account: acct.AccountID})}}},
+			wire.Component{Type: "field", Name: fieldHome, Label: l.t("机器的主目录（留空为本机）", "The machine's home directory (empty: this one)"), Kind: wire.FieldKindText},
+			wire.Component{Type: "button", Title: l.t("写入这台机器的 agy", "Write into this machine's agy"), Action: &wire.Action{ID: actAgyWrite, Submit: true}},
+		)
 	}
 	actions.Items = append(actions.Items, []wire.Component{
 		{Type: "button", Title: l.t("解除配对", "Unpair"), Role: "destructive", Action: &wire.Action{ID: actRemove,
@@ -304,6 +324,33 @@ func (a *accounts) grokPending(l lang, st pageState) []wire.Component {
 		wire.Component{Type: "button", Title: l.t("取消", "Cancel"), Role: "destructive", Action: &wire.Action{ID: actGrokStop}})
 }
 
+// agyView is the Antigravity sign-in (club.logins.antigravity.*): start opens Google's approval page, and the user
+// pastes the authorization code that page shows into a secret field. The code is sent once and kept nowhere.
+func (a *accounts) agyView(l lang, st pageState) *wire.View {
+	v := &wire.View{Title: providerName(l, antigravityProvider)}
+	start := wire.Component{Type: "button", Title: l.t("夺舍登录 Antigravity", "Take over an Antigravity sign-in"), Action: &wire.Action{ID: actAgyStart}}
+	if st.Login == "" {
+		intro := l.t("用 Antigravity CLI 自己的登录：点下面打开 Google 授权页，批准后把页面上的授权码粘贴回来。", "This is the Antigravity CLI's own sign-in: open the Google page, approve, and paste the code it shows.")
+		if st.Account != "" {
+			intro = l.t("重新登录这个 Antigravity 账号：完成后它的凭据会被替换，会话和消息不变。", "Signing this Antigravity account in again: once it finishes, its credential is replaced; its sessions and messages stay.")
+		}
+		v.Sections = []wire.Section{{Items: []wire.Component{{Type: "text", Text: intro}, start}}}
+		return v
+	}
+	items := []wire.Component{}
+	if httpsURL(st.LoginURL) {
+		items = append(items, wire.Component{Type: "link", Title: l.t("打开授权页", "Open the sign-in page"), URL: st.LoginURL})
+	}
+	items = append(items,
+		wire.Component{Type: "text", Style: "secondary", Text: l.t("批准后授权页会显示授权码，把它粘贴到下面。授权页 10 分钟内有效。", "After you approve, the page shows a code; paste it below. The page is valid for 10 minutes.")},
+		wire.Component{Type: "field", Name: fieldCode, Label: l.t("授权码", "Authorization code"), Kind: wire.FieldKindSecret},
+		wire.Component{Type: "button", Title: l.t("完成登录", "Finish signing in"), Action: &wire.Action{ID: actAgyFinish, Submit: true}},
+		wire.Component{Type: "button", Title: l.t("取消", "Cancel"), Role: "destructive", Action: &wire.Action{ID: actAgyStop}},
+	)
+	v.Sections = []wire.Section{{Items: items}}
+	return v
+}
+
 func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult, error) {
 	l := lang(r.Locale)
 	var st pageState
@@ -382,6 +429,61 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 		}
 		st = pageState{Page: pageGrok, Account: st.Account}
 		return done(l.t("已取消", "Canceled"))
+	case actAgyStart:
+		var res protocol.AntigravityLoginStart
+		err := call(ctx, a.club, protocol.MethodClubLoginsAntigravityStart, protocol.AntigravityLoginStartParams{AccountID: st.Account}, &res)
+		if protocol.ReasonOf(err) == protocol.ReasonLoginLimit {
+			st.Note, st.NoteTone = l.t("已有两个登录在等待：先取消一个，或等它们 10 分钟后过期。", "Two sign-ins are already waiting: cancel one, or wait for them to expire after 10 minutes."), wire.ToneCaution
+			return &wire.ActionResult{View: a.view(ctx, r, st), Toast: st.Note}, nil
+		}
+		if err != nil {
+			return failed(err, "")
+		}
+		if res.LoginID == "" || !httpsURL(res.LoginURL) {
+			return failed(fmt.Errorf("%s", l.t("登录没有给出可打开的授权页", "the sign-in gave no page to open")), "")
+		}
+		st = pageState{Page: pageAgy, Account: st.Account, Login: res.LoginID, LoginURL: res.LoginURL}
+		return &wire.ActionResult{View: a.view(ctx, r, st), OpenURL: res.LoginURL}, nil
+	case actAgyFinish:
+		code := strings.TrimSpace(r.Values[fieldCode])
+		if code == "" {
+			return failed(protocol.Invalid(l.t("请粘贴授权码", "the authorization code is empty")), "")
+		}
+		var done protocol.GrokBotLoginPoll
+		err := call(ctx, a.club, protocol.MethodClubLoginsAntigravityComplete, protocol.AntigravityLoginCompleteParams{LoginID: st.Login, Code: code}, &done)
+		if err != nil {
+			return failed(err, code)
+		}
+		name := providerName(l, antigravityProvider)
+		if done.Account != nil {
+			name = accountName(*done.Account)
+		}
+		note := l.t("已登录并配对：", "Signed in and paired: ")
+		if st.Account != "" {
+			note = l.t("已重新登录：", "Signed in again: ")
+		}
+		st = pageState{Page: pageAgy, Account: st.Account, Note: note + name, NoteTone: wire.TonePositive}
+		return &wire.ActionResult{View: a.view(ctx, r, st), Toast: st.Note}, nil
+	case actAgyStop:
+		if st.Login != "" {
+			if err := call(ctx, a.club, protocol.MethodClubLoginsAntigravityCancel, protocol.LoginParams{LoginID: st.Login}, nil); err != nil {
+				st.Login, st.LoginURL = "", ""
+				return failed(err, "")
+			}
+		}
+		st = pageState{Page: pageAgy, Account: st.Account}
+		return done(l.t("已取消", "Canceled"))
+	case actAgyWrite:
+		var res protocol.AntigravityInstall
+		home := strings.TrimSpace(r.Values[fieldHome])
+		if err := call(ctx, a.club, protocol.MethodClubAntigravityInstall, protocol.AntigravityInstallParams{AccountID: st.Account, Home: home}, &res); err != nil {
+			return failed(err, "")
+		}
+		note := l.t("已写入 agy：", "Written for agy: ") + res.Path
+		if res.Email != "" {
+			note += l.t("（", " (") + res.Email + l.t("）", ")")
+		}
+		return done(note)
 	}
 	return nil, nil
 }
@@ -399,6 +501,8 @@ func providerName(l lang, p string) string {
 		return "Cue"
 	case grokBot:
 		return "Grok Bot"
+	case antigravityProvider:
+		return "Antigravity"
 	case "groq":
 		return "Groq"
 	case echo.Name:

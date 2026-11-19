@@ -1,4 +1,12 @@
 {
+  "antigravity_install": {
+    "path": "/tmp/home/.gemini/antigravity-cli/antigravity-oauth-token",
+    "email": "ada@example.com"
+  },
+  "antigravity_login_start": {
+    "loginId": "g0123456789ab",
+    "loginUrl": "https://example.com/login?challenge=x"
+  },
   "grok_bot_login_done": {
     "status": "done",
     "account": {

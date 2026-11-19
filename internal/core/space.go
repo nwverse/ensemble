@@ -46,6 +46,7 @@ type Space struct {
 	watching   map[string]context.CancelFunc
 	live       map[string]*liveEntry
 	logins     map[string]*login
+	agyLogins  map[string]*antigravityLogin
 	quota      map[string]*quotaState
 }
 

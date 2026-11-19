@@ -12,6 +12,7 @@ import (
 var Known = []protocol.Provider{
 	{Provider: "cue", Connection: protocol.ConnectionServer},
 	{Provider: "grok_bot", Connection: protocol.ConnectionServer},
+	{Provider: "antigravity", Connection: protocol.ConnectionServer},
 	{Provider: "groq", Connection: protocol.ConnectionServer},
 	{Provider: "muse", Connection: protocol.ConnectionBrowser},
 	{Provider: "dots", Connection: protocol.ConnectionBrowser},

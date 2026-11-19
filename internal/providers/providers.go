@@ -1,4 +1,4 @@
-// Package providers builds the registry of the API providers club ships: cue, grok_bot and groq, all through one
+// Package providers builds the registry of the API providers club ships: cue, grok_bot, antigravity and groq, all through one
 // HTTP client and its proxy. The browser providers (muse, dots, claude_duet) are not in this version. Both shells
 // build their registry here.
 package providers
@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/nwverse/personal-agent-club/internal/provider"
+	"github.com/nwverse/personal-agent-club/internal/provider/antigravity"
 	"github.com/nwverse/personal-agent-club/internal/provider/cue"
 	"github.com/nwverse/personal-agent-club/internal/provider/echo"
 	"github.com/nwverse/personal-agent-club/internal/provider/grokbot"
@@ -60,6 +61,7 @@ func Registry(c Config) (*provider.Registry, error) {
 	r := provider.NewRegistry(
 		cue.New(cue.Options{Client: client}),
 		grokbot.New(grokbot.Options{Client: client}),
+		antigravity.New(antigravity.Options{Client: client}),
 		groq.New(groq.Options{Client: client, Model: c.GroqModel}),
 	)
 	if c.DemoEcho {

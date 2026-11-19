@@ -15,7 +15,8 @@ Both shells call the same core and answer the same protocol.
 ## Status
 
 **Usable with the API providers.** `serve` keeps each space in SQLite with its credentials encrypted on disk, and
-reaches three providers through their APIs: Cue (Manus API v2), Grok Bot (its desktop client's protocol) and Groq
+reaches four providers through their APIs: Cue (Manus API v2), Grok Bot (its desktop client's protocol), Antigravity
+(the agy CLI's Google sign-in) and Groq
 (OpenAI-compatible). An exported space of the Lark gateway's agent bridge can be imported with its ids, and the
 accounts can be listed read-only beside a running serve. The browser-based providers (Muse, Dots, Claude Duet) are not
 in this version. The provider adapters are built from documentation and recorded fixtures and still need calibrating
@@ -131,7 +132,7 @@ Provider requests never follow a redirect, so a credential header never goes to 
 ### As a Persona extension
 
 `persona-extension.json` is the manifest: extension id `personal-agent-club`, the agent source `pac` (providers Cue,
-Grok Bot and Groq), the Accounts page (`ui` `accounts`) and the connector `club` with the assistant's `club_agent_*`
+Grok Bot, Antigravity and Groq), the Accounts page (`ui` `accounts`) and the connector `club` with the assistant's `club_agent_*`
 tools, `activation_events: on_startup`, and network access to the three providers' API hosts only. `make package`
 builds `dist/personal-agent-club-<version>.tar.gz` (manifest and the four programs), `scripts/persona-test.sh` holds
 it to the hub's own checks, and [docs/persona-install.md](docs/persona-install.md) installs it on a hub. The
@@ -142,20 +143,20 @@ proxy. Without a data directory (run by hand) it keeps everything in memory.
 
 ## Providers
 
-| | Cue | Grok Bot | Groq |
-| --- | --- | --- | --- |
-| Name | `cue` | `grok_bot` | `groq` |
-| Connects with | API key (`x-manus-api-key`) | device sign-in (`club.logins.grok_bot.*`, approved in the user's browser) or a pasted access token | API key (`Authorization: Bearer`) |
-| History | from the provider: each agent's main task and its subtasks | from the provider: each bot's main session and side sessions | local only: Groq keeps no conversation; club stores it and sends the latest 20 turns (24k characters) with each message |
-| Send | yes, into a main task; subtasks are read-only | yes; the client id is the message id, so a repeat is a duplicate, not a second message | yes; the answer comes back in the same call |
-| Send confirmation (of an `unconfirmed` send) | no: it stays unconfirmed | yes: the send status by message id, asked at the follow-ups | no: it stays unconfirmed |
-| Live state (`club.live`) | no (`supported: false`) | yes: running and composing, per session | no (`supported: false`) |
-| Push | no: polling | after a send, the transcript watch (at most 90 s) reads the session as soon as it changes | not needed |
-| Interrupt | no | no | no |
-| Start a session | no | no | no |
-| Credential refresh | no | yes, for signed-in credentials (refresh token), once per refused token; a pasted token cannot be refreshed | no |
-| Quota | a 429 (with `Retry-After`) | a 429 (with `Retry-After`) | every answer's `x-ratelimit-*` headers (requests per day, tokens per minute; the model list's too), and a 429 |
-| Hosts | `api.manus.ai` | `api2.cursor.sh` (the sign-in page the user opens is on `cursor.com`) | `api.groq.com` |
+| | Cue | Grok Bot | Antigravity | Groq |
+| --- | --- | --- | --- | --- |
+| Name | `cue` | `grok_bot` | `antigravity` | `groq` |
+| Connects with | API key (`x-manus-api-key`) | device sign-in (`club.logins.grok_bot.*`, approved in the user's browser) or a pasted access token | the agy CLI's own Google sign-in (`club.logins.antigravity.*`: the user pastes the authorization code) | API key (`Authorization: Bearer`) |
+| History | from the provider: each agent's main task and its subtasks | from the provider: each bot's main session and side sessions | local only: club stores it and sends the latest 20 turns (24k runes) with each message | local only: Groq keeps no conversation; club stores it and sends the latest 20 turns (24k characters) with each message |
+| Send | yes, into a main task; subtasks are read-only | yes; the client id is the message id, so a repeat is a duplicate, not a second message | yes, to Code Assist `generateContent`; the answer comes back in the same call | yes; the answer comes back in the same call |
+| Send confirmation (of an `unconfirmed` send) | no: it stays unconfirmed | yes: the send status by message id, asked at the follow-ups | no: it stays unconfirmed | no: it stays unconfirmed |
+| Live state (`club.live`) | no (`supported: false`) | yes: running and composing, per session | no (`supported: false`) | no (`supported: false`) |
+| Push | no: polling | after a send, the transcript watch (at most 90 s) reads the session as soon as it changes | not needed | not needed |
+| Interrupt | no | no | no | no |
+| Start a session | no | no | no | no |
+| Credential refresh | no | yes, for signed-in credentials (refresh token), once per refused token; a pasted token cannot be refreshed | yes: the refresh token, once per refused token | no |
+| Quota | a 429 (with `Retry-After`) | a 429 (with `Retry-After`) | a 429 (with `Retry-After`) | every answer's `x-ratelimit-*` headers (requests per day, tokens per minute; the model list's too), and a 429 |
+| Hosts | `api.manus.ai` | `api2.cursor.sh` (the sign-in page the user opens is on `cursor.com`) | `oauth2.googleapis.com`, `www.googleapis.com`, `cloudcode-pa.googleapis.com` (the sign-in page the user opens is on `accounts.google.com`). The token exchange also needs the public client secret in `PERSONAL_AGENT_CLUB_ANTIGRAVITY_CLIENT_SECRET`; it is not in this repo | `api.groq.com` |
 
 `muse`, `dots` and `claude_duet` (browser-based) are not in this version: listed as unavailable, refused when paired
 (`unsupported`, `PROVIDER_UNAVAILABLE`), skipped by an import. `club.sessions.start` and `club.sessions.interrupt`
@@ -188,6 +189,10 @@ camelCase, parameters in snake_case), so the extension shell passes them through
 | `club.logins.grok_bot.start` | `account_id?` (sign that account in again) | `{loginId, loginUrl}` (10 minutes; at most two waiting) |
 | `club.logins.grok_bot.poll` | `login_id`, `display_name?` | `{status: pending}` or `{status: done, account}` |
 | `club.logins.grok_bot.cancel` | `login_id` | `{}` |
+| `club.logins.antigravity.start` | `account_id?` (sign that account in again) | `{loginId, loginUrl}` (10 minutes; at most two waiting) |
+| `club.logins.antigravity.complete` | `login_id`, `code`, `display_name?` | `{status: done, account}` |
+| `club.logins.antigravity.cancel` | `login_id` | `{}` |
+| `club.antigravity.install` | `account_id`, `home?` | `{path, email?}`: writes the sign-in where an agy CLI reads it; a file already there is left untouched |
 | `club.import` | `path`, `only_providers?`, `dry_run?` | `{accounts, skipped, dryRun?}` ([docs/import-bundle.md](docs/import-bundle.md)) |
 | `club.sessions.start`, `club.sessions.interrupt` | | `unsupported` (`PROVIDER_UNAVAILABLE`): no provider in this build can |
 | `club.export`, `club.logins.browser.*` | | `unsupported`: not in this version |
@@ -229,7 +234,7 @@ Rules the core keeps:
 | `cmd/personal-agent-club` | the program: extension mode, `serve`, `import`, `accounts`, `version`; the whole-program tests |
 | `scripts` | `package.sh` (the Persona package, `make package`) and `persona-test.sh` (the hub's own checks) |
 | `internal/protocol` | wire types and method names, pinned by golden JSON |
-| `internal/provider` | the provider adapter interface, optional capabilities, the registry; `cue/`, `grokbot/`, `groq/` the API providers, `echo/` the demo one, `web/` their shared HTTP client, `providertest/` a fake upstream |
+| `internal/provider` | the provider adapter interface, optional capabilities, the registry; `cue/`, `grokbot/`, `antigravity/`, `groq/` the API providers, `echo/` the demo one, `web/` their shared HTTP client, `providertest/` a fake upstream |
 | `internal/providers` | the registry both shells build: the API providers on one HTTP client and its proxy |
 | `internal/store` | the store interface, SQLite (with CJK search) and in-memory implementations, one test suite for both |
 | `internal/vault` | credentials: the encrypted file and an in-memory one |

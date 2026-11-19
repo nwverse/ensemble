@@ -41,7 +41,7 @@ type Host struct {
 // SpaceDir is a space's directory under DataDir.
 func (h Host) SpaceDir(space string) string { return filepath.Join(h.DataDir, SpacesDir, space) }
 
-// Configure fills in opts from h: the providers (cue, grok_bot, groq) on h.HTTP, and, with a data directory, the
+// Configure fills in opts from h: the providers (cue, grok_bot, antigravity, groq) on h.HTTP, and, with a data directory, the
 // spaces on disk: the directory is opened (and locked) here and closed when the club closes (opts.OnClose). Without
 // one every space stays in memory and is empty again after a restart.
 func Configure(h Host, opts *core.Options, log *slog.Logger) error {

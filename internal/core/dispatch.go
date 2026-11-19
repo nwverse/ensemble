@@ -115,6 +115,16 @@ func (s *Space) callClub(ctx context.Context, method string, params json.RawMess
 		return call(params, func(p protocol.LoginParams) (any, error) { return s.PollGrokBotLogin(ctx, p) })
 	case protocol.MethodClubLoginsGrokBotCancel:
 		return call(params, func(p protocol.LoginParams) (any, error) { return protocol.Empty{}, s.CancelGrokBotLogin(ctx, p) })
+	case protocol.MethodClubLoginsAntigravityStart:
+		return call(params, func(p protocol.AntigravityLoginStartParams) (any, error) { return s.StartAntigravityLogin(ctx, p) })
+	case protocol.MethodClubLoginsAntigravityComplete:
+		return call(params, func(p protocol.AntigravityLoginCompleteParams) (any, error) {
+			return s.CompleteAntigravityLogin(ctx, p)
+		})
+	case protocol.MethodClubLoginsAntigravityCancel:
+		return call(params, func(p protocol.LoginParams) (any, error) { return protocol.Empty{}, s.CancelAntigravityLogin(ctx, p) })
+	case protocol.MethodClubAntigravityInstall:
+		return call(params, func(p protocol.AntigravityInstallParams) (any, error) { return s.InstallAntigravity(ctx, p) })
 	case protocol.MethodClubImport:
 		return call(params, func(p protocol.ImportParams) (any, error) {
 			return s.Import(ctx, p.Path, ImportOptions{OnlyProviders: p.OnlyProviders, DryRun: p.DryRun})
