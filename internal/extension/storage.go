@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -41,7 +42,7 @@ type Host struct {
 // SpaceDir is a space's directory under DataDir.
 func (h Host) SpaceDir(space string) string { return filepath.Join(h.DataDir, SpacesDir, space) }
 
-// Configure fills in opts from h: the providers (cue, grok_bot, antigravity, groq) on h.HTTP, and, with a data directory, the
+// Configure fills in opts from h: the providers (cue, grok_bot, groq) on h.HTTP, and, with a data directory, the
 // spaces on disk: the directory is opened (and locked) here and closed when the club closes (opts.OnClose). Without
 // one every space stays in memory and is empty again after a restart.
 func Configure(h Host, opts *core.Options, log *slog.Logger) error {
@@ -83,7 +84,12 @@ func NewClub(version string, log *slog.Logger) (*core.Club, Host, error) {
 	if err := Configure(h, &opts, log); err != nil {
 		return nil, h, fmt.Errorf("storage: %w", err)
 	}
-	return core.New(opts), h, nil
+	club := core.New(opts)
+	club.SetTakeover(driveTakeover(club))
+	if home, err := os.UserHomeDir(); err == nil {
+		club.SetPersonaDir(filepath.Join(home, ".persona"))
+	}
+	return club, h, nil
 }
 
 // HTTPClient is the client providers use. Inside the hub's sandbox the only way out is the egress proxy the hub

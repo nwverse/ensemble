@@ -22,7 +22,7 @@ func TestRegistryHasTheAPIProviders(t *testing.T) {
 			t.Fatalf("%+v", p)
 		}
 	}
-	want := map[string]bool{"cue": true, "grok_bot": true, "antigravity": true, "groq": true, "muse": false, "dots": false, "claude_duet": false}
+	want := map[string]bool{"cue": true, "grok_bot": true, "groq": true, "muse": false, "dots": false, "claude_duet": false}
 	for name, ok := range want {
 		if available[name] != ok {
 			t.Errorf("%s available %v", name, available[name])

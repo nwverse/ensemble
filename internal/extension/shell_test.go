@@ -311,7 +311,7 @@ func TestNewClubKeepsItsDataInTheDataDirectory(t *testing.T) {
 		if h.DataDir != data || h.KeyFile != filepath.Join(data, KeyFileName) || h.HTTP == nil {
 			t.Fatalf("host %+v", h)
 		}
-		for _, p := range []string{"cue", "grok_bot", "antigravity", "groq"} {
+		for _, p := range []string{"cue", "grok_bot", "groq"} {
 			if _, ok := club.Registry().Get(p); !ok {
 				t.Fatalf("no %s provider", p)
 			}

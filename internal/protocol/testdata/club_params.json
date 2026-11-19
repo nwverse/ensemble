@@ -1,16 +1,4 @@
 {
-  "antigravity_complete": {
-    "login_id": "g0123456789ab",
-    "code": "c",
-    "display_name": "Ada"
-  },
-  "antigravity_install": {
-    "account_id": "a0123456789ab",
-    "home": "/tmp/home"
-  },
-  "antigravity_start": {
-    "account_id": "a0123456789ab"
-  },
   "grok_bot_start": {
     "account_id": "a0123456789ab"
   },
@@ -45,6 +33,12 @@
         "--mute-audio"
       ]
     }
+  },
+  "takeover": {
+    "takeover_id": "t0123456789ab"
+  },
+  "takeover_start": {
+    "account_id": "a0123456789ab"
   },
   "update": {
     "account_id": "a0123456789ab",

@@ -90,7 +90,7 @@ func TestServeOwnsItsDataDirectory(t *testing.T) {
 	for _, p := range info.Result.Providers {
 		available[p.Provider] = p.Available
 	}
-	if !available["groq"] || !available["cue"] || !available["grok_bot"] || available["antigravity"] || !available["echo"] || available["muse"] {
+	if !available["groq"] || !available["cue"] || !available["grok_bot"] || !available["echo"] || available["muse"] {
 		t.Fatalf("%+v", info.Result)
 	}
 	for _, f := range []string{"club.lock", "key"} {
