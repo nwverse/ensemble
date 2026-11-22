@@ -75,7 +75,7 @@ func Program(club *core.Club, version string) ext.Program {
 			}
 			return map[string]any{"connectors": m.Contributes.Connectors}, nil
 		},
-		UI: map[string]ext.Page{AccountsUI: accountsPage(club, driver)},
+		UI: map[string]ext.Page{AccountsUI: accountsPage(club, &hubPtr, driver)},
 		Namespaces: map[string]ext.Handler{
 			ext.ConnectorNamespace: toolsHandler(club),
 			protocol.AgentSourceNamespace: func(ctx context.Context, method string, params json.RawMessage) (any, error) {

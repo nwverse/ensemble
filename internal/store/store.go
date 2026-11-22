@@ -30,6 +30,7 @@ type Account struct {
 	// AssistantControl is the account's assistant control level (core.Control), "off" when new.
 	AssistantControl string
 	ShowQuota        bool
+	QuotaDisplay     string
 	CreatedAt        int64
 	UpdatedAt        int64
 }
@@ -42,6 +43,7 @@ type AccountPatch struct {
 	LastError        *string
 	AssistantControl *string
 	ShowQuota        *bool
+	QuotaDisplay     *string
 }
 
 // Session is one stored session.

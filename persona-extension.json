@@ -71,6 +71,9 @@
     }
   },
   "permissions": {
+    "hub": [
+      "machines.read"
+    ],
     "network": [
       "api.manus.ai",
       "api2.cursor.sh",

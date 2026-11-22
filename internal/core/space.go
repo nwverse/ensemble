@@ -138,7 +138,7 @@ func (s *Space) accountView(ctx context.Context, a store.Account) (protocol.Acco
 	control, _ := ParseControl(a.AssistantControl)
 	return protocol.Account{AccountID: a.AccountID, Provider: a.Provider, DisplayName: cmpOr(a.DisplayName, a.Provider),
 		Status: a.Status, ExternalAccountID: a.ExternalAccountID, LastSyncedAt: a.LastSyncedAt, LastError: a.LastError,
-		SessionCount: len(sessions), AssistantControl: string(control), ShowQuota: a.ShowQuota,
+		SessionCount: len(sessions), AssistantControl: string(control), ShowQuota: a.ShowQuota, QuotaDisplay: a.QuotaDisplay,
 		Quota: s.quotaView(a, s.now())}, nil
 }
 
