@@ -14,6 +14,7 @@ import (
 
 	"github.com/nwverse/personal-agent-club/internal/core"
 	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/personal-agent-club/internal/provider/browser"
 	"github.com/nwverse/personal-agent-club/internal/provider/echo"
 )
 
@@ -80,14 +81,15 @@ const grokBot = "grok_bot"
 var retryableLogin = []string{"NETWORK_ERROR", "UPSTREAM_ERROR", "RATE_LIMITED"}
 
 // accountsPage is the accounts UI.
-func accountsPage(club *core.Club, hub *atomic.Pointer[ext.Hub]) ext.Page {
-	a := &accounts{club: club, hub: hub}
+func accountsPage(club *core.Club, hub *atomic.Pointer[ext.Hub], drv browser.Driver) ext.Page {
+	a := &accounts{club: club, hub: hub, browser: drv}
 	return ext.Page{Render: a.render, Action: a.action}
 }
 
 type accounts struct {
-	club *core.Club
-	hub  *atomic.Pointer[ext.Hub]
+	club    *core.Club
+	hub     *atomic.Pointer[ext.Hub]
+	browser browser.Driver
 }
 
 func (a *accounts) render(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
@@ -106,6 +108,8 @@ func (a *accounts) view(ctx context.Context, r *ext.UIRequest, st pageState) *wi
 		v = a.pairView(l, st)
 	case pageGrok:
 		v = a.grokView(ctx, l, &st)
+	case pageBrowserPair:
+		v = a.browserPairView(ctx, l, st)
 	default:
 		v = a.listView(ctx, r, l)
 	}
@@ -167,6 +171,9 @@ func (a *accounts) listView(ctx context.Context, r *ext.UIRequest, l lang) *wire
 		pairRow(p, l.t("粘贴 API Key", "Paste an API key"), pageState{Page: pagePair, Provider: p})
 	}
 	pairRow(grokBot, l.t("在浏览器里登录", "Sign in in the browser"), pageState{Page: pageGrok})
+	for _, s := range browserProviders {
+		pairRow(s.Provider, l.t("通过已配对电脑的浏览器（ego lite）", "Via a paired computer's browser (ego lite)"), pageState{Page: pageBrowserPair, Provider: s.Provider})
+	}
 	if _, ok := a.club.Registry().Get(echo.Name); ok {
 		pairRow(echo.Name, l.t("演示：任意以 echo- 开头的字符串", "Demo: any text starting with echo-"), pageState{Page: pagePair, Provider: echo.Name})
 	}
@@ -448,6 +455,12 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 			return failed(err, cred)
 		}
 		return &wire.ActionResult{Pop: true, Toast: l.t("已配对：", "Paired: ") + accountName(acct)}, nil
+	case actBrowserPair:
+		acct, err := a.pairBrowserAccount(ctx, st.Provider, r.Values[fieldMachine], r.Values[fieldName])
+		if err != nil {
+			return failed(err, "")
+		}
+		return &wire.ActionResult{Pop: true, Toast: l.t("已配对：", "Paired: ") + accountName(acct)}, nil
 	case actGrokStart:
 		var res protocol.GrokBotLoginStart
 		err := call(ctx, a.club, protocol.MethodClubLoginsGrokBotStart, protocol.GrokBotLoginStartParams{AccountID: st.Account}, &res)
@@ -508,6 +521,9 @@ func providerName(l lang, p string) string {
 		return "Groq"
 	case echo.Name:
 		return l.t("Echo（演示）", "Echo (demo)")
+	}
+	if label, ok := browserProviderLabel(p); ok {
+		return label
 	}
 	return p
 }
