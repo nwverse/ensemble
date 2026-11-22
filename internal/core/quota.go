@@ -106,7 +106,7 @@ func quotaChanges(q *quotaState) []int64 {
 
 // quotaKey is what a client draws of q: its state ("" unknown) and whether it is stale.
 func quotaKey(q *quotaState, now int64) string {
-	v := buildQuota(q, false, now)
+	v := buildQuota(q, false, "", now)
 	if v == nil {
 		return ""
 	}
@@ -120,12 +120,36 @@ func (s *Space) quotaView(a store.Account, now int64) *protocol.Quota {
 	s.mu.Lock()
 	q := s.quota[a.AccountID]
 	s.mu.Unlock()
-	return buildQuota(q, a.ShowQuota, now)
+	return buildQuota(q, a.ShowQuota, a.QuotaDisplay, now)
 }
 
-func buildQuota(q *quotaState, show bool, now int64) *protocol.Quota {
+func quotaBucketID(r provider.QuotaReading) string {
+	if r.Window != "" {
+		return r.Kind + ":" + r.Window
+	}
+	return r.Kind
+}
+
+func quotaTone(state string, stale bool) string {
+	if stale {
+		return protocol.QuotaToneStale
+	}
+	switch state {
+	case protocol.QuotaExhausted:
+		return protocol.QuotaToneExhausted
+	case protocol.QuotaLow:
+		return protocol.QuotaToneLow
+	default:
+		return protocol.QuotaToneOK
+	}
+}
+
+func buildQuota(q *quotaState, show bool, display string, now int64) *protocol.Quota {
 	if q == nil || q.checkedAt == 0 {
 		return nil
+	}
+	if display == protocol.QuotaDisplayOff {
+		show = false
 	}
 	stale := now-q.checkedAt > quotaStaleMs
 	if q.limitedUntil != 0 {
@@ -136,10 +160,13 @@ func buildQuota(q *quotaState, show bool, now int64) *protocol.Quota {
 		if q.resetsAt != 0 {
 			label = "exhausted until " + time.UnixMilli(q.resetsAt).UTC().Format(time.RFC3339)
 		}
-		return &protocol.Quota{State: protocol.QuotaExhausted, Label: label, ResetsAt: q.resetsAt, CheckedAt: q.checkedAt,
+		pct := 0
+		return &protocol.Quota{State: protocol.QuotaExhausted, Percent: &pct, Tone: quotaTone(protocol.QuotaExhausted, stale),
+			Label: label, ResetsAt: q.resetsAt, CheckedAt: q.checkedAt,
 			Source: protocol.QuotaSourceResponse, Stale: stale, Show: show}
 	}
 	var dims []protocol.Quota
+	var buckets []protocol.QuotaBucket
 	for _, r := range q.readings {
 		if r.Limit <= 0 {
 			continue
@@ -149,6 +176,7 @@ func buildQuota(q *quotaState, show bool, now int64) *protocol.Quota {
 			continue
 		}
 		left = math.Round(left*1000) / 1000
+		pct := int(math.Round(left * 100))
 		state := protocol.QuotaOK
 		switch {
 		case left == 0:
@@ -156,25 +184,52 @@ func buildQuota(q *quotaState, show bool, now int64) *protocol.Quota {
 		case left <= quotaLowAt:
 			state = protocol.QuotaLow
 		}
+		tone := quotaTone(state, stale)
 		label := fmt.Sprintf("%.0f%% of %s left", left*100, r.Kind)
 		if r.Window != "" {
 			label += " (per " + r.Window + ")"
 		}
-		dims = append(dims, protocol.Quota{State: state, Remaining: &left, Kind: r.Kind, Label: label, ResetsAt: r.ResetsAt,
+		bid := quotaBucketID(r)
+		rem := left
+		pctCopy := pct
+		dims = append(dims, protocol.Quota{State: state, Remaining: &rem, Percent: &pctCopy, Tone: tone, Kind: r.Kind,
+			Label: label, Selected: bid, ResetsAt: r.ResetsAt,
 			CheckedAt: q.checkedAt, Source: protocol.QuotaSourceProvider, Stale: stale, Show: show})
+		buckets = append(buckets, protocol.QuotaBucket{ID: bid, Kind: r.Kind, Window: r.Window, Label: label,
+			Remaining: &rem, Percent: &pctCopy, State: state, Tone: tone, ResetsAt: r.ResetsAt})
 	}
 	if len(dims) == 0 {
 		return nil
 	}
-	tightest := 0
-	for i, d := range dims {
-		if *d.Remaining < *dims[tightest].Remaining {
-			tightest = i
+	chosen := -1
+	if display != "" && display != protocol.QuotaDisplayAuto && display != protocol.QuotaDisplayOff {
+		for i, b := range buckets {
+			if b.ID == display {
+				chosen = i
+				break
+			}
+		}
+		if chosen == -1 {
+			for i, b := range buckets {
+				if b.Kind == display {
+					chosen = i
+					break
+				}
+			}
 		}
 	}
-	out := dims[tightest]
+	if chosen == -1 {
+		chosen = 0
+		for i, d := range dims {
+			if *d.Remaining < *dims[chosen].Remaining {
+				chosen = i
+			}
+		}
+	}
+	out := dims[chosen]
+	out.Buckets = buckets
 	for i, d := range dims {
-		if i != tightest {
+		if i != chosen {
 			out.Details = append(out.Details, d)
 		}
 	}
