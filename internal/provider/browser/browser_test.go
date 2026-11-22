@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -90,5 +91,22 @@ func TestBrowserAdapterVerifyListReadSend(t *testing.T) {
 	gSessions, err := gemini.ListSessions(ctx, cred)
 	if err != nil || len(gSessions) != 1 || gSessions[0].ExternalID != "g1234" {
 		t.Fatalf("Gemini ListSessions = %+v, err=%v", gSessions, err)
+	}
+}
+
+func TestLiveEgoSmoke(t *testing.T) {
+	if os.Getenv("PAC_LIVE_EGO") != "1" {
+		t.Skip("set PAC_LIVE_EGO=1 to run live ego-browser smoke test")
+	}
+	ctx := context.Background()
+	drv := &LocalEgoDriver{}
+	cred := EncodeCredential(Credential{MachineID: "local", Backend: "ego"})
+	for _, site := range []Site{SiteMuse, SiteClaudeDuet} {
+		a := New(site, drv)
+		acct, err := a.Verify(ctx, cred)
+		if err != nil {
+			t.Fatalf("%s Verify failed: %v", site.Provider, err)
+		}
+		t.Logf("%s verified: %+v", site.Provider, acct)
 	}
 }

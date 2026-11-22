@@ -212,7 +212,8 @@ func extractJSONLine(raw string) string {
 func (a *Adapter) Verify(ctx context.Context, credential string) (provider.RemoteAccount, error) {
 	script := fmt.Sprintf(`
 await page.goto(%q);
-await page.waitForLoadState("networkidle").catch(() => {});
+await page.waitForLoadState("domcontentloaded").catch(() => {});
+await new Promise(r => setTimeout(r, 1500));
 const url = await page.url();
 const title = await page.title();
 const signedOut = /\/login\b|accounts\.google\.com/i.test(url);
@@ -253,7 +254,8 @@ func (a *Adapter) ListSessions(ctx context.Context, credential string) ([]provid
 	}
 	script := fmt.Sprintf(`
 await page.goto(%q);
-await page.waitForLoadState("networkidle").catch(() => {});
+await page.waitForLoadState("domcontentloaded").catch(() => {});
+await new Promise(r => setTimeout(r, 1500));
 const items = await page.evaluate(() => {
   const seen = new Set();
   const out = [];
@@ -320,7 +322,8 @@ func (a *Adapter) ListMessages(ctx context.Context, credential string, session p
 	}
 	script := fmt.Sprintf(`
 await page.goto(%q);
-await page.waitForLoadState("networkidle").catch(() => {});
+await page.waitForLoadState("domcontentloaded").catch(() => {});
+await new Promise(r => setTimeout(r, 1500));
 const msgs = await page.evaluate(({ sel, limit }) => {
   const nodes = Array.from(document.querySelectorAll(sel));
   const out = [];
@@ -376,7 +379,8 @@ func (a *Adapter) Send(ctx context.Context, credential string, session provider.
 	}
 	script := fmt.Sprintf(`
 await page.goto(%q);
-await page.waitForLoadState("networkidle").catch(() => {});
+await page.waitForLoadState("domcontentloaded").catch(() => {});
+await new Promise(r => setTimeout(r, 1500));
 const sel = %q;
 await page.waitForSelector("loc=css:" + sel, { state: "visible", timeout: 15000 });
 await page.fill("loc=css:" + sel, %q);

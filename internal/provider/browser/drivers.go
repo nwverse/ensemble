@@ -1,7 +1,6 @@
 package browser
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
@@ -84,6 +83,7 @@ func (d *LocalEgoDriver) Run(ctx context.Context, req RunRequest) (RunResult, er
 	}
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	spaceName := fmt.Sprintf("pac-%s-%d", req.Slot, time.Now().UnixNano())
 	wrapped := fmt.Sprintf(`const task = await taskSpace(%q);
 const page = task.page("p1");
 try {
@@ -91,17 +91,18 @@ try {
 } finally {
   await task.finish({ keep: [] }).catch(() => {});
 }
-`, "pac-"+req.Slot, req.Script)
-	cmd := exec.CommandContext(rctx, d.bin(), "nodejs", "-e", wrapped)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
+`, spaceName, req.Script)
+	cmd := exec.CommandContext(rctx, d.bin(), "nodejs")
+	cmd.Stdin = strings.NewReader(wrapped)
+	// ego-browser emits script console.log output on stderr; capture combined output
+	// just like Persona's node/browser.go does.
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
 		if msg == "" {
 			msg = err.Error()
 		}
-		return RunResult{Backend: "ego", Output: stdout.String(), Error: msg}, nil
+		return RunResult{Backend: "ego", Output: string(out), Error: msg}, nil
 	}
-	return RunResult{Backend: "ego", Output: stdout.String()}, nil
+	return RunResult{Backend: "ego", Output: string(out)}, nil
 }
