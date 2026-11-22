@@ -45,6 +45,7 @@ type RuntimeCaps struct {
 	Interrupt         bool `json:"interrupt"`
 	Close             bool `json:"close"`
 	Assistant         bool `json:"assistant"`
+	RemoteAgent       bool `json:"remote_agent"`
 	SupervisionPolicy bool `json:"supervision_policy"`
 }
 

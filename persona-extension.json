@@ -67,6 +67,12 @@
         "title": "Browser-backed providers (ego lite / CDP)",
         "description": "Enables Muse, Claude Duet, Gemini Tasks and Dots via a paired computer's browser (Persona browser.run, no exported cookies).",
         "default": false
+      },
+      "assistant_runtime": {
+        "type": "boolean",
+        "title": "Main assistant runtime bridge",
+        "description": "Exposes accounts enabled as Main assistant on Persona's agent runtime socket so they can run main-assistant and supervisor chats.",
+        "default": true
       }
     }
   },
@@ -74,6 +80,7 @@
     "hub": [
       "machines.read"
     ],
+    "agent_runtimes": true,
     "network": [
       "api.manus.ai",
       "api2.cursor.sh",
