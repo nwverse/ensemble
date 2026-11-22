@@ -1049,3 +1049,90 @@ func (v *verifyingQuota) Verify(ctx context.Context, cred string) (provider.Remo
 	r.Quota = []provider.QuotaReading{{Kind: "tokens", Limit: 100, Remaining: 10}}
 	return r, err
 }
+
+type controllableScripted struct {
+	*scripted
+	interrupted []string
+	created     int
+}
+
+func (c *controllableScripted) CreateSession(_ context.Context, _ string, title, text string) (provider.RemoteSession, provider.SendResult, error) {
+	c.created++
+	extID := fmt.Sprintf("side-%d", c.created)
+	if title == "" {
+		title = "Side " + extID
+	}
+	rs := provider.RemoteSession{ExternalID: extID, Title: title, Kind: protocol.KindSide, CanSend: true, LastActivityMs: 1_800_000_000_010}
+	return rs, provider.SendResult{
+		Status: provider.Sent,
+		Messages: []provider.RemoteMessage{
+			{ExternalID: "u1", Role: protocol.RoleUser, Blocks: []protocol.Block{protocol.TextBlock(text)}, CreateTimeMs: 1_800_000_000_010, Position: 1},
+			{ExternalID: "a1", Role: protocol.RoleAssistant, Blocks: []protocol.Block{protocol.TextBlock("ack: " + text)}, CreateTimeMs: 1_800_000_000_011, Position: 2},
+		},
+	}, nil
+}
+
+func (c *controllableScripted) Interrupt(_ context.Context, _ string, session provider.SessionRef) error {
+	c.interrupted = append(c.interrupted, session.ExternalID)
+	return nil
+}
+
+func (c *controllableScripted) TurnState(context.Context, string, provider.SessionRef) (provider.TurnState, error) {
+	return provider.TurnState{Running: false, Composing: false, WaitingForUser: true, LastTurnError: "none"}, nil
+}
+
+func TestAssistantBackendAndSessionStartInterrupt(t *testing.T) {
+	e := newEnv(t, "cue")
+	ctx := context.Background()
+	cs := &controllableScripted{scripted: e.p}
+	e.club.Registry().Register(cs)
+
+	a := e.pair(t, "fixture-credential-1")
+	if a.AssistantBackend {
+		t.Fatal("assistantBackend should default to false")
+	}
+	on := true
+	updated, err := e.space.UpdateAccount(ctx, protocol.UpdateAccountParams{AccountID: a.AccountID, AssistantBackend: &on})
+	if err != nil || !updated.AssistantBackend {
+		t.Fatalf("enable assistantBackend: %+v err=%v", updated, err)
+	}
+	if _, err := e.club.Call(ctx, DefaultSpace, protocol.MethodClubAssistantSessionsSet, json.RawMessage(`{"session_keys":["agent:cue:`+a.AccountID+`:side-1"]}`)); err != nil {
+		t.Fatalf("set assistant sessions: %v", err)
+	}
+	keys, err := e.space.AssistantSessionKeys(ctx)
+	if err != nil || !keys["agent:cue:"+a.AccountID+":side-1"] || len(keys) != 1 {
+		t.Fatalf("AssistantSessionKeys: %+v err=%v", keys, err)
+	}
+
+	raw, err := e.club.Call(ctx, DefaultSpace, protocol.MethodClubSessionsStart, json.RawMessage(`{"account_id":"`+a.AccountID+`","title":"Main Task","text":"hello"}`))
+	if err != nil {
+		t.Fatalf("club.sessions.start: %v", err)
+	}
+	started := raw.(protocol.Session)
+	if started.Title != "Main Task" || !started.CanSend {
+		t.Fatalf("started session: %+v", started)
+	}
+	live, err := e.space.Live(ctx, protocol.SessionParams{SessionKey: started.SessionKey})
+	if err != nil || !live.Supported || !live.WaitingForUser || live.LastTurnError != "none" {
+		t.Fatalf("TurnStater Live: %+v err=%v", live, err)
+	}
+	if _, err := e.club.Call(ctx, DefaultSpace, protocol.MethodClubSessionsInterrupt, json.RawMessage(`{"session_key":"`+started.SessionKey+`"}`)); err != nil {
+		t.Fatalf("club.sessions.interrupt: %v", err)
+	}
+	if len(cs.interrupted) != 1 || cs.interrupted[0] != "side-1" {
+		t.Fatalf("interrupted = %v", cs.interrupted)
+	}
+
+	// Unsupported provider still answers unsupported / PROVIDER_UNAVAILABLE.
+	ePlain := newEnv(t, "grok_bot")
+	ePlain.p.sessions = []provider.RemoteSession{{ExternalID: "bot/", CanSend: true}}
+	aPlain := ePlain.pair(t, "fixture-credential-2")
+	_, err = ePlain.club.Call(ctx, DefaultSpace, protocol.MethodClubSessionsStart, json.RawMessage(`{"account_id":"`+aPlain.AccountID+`","text":"hi"}`))
+	if protocol.CodeOf(err) != protocol.CodeUnsupported || reason(err) != protocol.ReasonProviderUnavailable {
+		t.Fatalf("unsupported start: %v", err)
+	}
+	_, err = ePlain.club.Call(ctx, DefaultSpace, protocol.MethodClubSessionsInterrupt, json.RawMessage(`{"session_key":"`+SessionKey("grok_bot", aPlain.AccountID, "bot/")+`"}`))
+	if protocol.CodeOf(err) != protocol.CodeUnsupported || reason(err) != protocol.ReasonProviderUnavailable {
+		t.Fatalf("unsupported interrupt: %v", err)
+	}
+}

@@ -2,6 +2,7 @@ package groq
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -207,5 +208,86 @@ func TestQuotaComesFromTheAnswersOnly(t *testing.T) {
 		if !ok || e.Code != provider.CodeRateLimited || e.HTTPStatus != 429 || e.RetryAfter <= tc.wait-2*time.Second || e.RetryAfter > tc.wait {
 			t.Fatalf("Retry-After %q: %#v", tc.header, err)
 		}
+	}
+}
+
+func TestCallToolsMultiStep(t *testing.T) {
+	step := 0
+	var bodies []string
+	h := http.Header{}
+	h.Set("x-ratelimit-limit-requests", "100")
+	h.Set("x-ratelimit-remaining-requests", "99")
+	up := providertest.Serve(t, func(c providertest.Call) providertest.Answer {
+		bodies = append(bodies, string(c.Body))
+		step++
+		if step == 1 {
+			return providertest.Answer{
+				Header: h,
+				Body: map[string]any{
+					"choices": []any{
+						map[string]any{
+							"message": map[string]any{
+								"role":    "assistant",
+								"content": "",
+								"tool_calls": []any{
+									map[string]any{
+										"id":   "call_1",
+										"type": "function",
+										"function": map[string]any{
+											"name":      "machines_list",
+											"arguments": `{"all":true}`,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+		}
+		return providertest.Answer{
+			Header: h,
+			Body: map[string]any{
+				"choices": []any{
+					map[string]any{
+						"message": map[string]any{
+							"role":    "assistant",
+							"content": "Two machines are online.",
+						},
+					},
+				},
+			},
+		}
+	})
+	a := New(Options{Origin: up.URL + "/openai/v1", Now: func() time.Time { return time.UnixMilli(1000) }})
+	tools := []provider.ToolDef{{
+		Name:        "machines_list",
+		Description: "List paired computers",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"all":{"type":"boolean"}}}`),
+	}}
+	turns := []provider.ToolTurn{
+		{Role: protocol.RoleSystem, Content: "You are Persona main assistant."},
+		{Role: protocol.RoleUser, Content: "List my machines"},
+	}
+	res1, err := a.CallTools(ctx, key, turns, tools)
+	if err != nil {
+		t.Fatalf("step 1: %v", err)
+	}
+	if len(res1.ToolCalls) != 1 || res1.ToolCalls[0].ID != "call_1" || res1.ToolCalls[0].Name != "machines_list" || string(res1.ToolCalls[0].Args) != `{"all":true}` {
+		t.Fatalf("unexpected tool calls: %+v", res1)
+	}
+	turns = append(turns,
+		provider.ToolTurn{Role: protocol.RoleAssistant, Content: res1.Content, ToolCalls: res1.ToolCalls},
+		provider.ToolTurn{Role: protocol.RoleTool, ToolCallID: "call_1", ToolName: "machines_list", Content: `["machine-a","machine-b"]`},
+	)
+	res2, err := a.CallTools(ctx, key, turns, tools)
+	if err != nil {
+		t.Fatalf("step 2: %v", err)
+	}
+	if res2.Content != "Two machines are online." || len(res2.ToolCalls) != 0 || len(res2.Quota) != 1 {
+		t.Fatalf("unexpected step 2: %+v", res2)
+	}
+	if len(bodies) != 2 || !strings.Contains(bodies[0], `"tools":[{"function":{"description":"List paired computers"`) || !strings.Contains(bodies[1], `"tool_call_id":"call_1"`) {
+		t.Fatalf("unexpected request bodies: %v", bodies)
 	}
 }
