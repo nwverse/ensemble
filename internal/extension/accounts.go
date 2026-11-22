@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/nwverse/personal-agent-club/internal/core"
 	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/personal-agent-club/internal/provider/browser"
 	"github.com/nwverse/personal-agent-club/internal/provider/echo"
 )
 
@@ -35,23 +37,27 @@ const (
 
 // Actions of the accounts UI.
 const (
-	actSync      = "sync"
-	actPause     = "pause"
-	actResume    = "resume"
-	actRemove    = "remove"
-	actPurge     = "purge"
-	actControl   = "control"
-	actPair      = "pair"
-	actGrokStart = "grok_start"
-	actGrokCheck = "grok_check"
-	actGrokStop  = "grok_cancel"
+	actSync         = "sync"
+	actPause        = "pause"
+	actResume       = "resume"
+	actRemove       = "remove"
+	actPurge        = "purge"
+	actControl      = "control"
+	actQuotaDisplay = "quota_display"
+	actPair         = "pair"
+	actGrokStart    = "grok_start"
+	actGrokCheck    = "grok_check"
+	actGrokStop     = "grok_cancel"
+	actTakeover     = "takeover"
+	actWake         = "wake"
 )
 
 // Field names on the pages.
 const (
-	fieldCredential = "credential"
-	fieldName       = "display_name"
-	fieldControl    = "assistant_control"
+	fieldCredential   = "credential"
+	fieldName         = "display_name"
+	fieldControl      = "assistant_control"
+	fieldQuotaDisplay = "quota_display"
 )
 
 // pageState is the page's state as the apps send it back: which page, about what, and the last action's outcome.
@@ -75,12 +81,16 @@ const grokBot = "grok_bot"
 var retryableLogin = []string{"NETWORK_ERROR", "UPSTREAM_ERROR", "RATE_LIMITED"}
 
 // accountsPage is the accounts UI.
-func accountsPage(club *core.Club) ext.Page {
-	a := &accounts{club: club}
+func accountsPage(club *core.Club, hub *atomic.Pointer[ext.Hub], drv browser.Driver) ext.Page {
+	a := &accounts{club: club, hub: hub, browser: drv}
 	return ext.Page{Render: a.render, Action: a.action}
 }
 
-type accounts struct{ club *core.Club }
+type accounts struct {
+	club    *core.Club
+	hub     *atomic.Pointer[ext.Hub]
+	browser browser.Driver
+}
 
 func (a *accounts) render(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
 	var st pageState
@@ -98,6 +108,8 @@ func (a *accounts) view(ctx context.Context, r *ext.UIRequest, st pageState) *wi
 		v = a.pairView(l, st)
 	case pageGrok:
 		v = a.grokView(ctx, l, &st)
+	case pageBrowserPair:
+		v = a.browserPairView(ctx, l, st)
 	default:
 		v = a.listView(ctx, r, l)
 	}
@@ -159,6 +171,9 @@ func (a *accounts) listView(ctx context.Context, r *ext.UIRequest, l lang) *wire
 		pairRow(p, l.t("粘贴 API Key", "Paste an API key"), pageState{Page: pagePair, Provider: p})
 	}
 	pairRow(grokBot, l.t("在浏览器里登录", "Sign in in the browser"), pageState{Page: pageGrok})
+	for _, s := range browserProviders {
+		pairRow(s.Provider, l.t("通过已配对电脑的浏览器（ego lite）", "Via a paired computer's browser (ego lite)"), pageState{Page: pageBrowserPair, Provider: s.Provider})
+	}
 	if _, ok := a.club.Registry().Get(echo.Name); ok {
 		pairRow(echo.Name, l.t("演示：任意以 echo- 开头的字符串", "Demo: any text starting with echo-"), pageState{Page: pagePair, Provider: echo.Name})
 	}
@@ -202,6 +217,7 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 			"Off: the assistant does not see this account. Read: it can list and read. Confirm: each send is confirmed on your phone first."),
 		Items: []wire.Component{{Type: "segmented", Name: fieldControl, Choices: choices, Value: string(control),
 			Action: &wire.Action{ID: actControl}}}}
+	quotaSection := quotaDisplaySection(l, acct)
 	pause := wire.Component{Type: "button", Title: l.t("暂停同步", "Pause"), Action: &wire.Action{ID: actPause}}
 	if acct.Status == protocol.AccountPaused {
 		pause = wire.Component{Type: "button", Title: l.t("恢复同步", "Resume"), Action: &wire.Action{ID: actResume}}
@@ -221,8 +237,86 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 		{Type: "button", Title: l.t("解除配对并删除数据", "Unpair and delete data"), Role: "destructive", Action: &wire.Action{ID: actPurge,
 			Confirm: l.t("凭据、会话和消息都会被删除，不能恢复。", "The credential, sessions and messages are all deleted, for good.")}},
 	}...)
-	v.Sections = []wire.Section{info, assistant, actions}
+	sections := []wire.Section{info, quotaSection}
+	if takeoverSupported(acct.Provider) && a.hub != nil {
+		sec, pending := a.machineSection(ctx, l, acct)
+		sections = append(sections, sec)
+		if pending {
+			v.RefreshAfter = 10
+		}
+	}
+	sections = append(sections, assistant, actions)
+	v.Sections = sections
 	return v
+}
+
+func quotaDisplaySection(l lang, acct protocol.Account) wire.Section {
+	val := acct.QuotaDisplay
+	if val == "" {
+		if !acct.ShowQuota {
+			val = protocol.QuotaDisplayOff
+		} else {
+			val = protocol.QuotaDisplayAuto
+		}
+	}
+	choices := []wire.Choice{
+		{Value: protocol.QuotaDisplayAuto, Title: l.t("自动（最低）", "Auto")},
+	}
+	seen := map[string]bool{protocol.QuotaDisplayAuto: true, protocol.QuotaDisplayOff: true}
+	var items []wire.Component
+	if acct.Quota != nil {
+		badgeText := acct.Quota.Label
+		if acct.Quota.Percent != nil {
+			badgeText = fmt.Sprintf("%d%%", *acct.Quota.Percent)
+		}
+		items = append(items, wire.Component{
+			Type:  "row",
+			Title: l.t("当前额度", "Current quota"),
+			Value: acct.Quota.Label,
+			Badge: &wire.Badge{Text: badgeText, Tone: quotaBadgeTone(acct.Quota.Tone)},
+		})
+		for _, b := range acct.Quota.Buckets {
+			if b.ID == "" || seen[b.ID] {
+				continue
+			}
+			seen[b.ID] = true
+			title := b.ID
+			if b.Percent != nil {
+				title = fmt.Sprintf("%s (%d%%)", b.ID, *b.Percent)
+			}
+			choices = append(choices, wire.Choice{Value: b.ID, Title: title})
+		}
+	}
+	if !seen[val] {
+		choices = append(choices, wire.Choice{Value: val, Title: val})
+	}
+	choices = append(choices, wire.Choice{Value: protocol.QuotaDisplayOff, Title: l.t("隐藏", "Off")})
+	items = append(items, wire.Component{
+		Type:    "segmented",
+		Name:    fieldQuotaDisplay,
+		Choices: choices,
+		Value:   val,
+		Action:  &wire.Action{ID: actQuotaDisplay},
+	})
+	return wire.Section{
+		Title: l.t("头像额度条", "Avatar quota indicator"),
+		Footer: l.t("选择在头像电量条上展示哪一项额度（百分比与颜色随剩余比例变化）。",
+			"Choose which quota bucket is shown on the avatar battery ring (percentage and color follow remaining quota)."),
+		Items: items,
+	}
+}
+
+func quotaBadgeTone(tone string) string {
+	switch tone {
+	case protocol.QuotaToneExhausted:
+		return wire.ToneDanger
+	case protocol.QuotaToneLow:
+		return wire.ToneCaution
+	case protocol.QuotaToneOK:
+		return wire.TonePositive
+	default:
+		return wire.ToneNeutral
+	}
 }
 
 func (a *accounts) pairView(l lang, st pageState) *wire.View {
@@ -338,6 +432,12 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 			return failed(err, "")
 		}
 		return done(l.t("已更新", "Updated"))
+	case actQuotaDisplay:
+		disp := strings.TrimSpace(r.Values[fieldQuotaDisplay])
+		if err := call(ctx, a.club, protocol.MethodClubAccountsUpdate, map[string]any{"account_id": st.Account, "quota_display": disp}, nil); err != nil {
+			return failed(err, "")
+		}
+		return done(l.t("已更新", "Updated"))
 	case actRemove, actPurge:
 		p := protocol.RemoveAccountParams{AccountID: st.Account, DeleteData: r.Action == actPurge}
 		if err := call(ctx, a.club, protocol.MethodClubAccountsRemove, p, nil); err != nil {
@@ -353,6 +453,12 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 		p := protocol.AddAccountParams{Provider: st.Provider, Credential: cred, DisplayName: strings.TrimSpace(r.Values[fieldName])}
 		if err := call(ctx, a.club, protocol.MethodClubAccountsAdd, p, &acct); err != nil {
 			return failed(err, cred)
+		}
+		return &wire.ActionResult{Pop: true, Toast: l.t("已配对：", "Paired: ") + accountName(acct)}, nil
+	case actBrowserPair:
+		acct, err := a.pairBrowserAccount(ctx, st.Provider, r.Values[fieldMachine], r.Values[fieldName])
+		if err != nil {
+			return failed(err, "")
 		}
 		return &wire.ActionResult{Pop: true, Toast: l.t("已配对：", "Paired: ") + accountName(acct)}, nil
 	case actGrokStart:
@@ -382,6 +488,18 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 		}
 		st = pageState{Page: pageGrok, Account: st.Account}
 		return done(l.t("已取消", "Canceled"))
+	case actTakeover:
+		mid, err := a.runTakeover(ctx, st.Account)
+		if err != nil {
+			return failed(err, "")
+		}
+		return done(l.t("已发送夺舍指令（机器 "+mid+"），连接后请在「机器」页确认", "Bootstrap sent for "+mid+"; confirm on Machines once connected"))
+	case actWake:
+		mid, err := a.runWake(ctx, st.Account)
+		if err != nil {
+			return failed(err, "")
+		}
+		return done(l.t("已向机器 "+mid+" 发送唤醒指令", "Wake instructions sent for "+mid))
 	}
 	return nil, nil
 }
@@ -403,6 +521,9 @@ func providerName(l lang, p string) string {
 		return "Groq"
 	case echo.Name:
 		return l.t("Echo（演示）", "Echo (demo)")
+	}
+	if label, ok := browserProviderLabel(p); ok {
+		return label
 	}
 	return p
 }

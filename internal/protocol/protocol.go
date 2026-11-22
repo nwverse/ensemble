@@ -200,6 +200,7 @@ type Account struct {
 	AssistantControl  string `json:"assistantControl,omitempty"`
 	AssistantBackend  bool   `json:"assistantBackend,omitempty"`
 	ShowQuota         bool   `json:"showQuota,omitempty"`
+	QuotaDisplay      string `json:"quotaDisplay,omitempty"`
 	Quota             *Quota `json:"quota,omitempty"`
 }
 
@@ -399,20 +400,46 @@ const (
 	QuotaSourceProvider = "provider"
 	QuotaSourceGateway  = "gateway"
 	QuotaSourceResponse = "response"
+
+	QuotaToneOK        = "ok"
+	QuotaToneLow       = "low"
+	QuotaToneExhausted = "exhausted"
+	QuotaToneStale     = "stale"
+
+	QuotaDisplayAuto = "auto"
+	QuotaDisplayOff  = "off"
 )
 
-// Quota is how much of an account's allowance is left. Optional everywhere; nothing in this version fills it.
-type Quota struct {
-	State     string   `json:"state"`
-	Remaining *float64 `json:"remaining,omitempty"`
-	Kind      string   `json:"kind,omitempty"`
+// QuotaBucket is one selectable quota reading for avatar battery/ring indicators (e.g. tokens vs requests, or
+// 5-hour vs weekly windows).
+type QuotaBucket struct {
+	ID        string   `json:"id"`
+	Kind      string   `json:"kind"`
+	Window    string   `json:"window,omitempty"`
 	Label     string   `json:"label,omitempty"`
+	Remaining *float64 `json:"remaining,omitempty"`
+	Percent   *int     `json:"percent,omitempty"`
+	State     string   `json:"state"`
+	Tone      string   `json:"tone,omitempty"`
 	ResetsAt  int64    `json:"resetsAt,omitempty"`
-	CheckedAt int64    `json:"checkedAt,omitempty"`
-	Source    string   `json:"source,omitempty"`
-	Stale     bool     `json:"stale"`
-	Show      bool     `json:"show"`
-	Details   []Quota  `json:"details,omitempty"`
+}
+
+// Quota is how much of an account's allowance is left. Optional everywhere.
+type Quota struct {
+	State     string        `json:"state"`
+	Remaining *float64      `json:"remaining,omitempty"`
+	Percent   *int          `json:"percent,omitempty"`
+	Tone      string        `json:"tone,omitempty"`
+	Kind      string        `json:"kind,omitempty"`
+	Label     string        `json:"label,omitempty"`
+	Selected  string        `json:"selected,omitempty"`
+	ResetsAt  int64         `json:"resetsAt,omitempty"`
+	CheckedAt int64         `json:"checkedAt,omitempty"`
+	Source    string        `json:"source,omitempty"`
+	Stale     bool          `json:"stale"`
+	Show      bool          `json:"show"`
+	Details   []Quota       `json:"details,omitempty"`
+	Buckets   []QuotaBucket `json:"buckets,omitempty"`
 }
 
 // ClubInfo is club.info's answer.
@@ -449,6 +476,7 @@ type UpdateAccountParams struct {
 	AssistantControl *string `json:"assistant_control,omitempty"`
 	AssistantBackend *bool   `json:"assistant_backend,omitempty"`
 	ShowQuota        *bool   `json:"show_quota,omitempty"`
+	QuotaDisplay     *string `json:"quota_display,omitempty"`
 }
 
 // StartSessionParams are club.sessions.start's: opens a new session with its first message.

@@ -9,12 +9,14 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"sync/atomic"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 
 	pac "github.com/nwverse/personal-agent-club"
 	"github.com/nwverse/personal-agent-club/internal/core"
 	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/personal-agent-club/internal/provider/browser"
 	"github.com/nwverse/personal-agent-club/internal/provider/echo"
 )
 
@@ -27,19 +29,30 @@ const (
 
 // Config is the extension's configuration (persona-extension.json "configuration").
 type Config struct {
-	DemoEcho bool `json:"demo_echo"`
+	DemoEcho         bool `json:"demo_echo"`
+	BrowserProviders bool `json:"browser_providers"`
 }
 
 // Program is the extension program serving club. The club is closed when the program ends.
 func Program(club *core.Club, version string) ext.Program {
+	var hubPtr atomic.Pointer[ext.Hub]
+	driver := browser.NewPersonaHubDriver(&hubPtr)
 	return ext.Program{
 		ID:       ID,
 		Version:  version,
 		Manifest: json.RawMessage(pac.Manifest),
 		Init: func(ctx context.Context, init *ext.Init, hub *ext.Hub) (map[string]any, error) {
+			hubPtr.Store(hub)
 			var cfg Config
 			if err := init.Config(&cfg); err != nil {
 				return nil, err
+			}
+			if cfg.BrowserProviders {
+				for _, site := range []browser.Site{browser.SiteMuse, browser.SiteClaudeDuet, browser.SiteGeminiTasks, browser.SiteDots} {
+					if _, ok := club.Registry().Get(site.Provider); !ok {
+						club.Registry().Register(browser.New(site, driver))
+					}
+				}
 			}
 			if cfg.DemoEcho {
 				if _, ok := club.Registry().Get(echo.Name); !ok {
@@ -62,7 +75,7 @@ func Program(club *core.Club, version string) ext.Program {
 			}
 			return map[string]any{"connectors": m.Contributes.Connectors}, nil
 		},
-		UI: map[string]ext.Page{AccountsUI: accountsPage(club)},
+		UI: map[string]ext.Page{AccountsUI: accountsPage(club, &hubPtr, driver)},
 		Namespaces: map[string]ext.Handler{
 			ext.ConnectorNamespace: toolsHandler(club),
 			protocol.AgentSourceNamespace: func(ctx context.Context, method string, params json.RawMessage) (any, error) {

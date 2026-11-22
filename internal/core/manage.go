@@ -53,6 +53,20 @@ func (s *Space) UpdateAccount(ctx context.Context, p protocol.UpdateAccountParam
 		patch.AssistantControl = &level
 	}
 	patch.ShowQuota = p.ShowQuota
+	if p.QuotaDisplay != nil {
+		d := strings.TrimSpace(*p.QuotaDisplay)
+		if len(d) > 64 {
+			return protocol.Account{}, badInput("quota_display must be at most 64 characters")
+		}
+		patch.QuotaDisplay = &d
+		if d == protocol.QuotaDisplayOff && p.ShowQuota == nil {
+			off := false
+			patch.ShowQuota = &off
+		} else if d != "" && d != protocol.QuotaDisplayOff && p.ShowQuota == nil {
+			on := true
+			patch.ShowQuota = &on
+		}
+	}
 	if p.Paused != nil {
 		st, empty := protocol.AccountActive, ""
 		if *p.Paused {

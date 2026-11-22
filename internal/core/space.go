@@ -144,7 +144,7 @@ func (s *Space) accountViewWithBackends(ctx context.Context, a store.Account, ba
 	return protocol.Account{AccountID: a.AccountID, Provider: a.Provider, DisplayName: cmpOr(a.DisplayName, a.Provider),
 		Status: a.Status, ExternalAccountID: a.ExternalAccountID, LastSyncedAt: a.LastSyncedAt, LastError: a.LastError,
 		SessionCount: len(sessions), AssistantControl: string(control), AssistantBackend: backends[a.AccountID],
-		ShowQuota: a.ShowQuota, Quota: s.quotaView(a, s.now())}, nil
+		ShowQuota: a.ShowQuota, QuotaDisplay: a.QuotaDisplay, Quota: s.quotaView(a, s.now())}, nil
 }
 
 // Sessions is agentsrc.sessions.

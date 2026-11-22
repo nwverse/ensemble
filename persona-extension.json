@@ -61,10 +61,19 @@
         "title": "Demo echo provider",
         "description": "Adds the in-memory echo provider, which answers every message with its own text. For trying the source out; nothing leaves the program.",
         "default": false
+      },
+      "browser_providers": {
+        "type": "boolean",
+        "title": "Browser-backed providers (ego lite / CDP)",
+        "description": "Enables Muse, Claude Duet, Gemini Tasks and Dots via a paired computer's browser (Persona browser.run, no exported cookies).",
+        "default": false
       }
     }
   },
   "permissions": {
+    "hub": [
+      "machines.read"
+    ],
     "network": [
       "api.manus.ai",
       "api2.cursor.sh",
