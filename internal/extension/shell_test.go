@@ -563,3 +563,51 @@ func TestAnExhaustedAccountIsNotSentToByTheAssistant(t *testing.T) {
 		}
 	}
 }
+
+func TestAssistantToolsExcludeActiveAssistantSessions(t *testing.T) {
+	h, club := start(t)
+	act(t, h, pageState{Page: pagePair, Provider: echo.Name}, actPair, map[string]string{fieldCredential: demoCredential})
+	space, _ := club.Space(context.Background(), core.DefaultSpace)
+	status, _ := space.Status(context.Background())
+	id := status.Accounts[0].AccountID
+	setControl(t, club, id, core.ControlConfirm)
+
+	sessions, _ := space.Sessions(context.Background())
+	var main, notes string
+	for _, s := range sessions.Sessions {
+		if s.CanSend {
+			main = s.SessionKey
+		} else {
+			notes = s.SessionKey
+		}
+	}
+	if err := space.SetAssistantSessionKeys(context.Background(), []string{main}); err != nil {
+		t.Fatal(err)
+	}
+
+	callTool := func(name string, args any) (string, error) {
+		raw, _ := json.Marshal(args)
+		var res wire.ConnectorCallResult
+		err := h.Call("connector.tools.call", wire.ConnectorCallParams{Contribution: Connector, Name: name, Args: raw}, &res)
+		return res.Text, err
+	}
+	describe := func(name string, args any) error {
+		raw, _ := json.Marshal(args)
+		var res wire.ConnectorDescribeResult
+		return h.Call("connector.actions.describe", wire.ConnectorCallParams{Contribution: Connector, Name: name, Args: raw}, &res)
+	}
+
+	out, err := callTool(toolList, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, main) || !strings.Contains(out, notes) {
+		t.Fatalf("expected active assistant session %s excluded and side session %s kept, got: %s", main, notes, out)
+	}
+	if _, err := callTool(toolRead, map[string]any{"session_key": main}); err == nil {
+		t.Fatal("club_agent_read should reject active assistant backing session")
+	}
+	if err := describe(toolSend, map[string]any{"session_key": main, "text": "loop"}); err == nil {
+		t.Fatal("club_agent_send should reject active assistant backing session")
+	}
+}

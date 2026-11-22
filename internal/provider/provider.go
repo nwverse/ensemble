@@ -4,6 +4,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -156,6 +157,54 @@ type LiveState struct {
 // LiveStater reports a session's live state.
 type LiveStater interface {
 	LiveState(ctx context.Context, credential string, session SessionRef) (LiveState, error)
+}
+
+// TurnState extends LiveState with turn settlement and error metadata for providers that report it.
+type TurnState struct {
+	Running        bool
+	Composing      bool
+	WaitingForUser bool
+	LastTurnError  string
+}
+
+// TurnStater reports extended turn state for a session.
+type TurnStater interface {
+	TurnState(ctx context.Context, credential string, session SessionRef) (TurnState, error)
+}
+
+// ToolDef describes one native function-calling tool offered to a ToolCaller.
+type ToolDef struct {
+	Name        string
+	Description string
+	InputSchema json.RawMessage
+}
+
+// ToolCall is one tool invocation returned by a ToolCaller.
+type ToolCall struct {
+	ID   string
+	Name string
+	Args json.RawMessage
+}
+
+// ToolTurn is one message in a ToolCaller multi-step conversation.
+type ToolTurn struct {
+	Role       string // system | user | assistant | tool
+	Content    string
+	ToolCallID string
+	ToolName   string
+	ToolCalls  []ToolCall
+}
+
+// ToolStepResult is one inference step returned by a ToolCaller.
+type ToolStepResult struct {
+	Content   string
+	ToolCalls []ToolCall
+	Quota     []QuotaReading
+}
+
+// ToolCaller runs one inference step with native function-calling tool definitions.
+type ToolCaller interface {
+	CallTools(ctx context.Context, credential string, turns []ToolTurn, tools []ToolDef) (ToolStepResult, error)
 }
 
 // Interrupter stops the turn the agent is working on, keeping the session.
