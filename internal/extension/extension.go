@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"sync/atomic"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 
@@ -32,11 +33,13 @@ type Config struct {
 
 // Program is the extension program serving club. The club is closed when the program ends.
 func Program(club *core.Club, version string) ext.Program {
+	var hubPtr atomic.Pointer[ext.Hub]
 	return ext.Program{
 		ID:       ID,
 		Version:  version,
 		Manifest: json.RawMessage(pac.Manifest),
 		Init: func(ctx context.Context, init *ext.Init, hub *ext.Hub) (map[string]any, error) {
+			hubPtr.Store(hub)
 			var cfg Config
 			if err := init.Config(&cfg); err != nil {
 				return nil, err
@@ -62,7 +65,7 @@ func Program(club *core.Club, version string) ext.Program {
 			}
 			return map[string]any{"connectors": m.Contributes.Connectors}, nil
 		},
-		UI: map[string]ext.Page{AccountsUI: accountsPage(club)},
+		UI: map[string]ext.Page{AccountsUI: accountsPage(club, &hubPtr)},
 		Namespaces: map[string]ext.Handler{
 			ext.ConnectorNamespace: toolsHandler(club),
 			protocol.AgentSourceNamespace: func(ctx context.Context, method string, params json.RawMessage) (any, error) {

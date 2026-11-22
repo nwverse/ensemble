@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -46,6 +47,8 @@ const (
 	actGrokStart    = "grok_start"
 	actGrokCheck    = "grok_check"
 	actGrokStop     = "grok_cancel"
+	actTakeover     = "takeover"
+	actWake         = "wake"
 )
 
 // Field names on the pages.
@@ -77,12 +80,15 @@ const grokBot = "grok_bot"
 var retryableLogin = []string{"NETWORK_ERROR", "UPSTREAM_ERROR", "RATE_LIMITED"}
 
 // accountsPage is the accounts UI.
-func accountsPage(club *core.Club) ext.Page {
-	a := &accounts{club: club}
+func accountsPage(club *core.Club, hub *atomic.Pointer[ext.Hub]) ext.Page {
+	a := &accounts{club: club, hub: hub}
 	return ext.Page{Render: a.render, Action: a.action}
 }
 
-type accounts struct{ club *core.Club }
+type accounts struct {
+	club *core.Club
+	hub  *atomic.Pointer[ext.Hub]
+}
 
 func (a *accounts) render(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
 	var st pageState
@@ -224,7 +230,16 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 		{Type: "button", Title: l.t("解除配对并删除数据", "Unpair and delete data"), Role: "destructive", Action: &wire.Action{ID: actPurge,
 			Confirm: l.t("凭据、会话和消息都会被删除，不能恢复。", "The credential, sessions and messages are all deleted, for good.")}},
 	}...)
-	v.Sections = []wire.Section{info, quotaSection, assistant, actions}
+	sections := []wire.Section{info, quotaSection}
+	if takeoverSupported(acct.Provider) && a.hub != nil {
+		sec, pending := a.machineSection(ctx, l, acct)
+		sections = append(sections, sec)
+		if pending {
+			v.RefreshAfter = 10
+		}
+	}
+	sections = append(sections, assistant, actions)
+	v.Sections = sections
 	return v
 }
 
@@ -460,6 +475,18 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 		}
 		st = pageState{Page: pageGrok, Account: st.Account}
 		return done(l.t("已取消", "Canceled"))
+	case actTakeover:
+		mid, err := a.runTakeover(ctx, st.Account)
+		if err != nil {
+			return failed(err, "")
+		}
+		return done(l.t("已发送夺舍指令（机器 "+mid+"），连接后请在「机器」页确认", "Bootstrap sent for "+mid+"; confirm on Machines once connected"))
+	case actWake:
+		mid, err := a.runWake(ctx, st.Account)
+		if err != nil {
+			return failed(err, "")
+		}
+		return done(l.t("已向机器 "+mid+" 发送唤醒指令", "Wake instructions sent for "+mid))
 	}
 	return nil, nil
 }
