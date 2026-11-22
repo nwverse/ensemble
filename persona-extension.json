@@ -65,7 +65,7 @@
       "browser_providers": {
         "type": "boolean",
         "title": "Browser-backed providers (ego lite / CDP)",
-        "description": "Enables Muse, Claude Duet and Gemini Tasks via a paired computer's browser (Persona browser.run, no exported cookies).",
+        "description": "Enables Muse, Claude Duet, Gemini Tasks and Dots via a paired computer's browser (Persona browser.run, no exported cookies).",
         "default": false
       }
     }

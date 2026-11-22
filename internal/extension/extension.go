@@ -48,7 +48,7 @@ func Program(club *core.Club, version string) ext.Program {
 				return nil, err
 			}
 			if cfg.BrowserProviders {
-				for _, site := range []browser.Site{browser.SiteMuse, browser.SiteClaudeDuet, browser.SiteGeminiTasks} {
+				for _, site := range []browser.Site{browser.SiteMuse, browser.SiteClaudeDuet, browser.SiteGeminiTasks, browser.SiteDots} {
 					if _, ok := club.Registry().Get(site.Provider); !ok {
 						club.Registry().Register(browser.New(site, driver))
 					}

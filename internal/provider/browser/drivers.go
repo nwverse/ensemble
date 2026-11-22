@@ -92,8 +92,7 @@ try {
   await task.finish({ keep: [] }).catch(() => {});
 }
 `, "pac-"+req.Slot, req.Script)
-	cmd := exec.CommandContext(rctx, d.bin(), "nodejs")
-	cmd.Stdin = strings.NewReader(wrapped)
+	cmd := exec.CommandContext(rctx, d.bin(), "nodejs", "-e", wrapped)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

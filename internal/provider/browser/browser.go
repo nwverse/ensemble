@@ -134,6 +134,17 @@ var (
 		MessageLogSel:  `user-query, model-response, message-content`,
 		SignedOutHosts: []string{"accounts.google.com"},
 	}
+	SiteDots = Site{
+		Provider:       "dots",
+		Label:          "Dots",
+		AppURL:         "https://chatgpt.com/",
+		Slot:           "pac-dots",
+		SingleSession:  false,
+		ComposerSel:    `#prompt-textarea, textarea[name="prompt-textarea"]`,
+		SendButtonSel:  `button[data-testid="send-button"], button[aria-label="Send prompt"]`,
+		MessageLogSel:  `[data-message-author-role]`,
+		SignedOutHosts: []string{"auth/login"},
+	}
 )
 
 // Adapter implements provider.Adapter for a Site using any browser.Driver.
@@ -248,7 +259,7 @@ const items = await page.evaluate(() => {
   const out = [];
   for (const el of document.querySelectorAll('a[href]')) {
     const href = el.getAttribute('href') || '';
-    const m = href.match(/\/(?:duet|messages|app|chat|thread)\/([A-Za-z0-9_-]{4,})/);
+    const m = href.match(/\/(?:duet|messages|app|chat|thread|c)\/([A-Za-z0-9_-]{4,})/);
     if (!m || seen.has(m[1])) continue;
     seen.add(m[1]);
     out.push({ id: m[1], title: (el.innerText || '').trim().split('\n')[0] || m[1], url: el.href });

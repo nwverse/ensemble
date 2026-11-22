@@ -20,6 +20,7 @@ var browserProviders = []browser.Site{
 	browser.SiteMuse,
 	browser.SiteClaudeDuet,
 	browser.SiteGeminiTasks,
+	browser.SiteDots,
 }
 
 func (a *accounts) browserPairView(ctx context.Context, l lang, st pageState) *wire.View {
