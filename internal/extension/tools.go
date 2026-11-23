@@ -121,6 +121,9 @@ func (t *tools) session(ctx context.Context, key string, op core.Operation) (*co
 	if err != nil {
 		return nil, protocol.Session{}, "", err
 	}
+	if active, _ := space.AssistantSessionKeys(ctx); active[key] {
+		return nil, protocol.Session{}, "", protocol.NotFound("没有这个会话，或用户没有把它交给助手")
+	}
 	sessions, err := space.Sessions(ctx)
 	if err != nil {
 		return nil, protocol.Session{}, "", err
@@ -236,6 +239,7 @@ func (t *tools) list(ctx context.Context, a listArgs) (wire.ConnectorCallResult,
 		return wire.ConnectorCallResult{}, err
 	}
 	q := strings.ToLower(strings.TrimSpace(a.Query))
+	active, _ := space.AssistantSessionKeys(ctx)
 	canStart, canInterrupt := supported(protocol.MethodClubSessionsStart), supported(protocol.MethodClubSessionsInterrupt)
 	out := []listedAccount{}
 	for _, acct := range accts {
@@ -246,6 +250,9 @@ func (t *tools) list(ctx context.Context, a listArgs) (wire.ConnectorCallResult,
 			Status: acct.Status, AssistantControl: string(levels[acct.AccountID]), Sessions: []listedSession{}}
 		nameHit := q == "" || strings.Contains(strings.ToLower(la.Name), q)
 		for _, s := range sessions.Sessions {
+			if active[s.SessionKey] {
+				continue
+			}
 			if s.AccountID != acct.AccountID || (!nameHit && !strings.Contains(strings.ToLower(s.Title), q)) {
 				continue
 			}

@@ -4,7 +4,9 @@
 package groq
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -99,6 +101,7 @@ func New(o Options) *Adapter {
 var (
 	_ provider.Adapter       = (*Adapter)(nil)
 	_ provider.HistoryWanter = (*Adapter)(nil)
+	_ provider.ToolCaller    = (*Adapter)(nil)
 )
 
 func (a *Adapter) Name() string       { return Name }
@@ -170,6 +173,101 @@ func (a *Adapter) Send(ctx context.Context, key string, _ provider.SessionRef, m
 			CreateTimeMs: sentAt},
 		reply,
 	}, Quota: Quota(r.Header, a.now())}, nil
+}
+
+// CallTools runs one OpenAI-compatible chat completion step with function calling tools.
+func (a *Adapter) CallTools(ctx context.Context, key string, turns []provider.ToolTurn, tools []provider.ToolDef) (provider.ToolStepResult, error) {
+	messages := make([]map[string]any, 0, len(turns))
+	for _, t := range turns {
+		m := map[string]any{"role": t.Role}
+		switch t.Role {
+		case protocol.RoleTool:
+			m["tool_call_id"] = t.ToolCallID
+			if t.ToolName != "" {
+				m["name"] = t.ToolName
+			}
+			m["content"] = t.Content
+		case protocol.RoleAssistant:
+			m["content"] = t.Content
+			if len(t.ToolCalls) > 0 {
+				tcs := make([]map[string]any, 0, len(t.ToolCalls))
+				for _, tc := range t.ToolCalls {
+					args := strings.TrimSpace(string(tc.Args))
+					if args == "" {
+						args = "{}"
+					}
+					tcs = append(tcs, map[string]any{
+						"id":   tc.ID,
+						"type": "function",
+						"function": map[string]any{
+							"name":      tc.Name,
+							"arguments": args,
+						},
+					})
+				}
+				m["tool_calls"] = tcs
+			}
+		default:
+			m["content"] = t.Content
+		}
+		messages = append(messages, m)
+	}
+	payload := map[string]any{
+		"model":    a.model,
+		"messages": messages,
+	}
+	if len(tools) > 0 {
+		encoded := make([]map[string]any, 0, len(tools))
+		for _, td := range tools {
+			schema := bytes.TrimSpace(td.InputSchema)
+			if len(schema) == 0 || !json.Valid(schema) {
+				schema = json.RawMessage(`{"type":"object","properties":{}}`)
+			}
+			encoded = append(encoded, map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name":        td.Name,
+					"description": td.Description,
+					"parameters":  schema,
+				},
+			})
+		}
+		payload["tools"] = encoded
+	}
+	r := web.Request(ctx, a.client, http.MethodPost, a.origin+"/chat/completions", headers(key), payload, answerTimeout)
+	if !r.OK {
+		return provider.ToolStepResult{}, web.ReadError(r)
+	}
+	var choice map[string]any
+	if c := web.Records(web.Record(r.Data)["choices"]); len(c) > 0 {
+		choice = c[0]
+	}
+	msg := web.Record(choice["message"])
+	var toolCalls []provider.ToolCall
+	for i, rawTC := range web.Records(msg["tool_calls"]) {
+		fn := web.Record(rawTC["function"])
+		name := strings.TrimSpace(web.Text(fn["name"]))
+		if name == "" {
+			continue
+		}
+		id := strings.TrimSpace(web.Text(rawTC["id"]))
+		if id == "" {
+			id = "call_" + strconv.Itoa(i+1)
+		}
+		argsStr := strings.TrimSpace(web.Text(fn["arguments"]))
+		var args json.RawMessage
+		if argsStr != "" && json.Valid([]byte(argsStr)) {
+			args = json.RawMessage(argsStr)
+		} else {
+			args = json.RawMessage(`{}`)
+		}
+		toolCalls = append(toolCalls, provider.ToolCall{ID: id, Name: name, Args: args})
+	}
+	return provider.ToolStepResult{
+		Content:   strings.TrimSpace(web.Text(msg["content"])),
+		ToolCalls: toolCalls,
+		Quota:     Quota(r.Header, a.now()),
+	}, nil
 }
 
 // Quota reads Groq's rate limit headers: requests per day and tokens per minute, each with its limit, what is left
