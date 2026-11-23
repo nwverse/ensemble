@@ -30,8 +30,13 @@ func TestConcurrentGroqSendsIncludeCompletedExchange(t *testing.T) {
 	release := sync.OnceFunc(func() { close(releaseFirst) })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/models" {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/models":
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{{"id": groq.DefaultModel}}})
+			return
+		case r.Method == http.MethodPost && r.URL.Path == "/chat/completions":
+		default:
+			http.NotFound(w, r)
 			return
 		}
 		var request struct{ Messages []turn }
@@ -52,6 +57,16 @@ func TestConcurrentGroqSendsIncludeCompletedExchange(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []map[string]any{{"message": map[string]string{"content": reply}}}})
 	}))
 	defer server.Close()
+
+	// A local port probe should not be parsed as a completion request.
+	probe, err := server.Client().Get(server.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = probe.Body.Close()
+	if probe.StatusCode != http.StatusNotFound {
+		t.Fatalf("unexpected probe status: %s", probe.Status)
+	}
 
 	club := New(Options{Registry: provider.NewRegistry(groq.New(groq.Options{Origin: server.URL})), FollowUps: []time.Duration{}})
 	defer club.Close()
