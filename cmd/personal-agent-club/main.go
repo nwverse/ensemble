@@ -31,6 +31,7 @@ const usage = `personal-agent-club: personal agents as one source, for Persona a
 Usage:
   personal-agent-club                       run as a Persona extension (the hub starts it this way)
   personal-agent-club serve [flags]         serve the protocol over HTTP on a unix socket (and optionally TCP)
+  personal-agent-club runtime [flags]       bridge club accounts into Persona's runtime.sock as an assistant runtime
   personal-agent-club import [flags] FILE   import a bundle exported from the Lark gateway into a data directory
   personal-agent-club accounts [flags]      list a space's accounts, read-only (works while serve runs)
   personal-agent-club version               print the version
@@ -93,6 +94,8 @@ func runWith(args []string, d deps) int {
 		return 0
 	case "serve":
 		return runServe(args[1:], d)
+	case "runtime":
+		return runRuntime(args[1:], d)
 	case "import":
 		return runImport(args[1:], d)
 	case "accounts":

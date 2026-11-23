@@ -117,8 +117,9 @@ func (s *Space) Status(ctx context.Context) (protocol.StatusResult, error) {
 		return protocol.StatusResult{}, err
 	}
 	out := protocol.StatusResult{Enabled: true, Providers: s.club.opts.Registry.List(), Accounts: []protocol.Account{}}
+	backends := s.assistantBackends(ctx)
 	for _, a := range accounts {
-		pa, err := s.accountView(ctx, a)
+		pa, err := s.accountViewWithBackends(ctx, a, backends)
 		if err != nil {
 			return protocol.StatusResult{}, err
 		}
@@ -131,6 +132,10 @@ func (s *Space) Status(ctx context.Context) (protocol.StatusResult, error) {
 }
 
 func (s *Space) accountView(ctx context.Context, a store.Account) (protocol.Account, error) {
+	return s.accountViewWithBackends(ctx, a, s.assistantBackends(ctx))
+}
+
+func (s *Space) accountViewWithBackends(ctx context.Context, a store.Account, backends map[string]bool) (protocol.Account, error) {
 	sessions, err := s.store.AccountSessions(ctx, a.AccountID)
 	if err != nil {
 		return protocol.Account{}, err
@@ -138,8 +143,8 @@ func (s *Space) accountView(ctx context.Context, a store.Account) (protocol.Acco
 	control, _ := ParseControl(a.AssistantControl)
 	return protocol.Account{AccountID: a.AccountID, Provider: a.Provider, DisplayName: cmpOr(a.DisplayName, a.Provider),
 		Status: a.Status, ExternalAccountID: a.ExternalAccountID, LastSyncedAt: a.LastSyncedAt, LastError: a.LastError,
-		SessionCount: len(sessions), AssistantControl: string(control), ShowQuota: a.ShowQuota,
-		Quota: s.quotaView(a, s.now())}, nil
+		SessionCount: len(sessions), AssistantControl: string(control), AssistantBackend: backends[a.AccountID],
+		ShowQuota: a.ShowQuota, QuotaDisplay: a.QuotaDisplay, Quota: s.quotaView(a, s.now())}, nil
 }
 
 // Sessions is agentsrc.sessions.
@@ -809,6 +814,7 @@ func (s *Space) RemoveAccount(ctx context.Context, p protocol.RemoveAccountParam
 	if err := s.store.RemoveAccount(ctx, p.AccountID, p.DeleteData, s.now()); err != nil {
 		return err
 	}
+	_ = s.setAssistantBackend(ctx, p.AccountID, false)
 	s.mu.Lock()
 	delete(s.quota, p.AccountID)
 	s.mu.Unlock()

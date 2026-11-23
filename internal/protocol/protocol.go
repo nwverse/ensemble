@@ -44,35 +44,36 @@ const EventUpdated = "agentsrc.updated"
 
 // club.* methods, full names.
 const (
-	MethodClubInfo                = "club.info"
-	MethodClubAccountsAdd         = "club.accounts.add"
-	MethodClubAccountsUpdate      = "club.accounts.update"
-	MethodClubAccountsRemove      = "club.accounts.remove"
-	MethodClubAccountsReplaceCred = "club.accounts.replace_credential"
-	MethodClubAccountsSync        = "club.accounts.sync"
-	MethodClubLive                = "club.live"
-	MethodClubSettingsGet         = "club.settings.get"
-	MethodClubSettingsSet         = "club.settings.set"
-	MethodClubSessionsStart       = "club.sessions.start"
-	MethodClubSessionsInterrupt   = "club.sessions.interrupt"
-	MethodClubImport              = "club.import"
-	MethodClubExport              = "club.export"
-	MethodClubLoginsGrokBotStart  = "club.logins.grok_bot.start"
-	MethodClubLoginsGrokBotPoll   = "club.logins.grok_bot.poll"
-	MethodClubLoginsGrokBotCancel = "club.logins.grok_bot.cancel"
-	MethodClubLoginsBrowserStart  = "club.logins.browser.start"
-	MethodClubLoginsBrowserFrame  = "club.logins.browser.frame"
-	MethodClubLoginsBrowserInput  = "club.logins.browser.input"
-	MethodClubLoginsBrowserFinish = "club.logins.browser.finish"
-	MethodClubLoginsBrowserCancel = "club.logins.browser.cancel"
-	MethodClubOutboxDismiss       = "club.outbox.dismiss"
+	MethodClubInfo                 = "club.info"
+	MethodClubAccountsAdd          = "club.accounts.add"
+	MethodClubAccountsUpdate       = "club.accounts.update"
+	MethodClubAccountsRemove       = "club.accounts.remove"
+	MethodClubAccountsReplaceCred  = "club.accounts.replace_credential"
+	MethodClubAccountsSync         = "club.accounts.sync"
+	MethodClubLive                 = "club.live"
+	MethodClubSettingsGet          = "club.settings.get"
+	MethodClubSettingsSet          = "club.settings.set"
+	MethodClubSessionsStart        = "club.sessions.start"
+	MethodClubSessionsInterrupt    = "club.sessions.interrupt"
+	MethodClubImport               = "club.import"
+	MethodClubExport               = "club.export"
+	MethodClubLoginsGrokBotStart   = "club.logins.grok_bot.start"
+	MethodClubLoginsGrokBotPoll    = "club.logins.grok_bot.poll"
+	MethodClubLoginsGrokBotCancel  = "club.logins.grok_bot.cancel"
+	MethodClubLoginsBrowserStart   = "club.logins.browser.start"
+	MethodClubLoginsBrowserFrame   = "club.logins.browser.frame"
+	MethodClubLoginsBrowserInput   = "club.logins.browser.input"
+	MethodClubLoginsBrowserFinish  = "club.logins.browser.finish"
+	MethodClubLoginsBrowserCancel  = "club.logins.browser.cancel"
+	MethodClubOutboxDismiss        = "club.outbox.dismiss"
+	MethodClubAssistantSessionsSet = "club.assistant_sessions.set"
 )
 
 // ClubMethods are the club.* methods this version answers.
 var ClubMethods = []string{MethodClubInfo, MethodClubAccountsAdd, MethodClubAccountsUpdate, MethodClubAccountsRemove,
 	MethodClubAccountsReplaceCred, MethodClubAccountsSync, MethodClubLive, MethodClubSettingsGet, MethodClubSettingsSet,
 	MethodClubImport, MethodClubLoginsGrokBotStart, MethodClubLoginsGrokBotPoll, MethodClubLoginsGrokBotCancel,
-	MethodClubOutboxDismiss}
+	MethodClubOutboxDismiss, MethodClubAssistantSessionsSet}
 
 // ClubStubMethods are the club.* methods the design names that this version answers with unsupported.
 var ClubStubMethods = []string{MethodClubSessionsStart, MethodClubSessionsInterrupt, MethodClubExport,
@@ -197,7 +198,9 @@ type Account struct {
 	LastError         string `json:"lastError,omitempty"`
 	SessionCount      int    `json:"sessionCount"`
 	AssistantControl  string `json:"assistantControl,omitempty"`
+	AssistantBackend  bool   `json:"assistantBackend,omitempty"`
 	ShowQuota         bool   `json:"showQuota,omitempty"`
+	QuotaDisplay      string `json:"quotaDisplay,omitempty"`
 	Quota             *Quota `json:"quota,omitempty"`
 }
 
@@ -397,20 +400,46 @@ const (
 	QuotaSourceProvider = "provider"
 	QuotaSourceGateway  = "gateway"
 	QuotaSourceResponse = "response"
+
+	QuotaToneOK        = "ok"
+	QuotaToneLow       = "low"
+	QuotaToneExhausted = "exhausted"
+	QuotaToneStale     = "stale"
+
+	QuotaDisplayAuto = "auto"
+	QuotaDisplayOff  = "off"
 )
 
-// Quota is how much of an account's allowance is left. Optional everywhere; nothing in this version fills it.
-type Quota struct {
-	State     string   `json:"state"`
-	Remaining *float64 `json:"remaining,omitempty"`
-	Kind      string   `json:"kind,omitempty"`
+// QuotaBucket is one selectable quota reading for avatar battery/ring indicators (e.g. tokens vs requests, or
+// 5-hour vs weekly windows).
+type QuotaBucket struct {
+	ID        string   `json:"id"`
+	Kind      string   `json:"kind"`
+	Window    string   `json:"window,omitempty"`
 	Label     string   `json:"label,omitempty"`
+	Remaining *float64 `json:"remaining,omitempty"`
+	Percent   *int     `json:"percent,omitempty"`
+	State     string   `json:"state"`
+	Tone      string   `json:"tone,omitempty"`
 	ResetsAt  int64    `json:"resetsAt,omitempty"`
-	CheckedAt int64    `json:"checkedAt,omitempty"`
-	Source    string   `json:"source,omitempty"`
-	Stale     bool     `json:"stale"`
-	Show      bool     `json:"show"`
-	Details   []Quota  `json:"details,omitempty"`
+}
+
+// Quota is how much of an account's allowance is left. Optional everywhere.
+type Quota struct {
+	State     string        `json:"state"`
+	Remaining *float64      `json:"remaining,omitempty"`
+	Percent   *int          `json:"percent,omitempty"`
+	Tone      string        `json:"tone,omitempty"`
+	Kind      string        `json:"kind,omitempty"`
+	Label     string        `json:"label,omitempty"`
+	Selected  string        `json:"selected,omitempty"`
+	ResetsAt  int64         `json:"resetsAt,omitempty"`
+	CheckedAt int64         `json:"checkedAt,omitempty"`
+	Source    string        `json:"source,omitempty"`
+	Stale     bool          `json:"stale"`
+	Show      bool          `json:"show"`
+	Details   []Quota       `json:"details,omitempty"`
+	Buckets   []QuotaBucket `json:"buckets,omitempty"`
 }
 
 // ClubInfo is club.info's answer.
@@ -445,7 +474,21 @@ type UpdateAccountParams struct {
 	Paused           *bool   `json:"paused,omitempty"`
 	DisplayName      *string `json:"display_name,omitempty"`
 	AssistantControl *string `json:"assistant_control,omitempty"`
+	AssistantBackend *bool   `json:"assistant_backend,omitempty"`
 	ShowQuota        *bool   `json:"show_quota,omitempty"`
+	QuotaDisplay     *string `json:"quota_display,omitempty"`
+}
+
+// StartSessionParams are club.sessions.start's: opens a new session with its first message.
+type StartSessionParams struct {
+	AccountID string `json:"account_id"`
+	Title     string `json:"title,omitempty"`
+	Text      string `json:"text"`
+}
+
+// AssistantSessionsParams are club.assistant_sessions.set's: active Persona main-assistant backing sessions.
+type AssistantSessionsParams struct {
+	SessionKeys []string `json:"session_keys"`
 }
 
 // ReplaceCredentialParams are club.accounts.replace_credential's.
@@ -491,9 +534,11 @@ type SessionParams struct {
 
 // LiveState is club.live's answer (the gateway's AgentLiveState); Supported is false when the provider cannot say.
 type LiveState struct {
-	Supported bool `json:"supported"`
-	Running   bool `json:"running"`
-	Composing bool `json:"composing"`
+	Supported      bool   `json:"supported"`
+	Running        bool   `json:"running"`
+	Composing      bool   `json:"composing"`
+	WaitingForUser bool   `json:"waitingForUser,omitempty"`
+	LastTurnError  string `json:"lastTurnError,omitempty"`
 }
 
 // BrowserIdentity is how a browser presents itself to sign-in pages (the gateway's AgentBrowserIdentity). Club

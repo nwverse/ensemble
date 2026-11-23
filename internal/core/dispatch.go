@@ -119,9 +119,14 @@ func (s *Space) callClub(ctx context.Context, method string, params json.RawMess
 		return call(params, func(p protocol.ImportParams) (any, error) {
 			return s.Import(ctx, p.Path, ImportOptions{OnlyProviders: p.OnlyProviders, DryRun: p.DryRun})
 		})
-	case protocol.MethodClubSessionsStart, protocol.MethodClubSessionsInterrupt:
-		return nil, protocol.Unsupported(method + ": no provider in this build can start or interrupt a session").
-			Because(protocol.ReasonProviderUnavailable)
+	case protocol.MethodClubSessionsStart:
+		return call(params, func(p protocol.StartSessionParams) (any, error) { return s.StartSession(ctx, p) })
+	case protocol.MethodClubSessionsInterrupt:
+		return call(params, func(p protocol.SessionParams) (any, error) { return protocol.Empty{}, s.InterruptSession(ctx, p) })
+	case protocol.MethodClubAssistantSessionsSet:
+		return call(params, func(p protocol.AssistantSessionsParams) (any, error) {
+			return protocol.Empty{}, s.SetAssistantSessionKeys(ctx, p.SessionKeys)
+		})
 	}
 	return nil, protocol.Unsupported(method + " is not implemented yet")
 }

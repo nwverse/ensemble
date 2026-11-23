@@ -86,6 +86,9 @@ func (m *Memory) UpdateAccount(_ context.Context, id string, p AccountPatch, now
 	if p.ShowQuota != nil {
 		a.ShowQuota = *p.ShowQuota
 	}
+	if p.QuotaDisplay != nil {
+		a.QuotaDisplay = *p.QuotaDisplay
+	}
 	a.UpdatedAt = now
 	m.accounts[id] = a
 	return nil

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf16"
 
@@ -16,11 +17,13 @@ import (
 )
 
 const (
-	grokBotLoginTTLMs    = 10 * 60_000
-	grokBotLoginsWaiting = 2
-	liveStateTTLMs       = 3_000
-	grokBot              = "grok_bot"
-	settingIdentity      = "browserIdentity"
+	grokBotLoginTTLMs        = 10 * 60_000
+	grokBotLoginsWaiting     = 2
+	liveStateTTLMs           = 3_000
+	grokBot                  = "grok_bot"
+	settingIdentity          = "browserIdentity"
+	settingAssistantBackends = "assistantBackendAccounts"
+	settingAssistantSessions = "assistantActiveSessions"
 )
 
 // background runs f after the call that started it, as the gateway's "void this.syncAccount(...)".
@@ -50,6 +53,20 @@ func (s *Space) UpdateAccount(ctx context.Context, p protocol.UpdateAccountParam
 		patch.AssistantControl = &level
 	}
 	patch.ShowQuota = p.ShowQuota
+	if p.QuotaDisplay != nil {
+		d := strings.TrimSpace(*p.QuotaDisplay)
+		if len(d) > 64 {
+			return protocol.Account{}, badInput("quota_display must be at most 64 characters")
+		}
+		patch.QuotaDisplay = &d
+		if d == protocol.QuotaDisplayOff && p.ShowQuota == nil {
+			off := false
+			patch.ShowQuota = &off
+		} else if d != "" && d != protocol.QuotaDisplayOff && p.ShowQuota == nil {
+			on := true
+			patch.ShowQuota = &on
+		}
+	}
 	if p.Paused != nil {
 		st, empty := protocol.AccountActive, ""
 		if *p.Paused {
@@ -59,6 +76,11 @@ func (s *Space) UpdateAccount(ctx context.Context, p protocol.UpdateAccountParam
 	}
 	if err := s.store.UpdateAccount(ctx, a.AccountID, patch, s.now()); err != nil {
 		return protocol.Account{}, err
+	}
+	if p.AssistantBackend != nil {
+		if err := s.setAssistantBackend(ctx, a.AccountID, *p.AssistantBackend); err != nil {
+			return protocol.Account{}, err
+		}
 	}
 	if p.Paused != nil && !*p.Paused {
 		s.background(func(ctx context.Context) { s.sync(ctx, a.AccountID, "") })
@@ -122,8 +144,9 @@ func (s *Space) Live(ctx context.Context, p protocol.SessionParams) (protocol.Li
 		return protocol.LiveState{}, err
 	}
 	adapter, _ := s.club.opts.Registry.Get(sess.Provider)
-	ls, ok := adapter.(provider.LiveStater)
-	if !ok {
+	ts, hasTS := adapter.(provider.TurnStater)
+	ls, hasLS := adapter.(provider.LiveStater)
+	if !hasTS && !hasLS {
 		return protocol.LiveState{}, nil
 	}
 	now := s.now()
@@ -141,7 +164,7 @@ func (s *Space) Live(ctx context.Context, p protocol.SessionParams) (protocol.Li
 	e := &liveEntry{at: now, done: make(chan struct{})}
 	s.live[sess.SessionKey] = e
 	s.mu.Unlock()
-	e.state, e.err = s.lookupLive(ctx, sess, ls)
+	e.state, e.err = s.lookupLive(ctx, sess, ts, ls)
 	if e.err != nil {
 		s.mu.Lock()
 		delete(s.live, sess.SessionKey)
@@ -151,7 +174,7 @@ func (s *Space) Live(ctx context.Context, p protocol.SessionParams) (protocol.Li
 	return e.state, e.err
 }
 
-func (s *Space) lookupLive(ctx context.Context, sess store.Session, ls provider.LiveStater) (protocol.LiveState, error) {
+func (s *Space) lookupLive(ctx context.Context, sess store.Session, ts provider.TurnStater, ls provider.LiveStater) (protocol.LiveState, error) {
 	a, err := s.requireAccount(ctx, sess.AccountID)
 	if err != nil {
 		return protocol.LiveState{}, err
@@ -163,7 +186,22 @@ func (s *Space) lookupLive(ctx context.Context, sess store.Session, ls provider.
 	if a.Status == protocol.AccountPaused || !found {
 		return protocol.LiveState{}, nil
 	}
-	st, err := ls.LiveState(ctx, cred, provider.SessionRef{ExternalID: sess.ExternalID, Ref: sess.Ref})
+	ref := provider.SessionRef{ExternalID: sess.ExternalID, Ref: sess.Ref}
+	if ts != nil {
+		st, err := ts.TurnState(ctx, cred, ref)
+		s.observe(sess.AccountID, err)
+		if err != nil {
+			return protocol.LiveState{}, protocol.Failure(provider.CodeOf(err), "the provider did not answer: "+provider.CodeOf(err))
+		}
+		return protocol.LiveState{
+			Supported:      true,
+			Running:        st.Running,
+			Composing:      st.Composing,
+			WaitingForUser: st.WaitingForUser,
+			LastTurnError:  st.LastTurnError,
+		}, nil
+	}
+	st, err := ls.LiveState(ctx, cred, ref)
 	s.observe(sess.AccountID, err)
 	if err != nil {
 		return protocol.LiveState{}, protocol.Failure(provider.CodeOf(err), "the provider did not answer: "+provider.CodeOf(err))
@@ -354,4 +392,249 @@ func (s *Space) putIdentity(ctx context.Context, in protocol.BrowserIdentity) er
 	}
 	b, _ := json.Marshal(clean)
 	return s.store.PutSetting(ctx, settingIdentity, string(b))
+}
+
+func (s *Space) assistantBackends(ctx context.Context) map[string]bool {
+	raw, ok, err := s.store.Setting(ctx, settingAssistantBackends)
+	if err != nil || !ok {
+		return map[string]bool{}
+	}
+	var m map[string]bool
+	if json.Unmarshal([]byte(raw), &m) != nil || m == nil {
+		return map[string]bool{}
+	}
+	return m
+}
+
+func (s *Space) setAssistantBackend(ctx context.Context, accountID string, enabled bool) error {
+	m := s.assistantBackends(ctx)
+	if enabled {
+		m[accountID] = true
+	} else {
+		delete(m, accountID)
+	}
+	b, _ := json.Marshal(m)
+	return s.store.PutSetting(ctx, settingAssistantBackends, string(b))
+}
+
+// AssistantSessionKeys returns the set of club session keys currently backing a Persona main-assistant session so
+// extension tools do not expose them for self-messaging.
+func (s *Space) AssistantSessionKeys(ctx context.Context) (map[string]bool, error) {
+	raw, ok, err := s.store.Setting(ctx, settingAssistantSessions)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	if !ok {
+		return out, nil
+	}
+	var keys []string
+	if json.Unmarshal([]byte(raw), &keys) == nil {
+		for _, k := range keys {
+			if k = strings.TrimSpace(k); k != "" {
+				out[k] = true
+			}
+		}
+	}
+	return out, nil
+}
+
+// SetAssistantSessionKeys persists the normalized set of active Persona main-assistant backing session keys.
+func (s *Space) SetAssistantSessionKeys(ctx context.Context, keys []string) error {
+	seen := map[string]bool{}
+	clean := make([]string, 0, len(keys))
+	for _, k := range keys {
+		k = strings.TrimSpace(k)
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		clean = append(clean, k)
+	}
+	slices.Sort(clean)
+	b, _ := json.Marshal(clean)
+	if err := s.store.PutSetting(ctx, settingAssistantSessions, string(b)); err != nil {
+		return err
+	}
+	s.notify(nil)
+	return nil
+}
+
+func callWithRefresh[T any](ctx context.Context, s *Space, accountID string, adapter provider.Adapter, cred string, fn func(string) (T, error)) (T, error) {
+	res, err := fn(cred)
+	if provider.CodeOf(err) == provider.CodeAuthFailed {
+		if fresh := s.refresh(ctx, accountID, adapter, cred); fresh != "" {
+			res, err = fn(fresh)
+		}
+	}
+	s.observe(accountID, err)
+	if err != nil && provider.CodeOf(err) == provider.CodeAuthFailed {
+		st := protocol.AccountError
+		code := provider.CodeAuthFailed
+		_ = s.store.UpdateAccount(ctx, accountID, store.AccountPatch{Status: &st, LastError: &code}, s.now())
+	}
+	return res, err
+}
+
+// StartSession opens a new session with its first message on a provider implementing provider.SessionCreator.
+func (s *Space) StartSession(ctx context.Context, p protocol.StartSessionParams) (protocol.Session, error) {
+	text := strings.TrimSpace(p.Text)
+	title := strings.TrimSpace(p.Title)
+	switch {
+	case p.AccountID == "":
+		return protocol.Session{}, badInput("account_id is required")
+	case text == "":
+		return protocol.Session{}, badInput("text is required")
+	case len16(text) > protocol.MaxText:
+		return protocol.Session{}, badInput("text is longer than 20000 characters")
+	}
+	acct, err := s.requireAccount(ctx, p.AccountID)
+	if err != nil {
+		return protocol.Session{}, err
+	}
+	if acct.Status == protocol.AccountPaused {
+		return protocol.Session{}, protocol.Conflict("the account is paused").Because(protocol.ReasonAccountPaused)
+	}
+	adapter, err := s.adapter(acct.Provider)
+	if err != nil {
+		return protocol.Session{}, err
+	}
+	sc, ok := adapter.(provider.SessionCreator)
+	if !ok {
+		return protocol.Session{}, protocol.Unsupported("club.sessions.start: provider does not support starting sessions").
+			Because(protocol.ReasonProviderUnavailable)
+	}
+	cred, found, err := s.vault.Get(ctx, acct.AccountID)
+	if err != nil {
+		return protocol.Session{}, err
+	}
+	if !found {
+		return protocol.Session{}, protocol.Failure("NOT_PAIRED", "account has no credential")
+	}
+	type createOut struct {
+		sess provider.RemoteSession
+		res  provider.SendResult
+	}
+	out, err := callWithRefresh(ctx, s, acct.AccountID, adapter, cred, func(c string) (createOut, error) {
+		rs, sr, e := sc.CreateSession(ctx, c, title, text)
+		return createOut{rs, sr}, e
+	})
+	if err != nil {
+		return protocol.Session{}, protocol.Failure(provider.CodeOf(err), "start session failed: "+provider.CodeOf(err))
+	}
+	s.noteQuota(acct.AccountID, out.res.Quota)
+	rows := sessionRows(acct, []provider.RemoteSession{out.sess})
+	if _, err := s.store.UpsertSessions(ctx, rows, s.now()); err != nil {
+		return protocol.Session{}, err
+	}
+	sessKey := rows[0].SessionKey
+	if len(out.res.Messages) > 0 {
+		if _, err := s.store.UpsertMessages(ctx, sessKey, storeMessages(sessKey, out.res.Messages, out.sess.LastActivityMs), s.now()); err != nil {
+			return protocol.Session{}, err
+		}
+	}
+	sess, ok, err := s.store.Session(ctx, sessKey)
+	if err != nil {
+		return protocol.Session{}, err
+	}
+	if !ok {
+		return protocol.Session{}, noSession()
+	}
+	if !wantsHistory(adapter) {
+		s.followUp(sess)
+		s.watchReply(sess)
+	}
+	s.notify(nil)
+	v := sessionView(sess)
+	v.Quota = s.quotaView(acct, s.now())
+	return v, nil
+}
+
+// InterruptSession stops the active turn of a session on a provider implementing provider.Interrupter.
+func (s *Space) InterruptSession(ctx context.Context, p protocol.SessionParams) error {
+	if strings.TrimSpace(p.SessionKey) == "" {
+		return protocol.Unsupported("club.sessions.interrupt: no provider in this build can interrupt a session").
+			Because(protocol.ReasonProviderUnavailable)
+	}
+	sess, err := s.requireSession(ctx, p.SessionKey)
+	if err != nil {
+		return err
+	}
+	adapter, err := s.adapter(sess.Provider)
+	if err != nil {
+		return err
+	}
+	intr, ok := adapter.(provider.Interrupter)
+	if !ok {
+		return protocol.Unsupported("club.sessions.interrupt: provider does not support interrupting sessions").
+			Because(protocol.ReasonProviderUnavailable)
+	}
+	cred, found, err := s.vault.Get(ctx, sess.AccountID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return protocol.Failure("NOT_PAIRED", "account has no credential")
+	}
+	ref := provider.SessionRef{ExternalID: sess.ExternalID, Ref: sess.Ref}
+	_, err = callWithRefresh(ctx, s, sess.AccountID, adapter, cred, func(c string) (struct{}, error) {
+		return struct{}{}, intr.Interrupt(ctx, c, ref)
+	})
+	if err != nil {
+		return protocol.Failure(provider.CodeOf(err), "interrupt failed: "+provider.CodeOf(err))
+	}
+	s.mu.Lock()
+	delete(s.live, sess.SessionKey)
+	s.mu.Unlock()
+	s.notify([]string{sess.SessionKey})
+	return nil
+}
+
+// SupportsTools reports whether the account's provider implements native provider.ToolCaller.
+func (s *Space) SupportsTools(ctx context.Context, accountID string) bool {
+	acct, err := s.requireAccount(ctx, accountID)
+	if err != nil {
+		return false
+	}
+	adapter, err := s.adapter(acct.Provider)
+	if err != nil {
+		return false
+	}
+	_, ok := adapter.(provider.ToolCaller)
+	return ok
+}
+
+// CallTools executes one native function-calling step against a ToolCaller provider (such as Groq). Returns
+// supported=false when the account's provider does not implement provider.ToolCaller.
+func (s *Space) CallTools(ctx context.Context, accountID string, turns []provider.ToolTurn, tools []provider.ToolDef) (provider.ToolStepResult, bool, error) {
+	acct, err := s.requireAccount(ctx, accountID)
+	if err != nil {
+		return provider.ToolStepResult{}, true, err
+	}
+	if acct.Status == protocol.AccountPaused {
+		return provider.ToolStepResult{}, true, protocol.Conflict("the account is paused").Because(protocol.ReasonAccountPaused)
+	}
+	adapter, err := s.adapter(acct.Provider)
+	if err != nil {
+		return provider.ToolStepResult{}, false, err
+	}
+	tc, ok := adapter.(provider.ToolCaller)
+	if !ok {
+		return provider.ToolStepResult{}, false, nil
+	}
+	cred, found, err := s.vault.Get(ctx, acct.AccountID)
+	if err != nil {
+		return provider.ToolStepResult{}, true, err
+	}
+	if !found {
+		return provider.ToolStepResult{}, true, protocol.Failure("NOT_PAIRED", "account has no credential")
+	}
+	res, err := callWithRefresh(ctx, s, acct.AccountID, adapter, cred, func(c string) (provider.ToolStepResult, error) {
+		return tc.CallTools(ctx, c, turns, tools)
+	})
+	if err != nil {
+		return provider.ToolStepResult{}, true, err
+	}
+	s.noteQuota(acct.AccountID, res.Quota)
+	return res, true, nil
 }
