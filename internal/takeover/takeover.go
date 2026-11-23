@@ -135,24 +135,26 @@ func Step(phase, node string) (string, error) {
 	}
 }
 
-// Machine is one entry of a manager's machine list, as Persona keeps it.
+// Machine is the minimal view of a manager's machine entry used for lookup and for appending a new ssh entry.
+// Existing entries stay as json.RawMessage so every Persona MachineConfig field (trust, address, launchers, etc.)
+// is preserved untouched when Apply appends a new machine.
 type Machine struct {
-	Name        string `json:"name"`
-	Kind        string `json:"kind,omitempty"`
-	SSHHost     string `json:"ssh_host,omitempty"`
-	RemoteBin   string `json:"remote_bin,omitempty"`
-	TailcatAddr string `json:"tailcat_addr,omitempty"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Kind      string `json:"kind,omitempty"`
+	SSHHost   string `json:"ssh_host,omitempty"`
+	RemoteBin string `json:"remote_bin,omitempty"`
 }
 
-// managerFile is the part of manager.json this package reads and writes: the machine list, and nothing else, which
-// is copied through untouched.
+// managerFile is the part of manager.json this package reads and writes: the machine list (kept as raw JSON elements
+// so existing entries are never truncated), and every other top-level key copied through untouched.
 type managerFile struct {
-	Machines []Machine `json:"machines"`
+	Machines []json.RawMessage
 	rest     map[string]json.RawMessage
 }
 
-// Plan is the hub change waiting for the user. It describes the entry and never contains a secret: TailcatAddr is
-// left empty here on purpose, the hub fills the fallback from what it already has when it applies.
+// Plan is the hub change waiting for the user. It describes the ssh entry and never contains a secret or tailcat
+// address.
 type Plan struct {
 	ID            string
 	Node          string
@@ -164,7 +166,7 @@ type Plan struct {
 }
 
 // Prepare reads manager.json and describes the change for node without writing anything. An entry already present
-// for that name is reported as already linked and would not be overwritten.
+// for that name or id is reported as already linked and would not be overwritten.
 func Prepare(path, node, remoteBin string) (Plan, error) {
 	if !nodeName.MatchString(node) {
 		return Plan{}, fmt.Errorf("takeover: the node name is not a plain name")
@@ -173,19 +175,24 @@ func Prepare(path, node, remoteBin string) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	for _, e := range m.Machines {
-		if e.Name == node {
+	for _, raw := range m.Machines {
+		e, err := parseMachine(raw)
+		if err != nil {
+			return Plan{}, err
+		}
+		if e.Name == node || e.ID == node {
 			return Plan{Node: node, Kind: e.Kind, SSHHost: e.SSHHost, AlreadyLinked: true,
 				Summary: "already linked; nothing will be written"}, nil
 		}
 	}
 	return Plan{Node: node, Kind: "ssh", SSHHost: node, RemoteBin: remoteBin,
-		Summary: "add " + node + " over ssh, keeping its tailcat address as a fallback"}, nil
+		Summary: "add " + node + " over ssh (no tailcat fallback address)"}, nil
 }
 
 // Apply writes the planned entry into manager.json, after copying it aside. It refuses when the plan says the node
-// is already linked, and it never touches an entry that is already there: a second apply is a no-op that reports
-// the node as already linked. The caller restarts nothing; that is a separate decision.
+// is already linked, and it never touches an entry that is already there: existing entries are kept as raw JSON and
+// a second apply is a no-op that reports the node as already linked. The caller restarts nothing; that is a separate
+// decision.
 func Apply(path string, plan Plan, now time.Time) (backup string, err error) {
 	if plan.AlreadyLinked {
 		return "", fmt.Errorf("takeover: already linked; nothing to write")
@@ -197,8 +204,12 @@ func Apply(path string, plan Plan, now time.Time) (backup string, err error) {
 	if err != nil {
 		return "", err
 	}
-	for _, e := range m.Machines {
-		if e.Name == plan.Node {
+	for _, raw := range m.Machines {
+		e, err := parseMachine(raw)
+		if err != nil {
+			return "", err
+		}
+		if e.Name == plan.Node || e.ID == plan.Node {
 			return "", fmt.Errorf("takeover: %s is already in the machine list", plan.Node)
 		}
 	}
@@ -206,14 +217,33 @@ func Apply(path string, plan Plan, now time.Time) (backup string, err error) {
 	if err := copyFile(path, backup); err != nil {
 		return "", err
 	}
-	fallback := ""
-	// A tailcat address already recorded for this node, under any entry, is kept as the fallback. None is invented.
-	m.Machines = append(m.Machines, Machine{Name: plan.Node, Kind: plan.Kind, SSHHost: plan.SSHHost,
-		RemoteBin: plan.RemoteBin, TailcatAddr: fallback})
+	entry, err := json.Marshal(Machine{
+		ID:        plan.Node,
+		Name:      plan.Node,
+		Kind:      plan.Kind,
+		SSHHost:   plan.SSHHost,
+		RemoteBin: plan.RemoteBin,
+	})
+	if err != nil {
+		return backup, err
+	}
+	m.Machines = append(m.Machines, entry)
 	if err := writeManager(path, m); err != nil {
 		return backup, err
 	}
 	return backup, nil
+}
+
+func parseMachine(raw json.RawMessage) (Machine, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
+		return Machine{}, fmt.Errorf("takeover: the machine list is not valid")
+	}
+	var e Machine
+	if err := json.Unmarshal(raw, &e); err != nil {
+		return Machine{}, fmt.Errorf("takeover: the machine list is not valid")
+	}
+	return e, nil
 }
 
 func readManager(path string) (managerFile, error) {
@@ -222,13 +252,22 @@ func readManager(path string) (managerFile, error) {
 		return managerFile{}, fmt.Errorf("takeover: reading the machine list: %w", err)
 	}
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(b, &raw); err != nil {
+	if err := json.Unmarshal(b, &raw); err != nil || raw == nil {
 		return managerFile{}, fmt.Errorf("takeover: the machine list is not valid")
 	}
-	var machines []Machine
+	machines := []json.RawMessage{}
 	if v, ok := raw["machines"]; ok {
-		if err := json.Unmarshal(v, &machines); err != nil {
+		var list []json.RawMessage
+		if err := json.Unmarshal(v, &list); err != nil {
 			return managerFile{}, fmt.Errorf("takeover: the machine list is not valid")
+		}
+		for _, item := range list {
+			if _, err := parseMachine(item); err != nil {
+				return managerFile{}, err
+			}
+		}
+		if list != nil {
+			machines = list
 		}
 		delete(raw, "machines")
 	}
