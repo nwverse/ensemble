@@ -385,6 +385,7 @@ func (b *Bridge) handshakeAndPush(ctx context.Context, peer *Peer) error {
 			Interrupt:         true,
 			Close:             true,
 			Assistant:         true,
+			RemoteAgent:       true,
 			SupervisionPolicy: false,
 		},
 	}

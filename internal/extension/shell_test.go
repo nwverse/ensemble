@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +28,7 @@ import (
 	"github.com/nwverse/personal-agent-club/internal/protocol"
 	"github.com/nwverse/personal-agent-club/internal/provider"
 	"github.com/nwverse/personal-agent-club/internal/provider/echo"
+	pacruntime "github.com/nwverse/personal-agent-club/internal/runtime"
 	"github.com/nwverse/personal-agent-club/internal/store"
 )
 
@@ -609,5 +612,157 @@ func TestAssistantToolsExcludeActiveAssistantSessions(t *testing.T) {
 	}
 	if err := describe(toolSend, map[string]any{"session_key": main, "text": "loop"}); err == nil {
 		t.Fatal("club_agent_send should reject active assistant backing session")
+	}
+}
+
+func TestAccountMainAssistantToggle(t *testing.T) {
+	h, club := start(t)
+	act(t, h, pageState{Page: pagePair, Provider: echo.Name}, actPair, map[string]string{fieldCredential: demoCredential})
+	space, err := club.Space(context.Background(), core.DefaultSpace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := space.Status(context.Background())
+	if err != nil || len(status.Accounts) != 1 {
+		t.Fatalf("status=%+v err=%v", status, err)
+	}
+	id := status.Accounts[0].AccountID
+
+	v := render(t, h, pageState{Page: pageAccount, Account: id})
+	if !strings.Contains(text(v), "主助手") {
+		t.Fatalf("account page missing Main assistant section: %s", text(v))
+	}
+
+	act(t, h, pageState{Page: pageAccount, Account: id}, actAssistantBackend, map[string]string{fieldAssistantBackend: "on"})
+	status, _ = space.Status(context.Background())
+	if !status.Accounts[0].AssistantBackend {
+		t.Fatalf("expected AssistantBackend=true after enabling, got %+v", status.Accounts[0])
+	}
+	listV := render(t, h, pageState{})
+	if !strings.Contains(text(listV), "主助手") {
+		t.Fatalf("account list missing main assistant tag: %s", text(listV))
+	}
+
+	act(t, h, pageState{Page: pageAccount, Account: id}, actAssistantBackend, map[string]string{fieldAssistantBackend: "off"})
+	status, _ = space.Status(context.Background())
+	if status.Accounts[0].AssistantBackend {
+		t.Fatalf("expected AssistantBackend=false after disabling, got %+v", status.Accounts[0])
+	}
+}
+
+func TestEmbeddedAssistantRuntimeBridgeConnectsToPersonaSocket(t *testing.T) {
+	sockDir, err := os.MkdirTemp("/tmp", "pac-rt-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+
+	sock := filepath.Join(sockDir, "rt.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	type helloMsg struct {
+		Caps      pacruntime.RuntimeCaps `json:"caps"`
+		Launchers []pacruntime.Launcher  `json:"launchers"`
+	}
+	hellos := make(chan helloMsg, 4)
+	launcherUpdates := make(chan []pacruntime.Launcher, 8)
+	pctx, pcancel := context.WithCancel(context.Background())
+	var stopPeers sync.WaitGroup
+	t.Cleanup(stopPeers.Wait)
+	t.Cleanup(pcancel)
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			stopPeers.Add(1)
+			go func() {
+				defer stopPeers.Done()
+				defer conn.Close()
+				peer := pacruntime.NewPeer("fake-node", conn)
+				peer.OnRequest = func(_ context.Context, method string, params json.RawMessage) (any, error) {
+					if method == "runtime.hello" {
+						var msg helloMsg
+						_ = json.Unmarshal(params, &msg)
+						hellos <- msg
+						return map[string]any{"protocol": 1, "features": []string{"launchers", "remote_agent", "memory_tools"}}, nil
+					}
+					return map[string]any{"ok": true}, nil
+				}
+				peer.OnEvent = func(event string, params json.RawMessage) {
+					if event == "runtime.launchers" {
+						var p struct {
+							Launchers []pacruntime.Launcher `json:"launchers"`
+						}
+						_ = json.Unmarshal(params, &p)
+						launcherUpdates <- p.Launchers
+					}
+				}
+				_ = peer.Serve(pctx)
+			}()
+		}
+	}()
+
+	t.Setenv("PERSONA_RUNTIME_SOCKET", sock)
+	club := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
+	h := exttest.Start(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{"demo_echo":true,"assistant_runtime":true}`))
+
+	select {
+	case msg := <-hellos:
+		if !msg.Caps.Assistant || !msg.Caps.RemoteAgent || !msg.Caps.Start || !msg.Caps.Send {
+			t.Fatalf("unexpected runtime.hello caps: %+v", msg.Caps)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for embedded runtime.Bridge runtime.hello")
+	}
+
+	act(t, h, pageState{Page: pagePair, Provider: echo.Name}, actPair, map[string]string{fieldCredential: demoCredential})
+	space, _ := club.Space(context.Background(), core.DefaultSpace)
+	status, _ := space.Status(context.Background())
+	id := status.Accounts[0].AccountID
+	act(t, h, pageState{Page: pageAccount, Account: id}, actAssistantBackend, map[string]string{fieldAssistantBackend: "on"})
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ls := <-launcherUpdates:
+			if len(ls) > 0 {
+				goto checkDisabled
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for enabled Main assistant account to publish a launcher")
+		}
+	}
+
+checkDisabled:
+	offSock := filepath.Join(sockDir, "off.sock")
+	offLn, err := net.Listen("unix", offSock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = offLn.Close() })
+	var dialed atomic.Int32
+	go func() {
+		for {
+			c, err := offLn.Accept()
+			if err != nil {
+				return
+			}
+			dialed.Add(1)
+			_ = c.Close()
+		}
+	}()
+	t.Setenv("PERSONA_RUNTIME_SOCKET", offSock)
+	clubOff := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
+	_ = exttest.Start(t, pac.Manifest, exttest.Serve(t, Program(clubOff, pac.Version())), json.RawMessage(`{"demo_echo":true,"assistant_runtime":false}`))
+	time.Sleep(150 * time.Millisecond)
+	if dialed.Load() != 0 {
+		t.Fatalf("assistant_runtime=false unexpectedly dialed Persona runtime socket (%d times)", dialed.Load())
 	}
 }

@@ -37,27 +37,29 @@ const (
 
 // Actions of the accounts UI.
 const (
-	actSync         = "sync"
-	actPause        = "pause"
-	actResume       = "resume"
-	actRemove       = "remove"
-	actPurge        = "purge"
-	actControl      = "control"
-	actQuotaDisplay = "quota_display"
-	actPair         = "pair"
-	actGrokStart    = "grok_start"
-	actGrokCheck    = "grok_check"
-	actGrokStop     = "grok_cancel"
-	actTakeover     = "takeover"
-	actWake         = "wake"
+	actSync             = "sync"
+	actPause            = "pause"
+	actResume           = "resume"
+	actRemove           = "remove"
+	actPurge            = "purge"
+	actControl          = "control"
+	actAssistantBackend = "assistant_backend"
+	actQuotaDisplay     = "quota_display"
+	actPair             = "pair"
+	actGrokStart        = "grok_start"
+	actGrokCheck        = "grok_check"
+	actGrokStop         = "grok_cancel"
+	actTakeover         = "takeover"
+	actWake             = "wake"
 )
 
 // Field names on the pages.
 const (
-	fieldCredential   = "credential"
-	fieldName         = "display_name"
-	fieldControl      = "assistant_control"
-	fieldQuotaDisplay = "quota_display"
+	fieldCredential       = "credential"
+	fieldName             = "display_name"
+	fieldControl          = "assistant_control"
+	fieldAssistantBackend = "assistant_backend"
+	fieldQuotaDisplay     = "quota_display"
 )
 
 // pageState is the page's state as the apps send it back: which page, about what, and the last action's outcome.
@@ -141,6 +143,9 @@ func (a *accounts) listView(ctx context.Context, r *ext.UIRequest, l lang) *wire
 	for _, acct := range status.Accounts {
 		name := accountName(acct)
 		sub := providerName(l, acct.Provider) + " · " + l.t("上次同步 ", "synced ") + when(l, acct.LastSyncedAt, r.Location())
+		if acct.AssistantBackend {
+			sub += " · " + l.t("主助手", "main assistant")
+		}
 		if acct.LastError != "" {
 			sub += " · " + l.t("错误 ", "error ") + acct.LastError
 		}
@@ -245,9 +250,31 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 			v.RefreshAfter = 10
 		}
 	}
-	sections = append(sections, assistant, actions)
+	sections = append(sections, mainAssistantSection(l, acct), assistant, actions)
 	v.Sections = sections
 	return v
+}
+
+func mainAssistantSection(l lang, acct protocol.Account) wire.Section {
+	val := "off"
+	if acct.AssistantBackend {
+		val = "on"
+	}
+	return wire.Section{
+		Title: l.t("主助手", "Main assistant"),
+		Footer: l.t("开启后，这个账号会注册为 Persona 主助手/督办后端，可在对话里选择使用。",
+			"When enabled, this account registers as a Persona main assistant and supervisor backend."),
+		Items: []wire.Component{{
+			Type: "segmented",
+			Name: fieldAssistantBackend,
+			Choices: []wire.Choice{
+				{Value: "off", Title: l.t("关闭", "Off")},
+				{Value: "on", Title: l.t("开启", "On")},
+			},
+			Value:  val,
+			Action: &wire.Action{ID: actAssistantBackend},
+		}},
+	}
 }
 
 func quotaDisplaySection(l lang, acct protocol.Account) wire.Section {
@@ -429,6 +456,12 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 			return failed(protocol.Invalid(err.Error()), "")
 		}
 		if err := call(ctx, a.club, protocol.MethodClubAccountsUpdate, map[string]any{"account_id": st.Account, "assistant_control": level}, nil); err != nil {
+			return failed(err, "")
+		}
+		return done(l.t("已更新", "Updated"))
+	case actAssistantBackend:
+		on := strings.TrimSpace(r.Values[fieldAssistantBackend]) == "on"
+		if err := call(ctx, a.club, protocol.MethodClubAccountsUpdate, map[string]any{"account_id": st.Account, "assistant_backend": on}, nil); err != nil {
 			return failed(err, "")
 		}
 		return done(l.t("已更新", "Updated"))

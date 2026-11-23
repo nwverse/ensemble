@@ -6,10 +6,15 @@
 package extension
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"sync/atomic"
+	"testing"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 
@@ -18,6 +23,7 @@ import (
 	"github.com/nwverse/personal-agent-club/internal/protocol"
 	"github.com/nwverse/personal-agent-club/internal/provider/browser"
 	"github.com/nwverse/personal-agent-club/internal/provider/echo"
+	"github.com/nwverse/personal-agent-club/internal/runtime"
 )
 
 // ID is the extension's id; Contribution is its agent_sources contribution, the prefix of its session ids in
@@ -29,8 +35,24 @@ const (
 
 // Config is the extension's configuration (persona-extension.json "configuration").
 type Config struct {
-	DemoEcho         bool `json:"demo_echo"`
-	BrowserProviders bool `json:"browser_providers"`
+	DemoEcho         bool  `json:"demo_echo"`
+	BrowserProviders bool  `json:"browser_providers"`
+	AssistantRuntime *bool `json:"assistant_runtime"`
+}
+
+func (c Config) assistantRuntimeEnabled() bool {
+	return c.AssistantRuntime == nil || *c.AssistantRuntime
+}
+
+func resolveRuntimeSocket() string {
+	if sock := strings.TrimSpace(os.Getenv("PERSONA_RUNTIME_SOCKET")); sock != "" {
+		return sock
+	}
+	// Never dial the machine's live ~/.persona/runtime.sock from go test by default.
+	if testing.Testing() {
+		return ""
+	}
+	return runtime.DefaultPersonaSocketPath()
 }
 
 // Program is the extension program serving club. The club is closed when the program ends.
@@ -62,8 +84,30 @@ func Program(club *core.Club, version string) ext.Program {
 			if _, err := club.Space(ctx, core.DefaultSpace); err != nil {
 				return nil, err
 			}
+			var bridgeDone chan struct{}
+			if cfg.assistantRuntimeEnabled() {
+				if sock := resolveRuntimeSocket(); sock != "" {
+					dataDir := cmp.Or(init.Info().DataDir, ext.Env().Data)
+					statePath := ""
+					if dataDir != "" {
+						statePath = filepath.Join(dataDir, "runtime-state.json")
+					}
+					bridge := runtime.New(runtime.Options{
+						Client:     runtime.NewDirectClient(club, core.DefaultSpace),
+						SocketPath: sock,
+						StatePath:  statePath,
+						Version:    version,
+						ToolRelay:  true,
+					})
+					bridgeDone = make(chan struct{})
+					go func() {
+						defer close(bridgeDone)
+						_ = bridge.Run(ctx)
+					}()
+				}
+			}
 			sub := club.Subscribe(core.DefaultSpace)
-			go forward(ctx, sub, hub, club)
+			go forward(ctx, sub, hub, club, bridgeDone)
 			// The connector as the manifest has it: the hub wants the program to say it has it.
 			var m struct {
 				Contributes struct {
@@ -94,12 +138,15 @@ func Program(club *core.Club, version string) ext.Program {
 
 // forward sends the space's changes to the hub until the program ends, then closes the club. A change also redraws
 // the accounts page where it is on screen (the hub coalesces these).
-func forward(ctx context.Context, sub *core.Subscription, hub *ext.Hub, club *core.Club) {
+func forward(ctx context.Context, sub *core.Subscription, hub *ext.Hub, club *core.Club, bridgeDone <-chan struct{}) {
 	defer club.Close()
 	defer sub.Close()
 	for {
 		select {
 		case <-ctx.Done():
+			if bridgeDone != nil {
+				<-bridgeDone
+			}
 			return
 		case <-sub.Ready():
 			for _, e := range sub.Take() {
