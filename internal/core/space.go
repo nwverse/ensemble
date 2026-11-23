@@ -414,7 +414,7 @@ func (s *Space) attempt(ctx context.Context, row store.Outbox, sess store.Sessio
 		code := provider.CodeOf(err)
 		if code == provider.CodeAuthFailed {
 			st := protocol.AccountError
-			_ = s.store.UpdateAccount(ctx, sess.AccountID, store.AccountPatch{Status: &st, LastError: &code}, s.now())
+			_ = s.store.UpdateAccount(ctx, sess.AccountID, store.AccountPatch{Status: &st, PreservePaused: true, LastError: &code}, s.now())
 		}
 		return protocol.LocalFailed, code
 	}

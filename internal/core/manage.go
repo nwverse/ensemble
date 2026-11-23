@@ -471,7 +471,7 @@ func callWithRefresh[T any](ctx context.Context, s *Space, accountID string, ada
 	if err != nil && provider.CodeOf(err) == provider.CodeAuthFailed {
 		st := protocol.AccountError
 		code := provider.CodeAuthFailed
-		_ = s.store.UpdateAccount(ctx, accountID, store.AccountPatch{Status: &st, LastError: &code}, s.now())
+		_ = s.store.UpdateAccount(ctx, accountID, store.AccountPatch{Status: &st, PreservePaused: true, LastError: &code}, s.now())
 	}
 	return res, err
 }

@@ -178,7 +178,7 @@ func (s *Space) runSync(ctx context.Context, id, only string, refreshed bool) er
 			return nil
 		}
 		active, empty, now := protocol.AccountActive, "", s.now()
-		patch := store.AccountPatch{Status: &active, LastError: &empty}
+		patch := store.AccountPatch{Status: &active, PreservePaused: true, LastError: &empty}
 		if only == "" {
 			patch.LastSyncedAt = &now
 		}
@@ -211,6 +211,7 @@ func (s *Space) runSync(ctx context.Context, id, only string, refreshed bool) er
 		if auth {
 			st := protocol.AccountError
 			patch.Status = &st
+			patch.PreservePaused = true
 		}
 		if (auth || acct.Status == protocol.AccountError) && only == "" {
 			now := s.now()
