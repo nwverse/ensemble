@@ -766,3 +766,54 @@ checkDisabled:
 		t.Fatalf("assistant_runtime=false unexpectedly dialed Persona runtime socket (%d times)", dialed.Load())
 	}
 }
+
+// muse2api waits for its server's address in the settings; with it, the key is paired against that server.
+func TestMuse2APIPairsWithTheConfiguredServer(t *testing.T) {
+	const key = "fixture-muse2api-key-0001"
+	var paths []string
+	var mu sync.Mutex
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") != "Bearer "+key {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"detail":"API key 无效"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"muse-spark","object":"model"}]}`))
+	}))
+	t.Cleanup(up.Close)
+
+	// without an address: listed, and the badge says what it waits for
+	h, _ := start(t)
+	if v := render(t, h, pageState{}); !strings.Contains(text(v), "Muse (muse2api)") || !strings.Contains(text(v), "先在设置里填服务地址") {
+		t.Fatalf("list without an address: %s", text(v))
+	}
+
+	club := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
+	cfg, _ := json.Marshal(map[string]any{"muse2api_url": up.URL, "muse2api_model": "muse-spark"})
+	h = exttest.Start(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), cfg)
+	if v := render(t, h, pageState{}); strings.Contains(text(v), "先在设置里填服务地址") {
+		t.Fatalf("list with an address: %s", text(v))
+	}
+	st := pageState{Page: pagePair, Provider: "muse2api"}
+	if res := act(t, h, st, actPair, map[string]string{fieldCredential: "wrong-key"}); res.Pop {
+		t.Fatalf("a wrong key was paired: %+v", res)
+	}
+	res := act(t, h, st, actPair, map[string]string{fieldCredential: key})
+	if !res.Pop || !strings.Contains(res.Toast, "Muse (muse2api)") || strings.Contains(res.Toast, key) {
+		t.Fatalf("pair: %+v", res)
+	}
+	space, _ := club.Space(context.Background(), core.DefaultSpace)
+	status, _ := space.Status(context.Background())
+	if len(status.Accounts) != 1 || status.Accounts[0].Provider != "muse2api" {
+		t.Fatalf("accounts: %+v", status.Accounts)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(paths) == 0 || paths[0] != "/v1/models" {
+		t.Fatalf("requests: %v", paths)
+	}
+}

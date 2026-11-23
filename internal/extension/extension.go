@@ -9,6 +9,8 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,6 +25,8 @@ import (
 	"github.com/nwverse/personal-agent-club/internal/protocol"
 	"github.com/nwverse/personal-agent-club/internal/provider/browser"
 	"github.com/nwverse/personal-agent-club/internal/provider/echo"
+	"github.com/nwverse/personal-agent-club/internal/provider/muse2api"
+	"github.com/nwverse/personal-agent-club/internal/provider/web"
 	"github.com/nwverse/personal-agent-club/internal/runtime"
 )
 
@@ -38,6 +42,10 @@ type Config struct {
 	DemoEcho         bool  `json:"demo_echo"`
 	BrowserProviders bool  `json:"browser_providers"`
 	AssistantRuntime *bool `json:"assistant_runtime"`
+	// Muse2APIURL is the address of the owner's muse2api server; set, the muse2api provider is added. The manifest's
+	// "config:muse2api_url:http" lets the egress proxy through to that address only.
+	Muse2APIURL   string `json:"muse2api_url"`
+	Muse2APIModel string `json:"muse2api_model"`
 }
 
 func (c Config) assistantRuntimeEnabled() bool {
@@ -74,6 +82,20 @@ func Program(club *core.Club, version string) ext.Program {
 					if _, ok := club.Registry().Get(site.Provider); !ok {
 						club.Registry().Register(browser.New(site, driver))
 					}
+				}
+			}
+			if strings.TrimSpace(cfg.Muse2APIURL) != "" {
+				// Through the hub's egress proxy, like every provider (storage.go), but waiting as long for an answer's
+				// headers as for the answer: muse2api answers in one piece once muse.ai has finished. A bad address
+				// leaves muse2api out (listed as unavailable) rather than stopping the whole extension.
+				client := HTTPClient()
+				client.Transport.(*http.Transport).ResponseHeaderTimeout = muse2api.AnswerTimeout
+				m, err := muse2api.New(muse2api.Options{Client: web.UseClient(client), URL: cfg.Muse2APIURL,
+					Model: cfg.Muse2APIModel})
+				if err != nil {
+					slog.Warn("muse2api left out", "err", err)
+				} else {
+					club.Registry().Register(m)
 				}
 			}
 			if cfg.DemoEcho {

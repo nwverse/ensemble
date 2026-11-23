@@ -39,7 +39,8 @@ Usage:
 
 Run "personal-agent-club <command> -h" for a command's flags. Provider requests go through
 $PERSONAL_AGENT_CLUB_PROXY when it is set (socks5://, socks5h://, http:// or https://), else the usual
-HTTP_PROXY / HTTPS_PROXY / NO_PROXY; $PERSONAL_AGENT_CLUB_GROQ_MODEL picks the model Groq accounts ask.
+HTTP_PROXY / HTTPS_PROXY / NO_PROXY; $PERSONAL_AGENT_CLUB_GROQ_MODEL picks the model Groq accounts ask;
+$PERSONAL_AGENT_CLUB_MUSE2API_URL (and _MODEL) add muse2api, your own muse2api server.
 `
 
 func main() {

@@ -16,7 +16,8 @@ Both shells call the same core and answer the same protocol.
 
 **Usable with the API providers.** `serve` keeps each space in SQLite with its credentials encrypted on disk, and
 reaches three providers through their APIs: Cue (Manus API v2), Grok Bot (its desktop client's protocol) and Groq
-(OpenAI-compatible). An exported space of the Lark gateway's agent bridge can be imported with its ids, and the
+(OpenAI-compatible), and Muse through the owner's own [muse2api](https://github.com/czg86389-hub/muse2api) server
+(OpenAI-compatible) once its address is configured. An exported space of the Lark gateway's agent bridge can be imported with its ids, and the
 accounts can be listed read-only beside a running serve. The browser-based providers (Muse, Dots, Claude Duet) are not
 in this version. The provider adapters are built from documentation and recorded fixtures and still need calibrating
 against real traffic (`internal/provider/testdata`). The Persona extension serves the same core from its own data
@@ -125,37 +126,40 @@ while serve runs.
 | --- | --- |
 | `PERSONAL_AGENT_CLUB_PROXY` | every provider request goes through this proxy (`socks5://`, `socks5h://`, `http://` or `https://` with host and port), and fails rather than going direct when it is down; unset, `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` apply |
 | `PERSONAL_AGENT_CLUB_GROQ_MODEL` | the model Groq accounts ask (default `openai/gpt-oss-120b`); a pairing is refused when the key cannot use it |
+| `PERSONAL_AGENT_CLUB_MUSE2API_URL` | the address of your muse2api server (`http://<host>:18610`, with or without `/v1`); unset, muse2api is listed as unavailable; not an http(s) URL, serve refuses to start |
+| `PERSONAL_AGENT_CLUB_MUSE2API_MODEL` | the model muse2api accounts ask (default `muse-spark`; any of the server's aliases works too) |
 
 Provider requests never follow a redirect, so a credential header never goes to another host.
 
 ### As a Persona extension
 
 `persona-extension.json` is the manifest: extension id `personal-agent-club`, the agent source `pac` (providers Cue,
-Grok Bot and Groq), the Accounts page (`ui` `accounts`) and the connector `club` with the assistant's `club_agent_*`
-tools, `activation_events: on_startup`, and network access to the three providers' API hosts only. `make package`
+Grok Bot, Groq and muse2api), the Accounts page (`ui` `accounts`) and the connector `club` with the assistant's `club_agent_*`
+tools, `activation_events: on_startup`, and network access to the three providers' API hosts and the muse2api address the user writes
+(`config:muse2api_url:http`) only. `make package`
 builds `dist/personal-agent-club-<version>.tar.gz` (manifest and the four programs), `scripts/persona-test.sh` holds
 it to the hub's own checks, and [docs/persona-install.md](docs/persona-install.md) installs it on a hub. The
-configuration switch `demo_echo` adds the echo provider. The extension syncs every account every 60 s and keeps its
+configuration switch `demo_echo` adds the echo provider, and `muse2api_url` (with `muse2api_model`) adds muse2api. The extension syncs every account every 60 s and keeps its
 one space (`default`) in the data directory the hub gives it, laid out as serve's with the key in `club.key`, so
 `import` and `accounts` work on it too; its providers go out through the HTTP client that takes the hub's egress
 proxy. Without a data directory (run by hand) it keeps everything in memory.
 
 ## Providers
 
-| | Cue | Grok Bot | Groq |
-| --- | --- | --- | --- |
-| Name | `cue` | `grok_bot` | `groq` |
-| Connects with | API key (`x-manus-api-key`) | device sign-in (`club.logins.grok_bot.*`, approved in the user's browser) or a pasted access token | API key (`Authorization: Bearer`) |
-| History | from the provider: each agent's main task and its subtasks | from the provider: each bot's main session and side sessions | local only: Groq keeps no conversation; club stores it and sends the latest 20 turns (24k characters) with each message |
-| Send | yes, into a main task; subtasks are read-only | yes; the client id is the message id, so a repeat is a duplicate, not a second message | yes; the answer comes back in the same call |
-| Send confirmation (of an `unconfirmed` send) | no: it stays unconfirmed | yes: the send status by message id, asked at the follow-ups | no: it stays unconfirmed |
-| Live state (`club.live`) | no (`supported: false`) | yes: running and composing, per session | no (`supported: false`) |
-| Push | no: polling | after a send, the transcript watch (at most 90 s) reads the session as soon as it changes | not needed |
-| Interrupt | no | no | no |
-| Start a session | no | no | no |
-| Credential refresh | no | yes, for signed-in credentials (refresh token), once per refused token; a pasted token cannot be refreshed | no |
-| Quota | a 429 (with `Retry-After`) | a 429 (with `Retry-After`) | every answer's `x-ratelimit-*` headers (requests per day, tokens per minute; the model list's too), and a 429 |
-| Hosts | `api.manus.ai` | `api2.cursor.sh` (the sign-in page the user opens is on `cursor.com`) | `api.groq.com` |
+| | Cue | Grok Bot | Groq | muse2api |
+| --- | --- | --- | --- | --- |
+| Name | `cue` | `grok_bot` | `groq` | `muse2api` |
+| Connects with | API key (`x-manus-api-key`) | device sign-in (`club.logins.grok_bot.*`, approved in the user's browser) or a pasted access token | API key (`Authorization: Bearer`) | the server's API key (`MUSE2API_KEY`, `Authorization: Bearer`), checked against its model list; the server's address is configuration |
+| History | from the provider: each agent's main task and its subtasks | from the provider: each bot's main session and side sessions | local only: Groq keeps no conversation; club stores it and sends the latest 20 turns (24k characters) with each message | local only, as Groq |
+| Send | yes, into a main task; subtasks are read-only | yes; the client id is the message id, so a repeat is a duplicate, not a second message | yes; the answer comes back in the same call | yes; the answer comes back in the same call (up to 110 s: the server drives muse.ai's web chat) |
+| Send confirmation (of an `unconfirmed` send) | no: it stays unconfirmed | yes: the send status by message id, asked at the follow-ups | no: it stays unconfirmed | no: it stays unconfirmed |
+| Live state (`club.live`) | no (`supported: false`) | yes: running and composing, per session | no (`supported: false`) | no (`supported: false`) |
+| Push | no: polling | after a send, the transcript watch (at most 90 s) reads the session as soon as it changes | not needed | not needed |
+| Interrupt | no | no | no | no |
+| Start a session | no | no | no | no |
+| Credential refresh | no | yes, for signed-in credentials (refresh token), once per refused token; a pasted token cannot be refreshed | no | no |
+| Quota | a 429 (with `Retry-After`) | a 429 (with `Retry-After`) | every answer's `x-ratelimit-*` headers (requests per day, tokens per minute; the model list's too), and a 429 | a 429 (with `Retry-After`); the server spreads load over its own Muse accounts |
+| Hosts | `api.manus.ai` | `api2.cursor.sh` (the sign-in page the user opens is on `cursor.com`) | `api.groq.com` | the configured address only |
 
 `muse`, `dots` and `claude_duet` (browser-based) are not in this version: listed as unavailable, refused when paired
 (`unsupported`, `PROVIDER_UNAVAILABLE`), skipped by an import. `club.sessions.start` and `club.sessions.interrupt`
@@ -229,7 +233,7 @@ Rules the core keeps:
 | `cmd/personal-agent-club` | the program: extension mode, `serve`, `import`, `accounts`, `version`; the whole-program tests |
 | `scripts` | `package.sh` (the Persona package, `make package`) and `persona-test.sh` (the hub's own checks) |
 | `internal/protocol` | wire types and method names, pinned by golden JSON |
-| `internal/provider` | the provider adapter interface, optional capabilities, the registry; `cue/`, `grokbot/`, `groq/` the API providers, `echo/` the demo one, `web/` their shared HTTP client, `providertest/` a fake upstream |
+| `internal/provider` | the provider adapter interface, optional capabilities, the registry; `cue/`, `grokbot/`, `groq/`, `muse2api/` the API providers, `echo/` the demo one, `web/` their shared HTTP client, `providertest/` a fake upstream |
 | `internal/providers` | the registry both shells build: the API providers on one HTTP client and its proxy |
 | `internal/store` | the store interface, SQLite (with CJK search) and in-memory implementations, one test suite for both |
 | `internal/vault` | credentials: the encrypted file and an in-memory one |

@@ -22,7 +22,8 @@ func TestRegistryHasTheAPIProviders(t *testing.T) {
 			t.Fatalf("%+v", p)
 		}
 	}
-	want := map[string]bool{"cue": true, "grok_bot": true, "groq": true, "muse": false, "dots": false, "claude_duet": false}
+	want := map[string]bool{"cue": true, "grok_bot": true, "groq": true, "muse2api": false, "muse": false, "dots": false,
+		"claude_duet": false}
 	for name, ok := range want {
 		if available[name] != ok {
 			t.Errorf("%s available %v", name, available[name])
@@ -33,10 +34,33 @@ func TestRegistryHasTheAPIProviders(t *testing.T) {
 	}
 }
 
+// muse2api is in only when its server's address is configured, and a bad address is refused.
+func TestRegistryAddsMuse2APIWithItsAddress(t *testing.T) {
+	r, err := Registry(Config{Muse2APIURL: "http://192.0.2.7:18610", Muse2APIModel: "gpt-4o"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, ok := r.Get("muse2api")
+	if !ok || a.Connection() != protocol.ConnectionServer {
+		t.Fatalf("muse2api: %v", ok)
+	}
+	for _, p := range r.List() {
+		if p.Provider == "muse2api" && !p.Available {
+			t.Fatalf("%+v", p)
+		}
+	}
+	if _, err := Registry(Config{Muse2APIURL: "muse.example.com"}); err == nil {
+		t.Fatal("a muse2api address without a scheme was accepted")
+	}
+}
+
 func TestFromEnv(t *testing.T) {
 	t.Setenv(EnvProxy, " socks5://127.0.0.1:1080 ")
 	t.Setenv(EnvGroqModel, "llama-3.3-70b-versatile")
-	if c := FromEnv(); c.Proxy != "socks5://127.0.0.1:1080" || c.GroqModel != "llama-3.3-70b-versatile" {
+	t.Setenv(EnvMuse2APIURL, " http://192.0.2.7:18610 ")
+	t.Setenv(EnvMuse2APIModel, "muse-spark")
+	if c := FromEnv(); c.Proxy != "socks5://127.0.0.1:1080" || c.GroqModel != "llama-3.3-70b-versatile" ||
+		c.Muse2APIURL != "http://192.0.2.7:18610" || c.Muse2APIModel != "muse-spark" {
 		t.Fatalf("%+v", c)
 	}
 }
