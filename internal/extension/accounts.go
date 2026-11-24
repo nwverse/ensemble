@@ -16,6 +16,7 @@ import (
 	"github.com/nwverse/personal-agent-club/internal/protocol"
 	"github.com/nwverse/personal-agent-club/internal/provider/browser"
 	"github.com/nwverse/personal-agent-club/internal/provider/echo"
+	"github.com/nwverse/personal-agent-club/internal/provider/muse2api"
 )
 
 // AccountsUI is the id of the accounts page (contributes.ui): Settings › Extensions › Personal Agent Club › Accounts.
@@ -74,7 +75,8 @@ type pageState struct {
 	NoteTone string `json:"t,omitempty"`
 }
 
-// Providers paired by pasting a key on the accounts page. Grok Bot signs in through its own page instead.
+// Providers paired by pasting a key on the accounts page. Grok Bot signs in through its own page instead, and
+// muse2api (a key too) has its own row, since it needs its server's address first.
 var keyProviders = []string{"cue", "groq"}
 
 const grokBot = "grok_bot"
@@ -174,6 +176,13 @@ func (a *accounts) listView(ctx context.Context, r *ext.UIRequest, l lang) *wire
 	}
 	for _, p := range keyProviders {
 		pairRow(p, l.t("粘贴 API Key", "Paste an API key"), pageState{Page: pagePair, Provider: p})
+	}
+	pairRow(muse2api.Name, l.t("粘贴你的 muse2api 服务的 API Key（MUSE2API_KEY）", "Paste your muse2api server's API key (MUSE2API_KEY)"),
+		pageState{Page: pagePair, Provider: muse2api.Name})
+	if !available[muse2api.Name] {
+		// Not missing from the build: it waits for its server's address in the extension's settings.
+		add.Items[len(add.Items)-1].Badge = &wire.Badge{Text: l.t("先在设置里填服务地址", "Set its address in settings"),
+			Tone: wire.ToneCaution}
 	}
 	pairRow(grokBot, l.t("在浏览器里登录", "Sign in in the browser"), pageState{Page: pageGrok})
 	for _, s := range browserProviders {
@@ -552,6 +561,8 @@ func providerName(l lang, p string) string {
 		return "Grok Bot"
 	case "groq":
 		return "Groq"
+	case muse2api.Name:
+		return muse2api.DisplayName
 	case echo.Name:
 		return l.t("Echo（演示）", "Echo (demo)")
 	}

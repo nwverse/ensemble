@@ -63,7 +63,8 @@ question). It contributes:
 - the page **Settings › Extensions › Personal Agent Club › Accounts**;
 - the connector `club`, which carries the assistant's `club_agent_*` tools;
 
-and asks for network access to `api.manus.ai` (Cue), `api2.cursor.sh` (Grok Bot) and `api.groq.com` (Groq).
+and asks for network access to `api.manus.ai` (Cue), `api2.cursor.sh` (Grok Bot) and `api.groq.com` (Groq), and to the
+address you write in the setting `muse2api_url` (muse2api; nothing until you write one).
 
 **No hub restart is needed.** The hub starts the extension right after the install (it runs from startup on, as
 agent sources must) and the source appears on the Agents page within seconds. `personad extension list` should show
@@ -78,12 +79,23 @@ personad extension config personal-agent-club demo_echo=true
 
 Then pair an "Echo (demo)" account on the Accounts page with any text starting with `echo-`.
 
+To use Muse through your own [muse2api](https://github.com/czg86389-hub/muse2api) server, write its address (http or
+https; a server on the hub machine itself is `http://host.persona.internal:<port>`) and, if you like, the model:
+
+```sh
+personad extension config personal-agent-club muse2api_url=http://<host>:18610
+personad extension config personal-agent-club muse2api_model=muse-spark
+```
+
+Then pair "Muse (muse2api)" on the Accounts page with the server's API key (`MUSE2API_KEY`).
+
 ## Accounts page
 
 **Settings › Extensions › Personal Agent Club › Accounts** lists the paired accounts with their provider, status, last
 sync and last error, and pairs new ones:
 
-- **Cue** and **Groq**: paste an API key. The key field is a secret field: the apps never show it, the extension
+- **Cue**, **Groq** and **Muse (muse2api)**: paste an API key (for muse2api, your server's `MUSE2API_KEY`; the row
+  says *Set its address in settings* until `muse2api_url` is written). The key field is a secret field: the apps never show it, the extension
   cannot fill it in, and the extension never shows, returns or logs a saved key.
 - **Grok Bot**: start the sign-in, approve on the page that opens in your browser, and the page checks the result every
   30 seconds (or at once with *check now*).

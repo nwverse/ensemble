@@ -2,8 +2,8 @@
   "manifest_version": 1,
   "id": "personal-agent-club",
   "name": "Personal Agent Club",
-  "version": "0.3.0",
-  "description": "Personal agents (paired accounts at Cue, Grok Bot and Groq) as a source on the Agents page: their sessions, messages, sending and search. Accounts are paired on the extension's Accounts page; the assistant can drive the accounts you hand it.",
+  "version": "0.4.0",
+  "description": "Personal agents (paired accounts at Cue, Grok Bot, Groq and your own muse2api server) as a source on the Agents page: their sessions, messages, sending and search. Accounts are paired on the extension's Accounts page; the assistant can drive the accounts you hand it.",
   "publisher": "nwverse",
   "engines": {
     "extension_protocol": 1
@@ -27,7 +27,8 @@
         "providers": [
           "cue",
           "grok_bot",
-          "groq"
+          "groq",
+          "muse2api"
         ]
       }
     ],
@@ -68,6 +69,18 @@
         "description": "Enables Muse, Claude Duet, Gemini Tasks and Dots via a paired computer's browser (Persona browser.run, no exported cookies).",
         "default": false
       },
+      "muse2api_url": {
+        "type": "string",
+        "format": "uri",
+        "title": "muse2api server address",
+        "description": "Your own muse2api server (github.com/czg86389-hub/muse2api), e.g. http://<host>:18610. Set, Muse is offered on the Accounts page, paired with the server's API key (MUSE2API_KEY). The extension reaches this address and nothing else for it; a server on the hub machine itself is http://host.persona.internal:<port>."
+      },
+      "muse2api_model": {
+        "type": "string",
+        "title": "muse2api model",
+        "description": "The model muse2api accounts ask (muse-spark, or one of the server's aliases). muse2api sends every chat to Muse's one assistant whatever the model.",
+        "default": "muse-spark"
+      },
       "assistant_runtime": {
         "type": "boolean",
         "title": "Main assistant runtime bridge",
@@ -84,7 +97,8 @@
     "network": [
       "api.manus.ai",
       "api2.cursor.sh",
-      "api.groq.com"
+      "api.groq.com",
+      "config:muse2api_url:http"
     ]
   }
 }
