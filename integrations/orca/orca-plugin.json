@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "description": "Your personal agents (Muse, Gemini Tasks, Grok Bot, Claude Duet, Dots…) from Persona's Ensemble, in Orca's sidebar: read, reply and get a notification when one answers.",
   "author": { "name": "nwverse" },
-  "repository": "https://github.com/nwverse/personal-agent-club",
+  "repository": "https://github.com/nwverse/ensemble",
   "license": "MIT",
   "engines": { "orca": ">=1.4.248" },
   "execution": "trusted-worker",
