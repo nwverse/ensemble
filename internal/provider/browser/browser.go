@@ -97,7 +97,8 @@ type Site struct {
 	SendButtonSel  string // CSS selector for send button (Enter fallback when empty)
 	MessageLogSel  string // CSS selector for message container / rows
 	SignedOutHosts []string
-	// impl replaces the generic DOM scripts for a site that needs its own (Dots); nil for the generic ones.
+	// impl replaces the generic DOM scripts for a site that needs its own (dots.go, sites.go); nil for the generic
+	// ones.
 	impl siteImpl
 }
 
@@ -117,10 +118,11 @@ var (
 		AppURL:         "https://muse.ai/",
 		Slot:           "pac-muse",
 		SingleSession:  true,
-		ComposerSel:    `textarea[placeholder="消息"], textarea[name="message"], textarea, div[contenteditable="true"]`,
-		SendButtonSel:  `button[type="submit"], button[aria-label*="Send" i]`,
-		MessageLogSel:  `[role="log"], [data-message-author-role], [data-message-role]`,
+		ComposerSel:    museComposerSel,
+		SendButtonSel:  museSendSel,
+		MessageLogSel:  `[data-message-item][data-message-id]`,
 		SignedOutHosts: []string{"login", "auth"},
+		impl:           museSite{},
 	}
 	SiteClaudeDuet = Site{
 		Provider:       "claude_duet",
@@ -128,10 +130,11 @@ var (
 		AppURL:         "https://claude.ai/duet",
 		Slot:           "pac-duet",
 		SingleSession:  false,
-		ComposerSel:    `div[contenteditable="true"].ProseMirror, [data-testid="chat-input"], [role="textbox"]`,
-		SendButtonSel:  `button[aria-label="Send"], button[aria-label="Send message"], button[aria-label*="Send" i]`,
-		MessageLogSel:  `[role="feed"] article, [data-testid="user-message"], .font-claude-response`,
+		ComposerSel:    duetComposerSel,
+		SendButtonSel:  duetSendSel,
+		MessageLogSel:  `[role="feed"] [role="article"]`,
 		SignedOutHosts: []string{"login"},
+		impl:           duetSite{},
 	}
 	SiteGeminiTasks = Site{
 		Provider:       "gemini_tasks",
@@ -257,20 +260,24 @@ func (a *Adapter) Verify(ctx context.Context, credential string) (provider.Remot
 await page.goto(%q);
 await page.waitForLoadState("domcontentloaded").catch(() => {});
 await new Promise(r => setTimeout(r, 1500));
+const composer = await page.waitForSelector("loc=css:" + %q, { state: "visible", timeout: 10000 }).then(() => true).catch(() => false);
 const url = await page.url();
 const title = await page.title();
 const signedOut = /\/login\b|accounts\.google\.com/i.test(url) || %s.some(h => url.includes(h));
-return { url, title, signedOut };
-`, a.site.AppURL, jsonArray(a.site.SignedOutHosts))
+return { url, title, signedOut, composer };
+`, a.site.AppURL, a.site.ComposerSel, jsonArray(a.site.SignedOutHosts))
 	var r struct {
 		URL       string `json:"url"`
 		Title     string `json:"title"`
 		SignedOut bool   `json:"signedOut"`
+		Composer  *bool  `json:"composer"`
 	}
 	if err := a.run(ctx, credential, script, &r); err != nil {
 		return provider.RemoteAccount{}, err
 	}
-	if r.SignedOut {
+	// A site that does not redirect a signed-out visitor (muse.ai, gemini.google.com show a landing page) is told
+	// apart by its composer: only a signed-in page has one. An answer without the field is a signed-out one too.
+	if r.SignedOut || r.Composer == nil || !*r.Composer {
 		return provider.RemoteAccount{}, &provider.Error{Code: provider.CodeAuthFailed}
 	}
 	cred, _ := ParseCredential(credential)

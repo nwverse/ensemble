@@ -67,7 +67,7 @@ return __out;
 `, gotoURL, dotsPrelude, body, a)
 }
 
-// dotsError maps a script's error string to the provider's error.
+// dotsError maps a site script's error string to the provider's error (Dots and the sites in sites.go).
 func dotsError(msg string) error {
 	switch {
 	case msg == "":

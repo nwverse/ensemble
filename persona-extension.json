@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "personal-agent-club",
   "name": "Personal Agent Club",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Personal agents (paired accounts at Cue, Grok Bot, Groq and your own muse2api server) as a source on the Agents page: their sessions, messages, sending and search. Accounts are paired on the extension's Accounts page; the assistant can drive the accounts you hand it.",
   "publisher": "nwverse",
   "engines": {
