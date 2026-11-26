@@ -763,7 +763,7 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 	v.Title = accountTitle(l, acct)
 	control, _ := space.AssistantControl(ctx, acct.AccountID)
 
-	// What it is and how it is doing, with the fix when it needs one. The head carries the service's avatar
+	// What it is and how it is doing, with the fix when it needs one. The head carries the service's letter avatar
 	// (a header came with UI version 4; an older app gets the 服务 row it had).
 	info := wire.Section{Items: []wire.Component{
 		withAvatar(r, l, acct.Provider, wire.Component{Type: "row", Title: l.t("服务", "Service"), Value: providerName(l, acct.Provider)}),
