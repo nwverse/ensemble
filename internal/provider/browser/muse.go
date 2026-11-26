@@ -95,6 +95,11 @@ const __museOn = (thread) => {
 
 const museSignedInJS = `!!document.querySelector('[role="log"][data-hatch-chat-column]')`
 
+// museSignedOutJS is the error a page without the chat log answers (in page, with challengeJS): "human check" when
+// Cloudflare's "Verify you are human" stands in front of Muse, "auth" otherwise (a signed-out landing page). Both
+// reach the owner through the shared codes (dotsError), as Dots and Gemini do.
+const museSignedOutJS = `(__challenged() ? "human check" : "auth")`
+
 // museReadyJS tells the chat has drawn its rows (an empty chat never does: the wait then times out).
 const museReadyJS = `!!document.querySelector('[role="log"][data-hatch-chat-column] [data-message-item]')`
 
@@ -125,18 +130,26 @@ func (museSite) verify(ctx context.Context, a *Adapter, credential string) (prov
 	script := siteScript(a.site.AppURL, nil, fmt.Sprintf(`
 await page.waitForFunction(() => %s, undefined, { timeout: 15000 }).catch(() => {});
 const signedIn = await page.evaluate(() => %s);
+const challenged = signedIn ? false : await page.evaluate(() => {
+%s
+  return __challenged();
+});
 // The title becomes "Chat — <agent name>" once the chat is drawn.
 if (signedIn) await page.waitForFunction(() => document.title.includes("—"), undefined, { timeout: 3000 }).catch(() => {});
-return { signedIn, title: await page.title() };
-`, museReadyJS, museSignedInJS))
+return { signedIn, title: await page.title(), challenged };
+`, museReadyJS, museSignedInJS, challengeJS))
 	var r struct {
-		SignedIn bool   `json:"signedIn"`
-		Title    string `json:"title"`
+		SignedIn   bool   `json:"signedIn"`
+		Challenged bool   `json:"challenged"`
+		Title      string `json:"title"`
 	}
 	if err := a.run(ctx, credential, script, &r); err != nil {
 		return provider.RemoteAccount{}, err
 	}
 	if !r.SignedIn {
+		if r.Challenged {
+			return provider.RemoteAccount{}, dotsError("human check")
+		}
 		return provider.RemoteAccount{}, &provider.Error{Code: provider.CodeAuthFailed}
 	}
 	cred, _ := ParseCredential(credential)
@@ -156,7 +169,8 @@ await page.waitForFunction(() => %s && !!document.querySelector('[data-testid="h
 return await page.evaluate((ARGS) => {
 %s
 %s
-  if (!(%s)) return { error: "auth" };
+%s
+  if (!(%s)) return { error: %s };
   // An id that more than one row resolves to is not any one row's: every row with it is left out.
   const rows = [...document.querySelectorAll('[data-testid="hatch-thread-row"]')].map(row => ({ row, t: __museRowThread(row) }));
   const count = new Map();
@@ -178,7 +192,7 @@ return await page.evaluate((ARGS) => {
   }
   return { threads };
 }, ARGS);
-`, museSignedInJS, sitePrelude, museThreadJS, museSignedInJS))
+`, museSignedInJS, sitePrelude, challengeJS, museThreadJS, museSignedInJS, museSignedOutJS))
 	var r struct {
 		Error   string `json:"error"`
 		Threads []struct {
@@ -202,6 +216,15 @@ return await page.evaluate((ARGS) => {
 		CanSend:        true,
 		Ref:            map[string]string{"url": a.site.AppURL},
 	}}
+	// A side chat the panel gives no title is 侧聊 1, 侧聊 2, … counted from the bottom of the panel (the oldest
+	// listed first), so a new untitled chat, which Muse puts at the top, takes the next number and leaves the others'
+	// as they were. Only the title is numbered: the session stays keyed by its thread id.
+	untitled := 0
+	for _, t := range r.Threads {
+		if strings.TrimSpace(t.Title) == "" && museThreadIDRe.MatchString(strings.ToLower(strings.TrimSpace(t.ID))) {
+			untitled++
+		}
+	}
 	for _, t := range r.Threads {
 		id := strings.ToLower(strings.TrimSpace(t.ID))
 		if !museThreadIDRe.MatchString(id) {
@@ -209,7 +232,8 @@ return await page.evaluate((ARGS) => {
 		}
 		title := strings.TrimSpace(t.Title)
 		if title == "" {
-			title = a.site.Label + " · " + id[:8]
+			title = "侧聊 " + strconv.Itoa(untitled)
+			untitled--
 		}
 		out = append(out, provider.RemoteSession{
 			ExternalID:       id,
@@ -235,11 +259,12 @@ return await page.evaluate((ARGS) => {
 %s
 %s
 %s
-  if (!(%s)) return { error: "auth" };
+%s
+  if (!(%s)) return { error: %s };
   if (!__museOn(ARGS.thread)) return { error: "no thread" };
   return { messages: __fit(__museMessages(ARGS.limit), 40000) };
 }, ARGS);
-`, museWaitJS(15000), sitePrelude, museMessagesJS, museThreadJS, museSignedInJS))
+`, museWaitJS(15000), sitePrelude, challengeJS, museMessagesJS, museThreadJS, museSignedInJS, museSignedOutJS))
 	var r struct {
 		Error    string        `json:"error"`
 		Messages []siteMessage `json:"messages"`
@@ -266,7 +291,8 @@ const __read = () => page.evaluate((ARGS) => {
 %s
 %s
 %s
-  if (!(%s)) return { error: "auth" };
+%s
+  if (!(%s)) return { error: %s };
   if (!__museOn(ARGS.thread)) return { error: "no thread" };
   return { messages: __museMessages(30) };
 }, ARGS);
@@ -331,15 +357,15 @@ await sleep(1500);
 const after = await __read();
 const settled = after.error ? null : fresh(after.messages);
 return { sent: true, clicked, id: (settled || hit).id };
-`, sitePrelude, museMessagesJS, museThreadJS, museSignedInJS, museWaitJS(15000), museComposerSel, museSendSel, wait.Milliseconds())
+`, sitePrelude, challengeJS, museMessagesJS, museThreadJS, museSignedInJS, museSignedOutJS, museWaitJS(15000), museComposerSel, museSendSel, wait.Milliseconds())
 }
 
 // museUnsent is the refusal for a send stopped before the click: nothing was typed into a sent message, so it
-// failed (a clean resend is safe), never unconfirmed. A thread that is gone is NOT_FOUND; the rest are refusals
-// that a retry of the same send would not change.
+// failed (a clean resend is safe), never unconfirmed. A thread that is gone is NOT_FOUND, a signed-out or blocked
+// page is AUTH_FAILED or HUMAN_CHECK_REQUIRED; the rest are refusals that a retry of the same send would not change.
 func museUnsent(msg string) error {
 	switch msg {
-	case "auth", "no thread":
+	case "auth", "human check", "no thread":
 		return dotsError(msg)
 	default:
 		return &provider.Error{Code: provider.CodeRequestFailed}

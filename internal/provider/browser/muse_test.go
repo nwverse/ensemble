@@ -43,7 +43,7 @@ func TestMuseSite(t *testing.T) {
 		side.Ref["url"] != "https://muse.ai/thread/"+museSideID || !side.CanSend || side.LastActivityMs <= 0 {
 		t.Fatalf("side session = %+v", side)
 	}
-	if s := sessions[2]; s.ExternalID != "664f4567-e43b-497d-a2d4-aa827e02a801" || s.Title != "Muse · 664f4567" {
+	if s := sessions[2]; s.ExternalID != "664f4567-e43b-497d-a2d4-aa827e02a801" || s.Title != "侧聊 1" {
 		t.Fatalf("untitled side session = %+v", s)
 	}
 	if sc := d.gotReqs[1].Script; !strings.Contains(sc, "thread_id") || strings.Contains(sc, "page.click") {
@@ -213,6 +213,127 @@ func TestMuseActivityMs(t *testing.T) {
 	} {
 		if got := museActivityMs(label, now); got != want {
 			t.Errorf("museActivityMs(%q) = %v, want %v", label, time.UnixMilli(got).In(loc), time.UnixMilli(want).In(loc))
+		}
+	}
+}
+
+// A side chat the panel gives no title is numbered 侧聊 1, 侧聊 2, … from the bottom of the panel, never named by a
+// fragment of its id, and stays keyed by its thread id; a titled one keeps the panel's title.
+func TestMuseUntitledSideChats(t *testing.T) {
+	ids := []string{
+		"aaaaaaaa-0000-4000-8000-000000000001", // top of the panel: the most recent
+		"bbbbbbbb-0000-4000-8000-000000000002",
+		"cccccccc-0000-4000-8000-000000000003",
+		"dddddddd-0000-4000-8000-000000000004", // bottom: the oldest listed
+	}
+	list := func(threads []map[string]any) []provider.RemoteSession {
+		t.Helper()
+		d := siteDriver(t, map[string]any{"threads.push": map[string]any{"threads": threads}})
+		s, err := New(SiteMuse, d).ListSessions(context.Background(), EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	got := list([]map[string]any{
+		{"id": ids[0], "title": "", "when": "5m"},
+		{"id": ids[1], "title": "周末计划", "when": "周日"},
+		{"id": ids[2], "title": " ", "when": "11月8日"},
+		{"id": strings.ToUpper(ids[3]), "title": "", "when": "2025年9月29日"},
+	})
+	titles := map[string]string{}
+	for _, s := range got {
+		titles[s.ExternalID] = s.Title
+		if strings.Contains(s.Title, s.ExternalID[:min(8, len(s.ExternalID))]) && s.ExternalID != "main" {
+			t.Errorf("%s is titled with its id: %q", s.ExternalID, s.Title)
+		}
+	}
+	for id, title := range map[string]string{"main": "Muse", ids[0]: "侧聊 3", ids[1]: "周末计划", ids[2]: "侧聊 2", ids[3]: "侧聊 1"} {
+		if titles[id] != title {
+			t.Errorf("%s titled %q, want %q (all: %v)", id, titles[id], title, titles)
+		}
+	}
+	// A new untitled chat at the top takes the next number; the others keep theirs.
+	got = list([]map[string]any{
+		{"id": "eeeeeeee-0000-4000-8000-000000000005", "title": "", "when": "刚刚"},
+		{"id": ids[0], "title": "", "when": "5m"},
+		{"id": ids[1], "title": "周末计划", "when": "周日"},
+		{"id": ids[2], "title": "", "when": "11月8日"},
+		{"id": ids[3], "title": "", "when": "2025年9月29日"},
+	})
+	for _, s := range got {
+		titles[s.ExternalID] = s.Title
+	}
+	for id, title := range map[string]string{"eeeeeeee-0000-4000-8000-000000000005": "侧聊 4", ids[0]: "侧聊 3", ids[2]: "侧聊 2", ids[3]: "侧聊 1"} {
+		if titles[id] != title {
+			t.Errorf("after a new chat, %s titled %q, want %q", id, titles[id], title)
+		}
+	}
+}
+
+// Cloudflare's "Verify you are human" in front of muse.ai is "human check", a signed-out landing page "auth", and a
+// signed-in page with its chat log neither, as the page scripts see them.
+func TestMusePageTellsHumanCheckApart(t *testing.T) {
+	expr := `(` + museSignedInJS + `) ? "signed in" : ` + museSignedOutJS
+	for _, tc := range []struct {
+		name string
+		page map[string]any
+		want string
+	}{
+		{"interstitial form", map[string]any{"url": "https://muse.ai/", "selectors": []string{"#challenge-form"}}, `"human check"`},
+		{"turnstile frame", map[string]any{"url": "https://muse.ai/thread/" + museSideID, "selectors": []string{`iframe[src*="challenges.cloudflare.com"]`}}, `"human check"`},
+		{"challenge script alone", map[string]any{"url": "https://muse.ai/", "selectors": []string{`script[src*="/cdn-cgi/challenge-platform/"]`}}, `"auth"`},
+		{"signed-out landing", map[string]any{"url": "https://muse.ai/", "title": "Just a moment...", "text": "Verify you are human"}, `"auth"`},
+		{"signed in with a frame", map[string]any{"url": "https://muse.ai/", "selectors": []string{`[role="log"][data-hatch-chat-column]`, `iframe[src*="challenges.cloudflare.com"]`}}, `"signed in"`},
+	} {
+		if got := runPageJS(t, challengeJS, tc.page, expr); got != tc.want {
+			t.Errorf("%s: %s, want %s", tc.name, got, tc.want)
+		}
+	}
+	for name, script := range map[string]string{"list": "threads.push", "messages": "__museMessages(ARGS.limit), 40000", "send": "const before = await __read();"} {
+		d := siteDriver(t, map[string]any{"threads.push": map[string]any{"threads": []any{}}, "__museMessages(ARGS.limit), 40000": map[string]any{}, "const before = await __read();": map[string]any{"error": "unsent", "unsent": true}, "signedIn, title": map[string]any{"signedIn": true}})
+		a := New(SiteMuse, d)
+		cred := EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})
+		switch name {
+		case "list":
+			_, _ = a.ListSessions(context.Background(), cred)
+		case "messages":
+			_, _ = a.ListMessages(context.Background(), cred, provider.SessionRef{ExternalID: "main"}, provider.ListOptions{})
+		default:
+			_, _ = a.Send(context.Background(), cred, provider.SessionRef{ExternalID: "main"}, provider.Outgoing{Text: "hi"}, provider.SendContext{})
+		}
+		sc := d.gotReqs[0].Script
+		if !strings.Contains(sc, script) || !strings.Contains(sc, "const __challenged") || !strings.Contains(sc, "return { error: "+museSignedOutJS+" }") {
+			t.Errorf("the %s script does not tell a human check from signed out", name)
+		}
+	}
+}
+
+// Muse's "human check" reaches the owner as HUMAN_CHECK_REQUIRED (problems.go's wording), signed out as AUTH_FAILED,
+// at pairing, sync and send, through the same mapper as Dots and Gemini; a send it stopped sent nothing.
+func TestMuseHumanCheckIsItsOwnCode(t *testing.T) {
+	ctx := context.Background()
+	cred := EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})
+	for _, tc := range []struct{ msg, code string }{{"human check", provider.CodeHumanCheck}, {"auth", provider.CodeAuthFailed}} {
+		d := siteDriver(t, map[string]any{
+			"signedIn, title":                map[string]any{"signedIn": false, "challenged": tc.msg == "human check"},
+			"threads.push":                   map[string]any{"error": tc.msg},
+			"__museMessages(ARGS.limit), 4":  map[string]any{"error": tc.msg},
+			"const before = await __read();": map[string]any{"error": tc.msg, "unsent": true},
+		})
+		a := New(SiteMuse, d)
+		if _, err := a.Verify(ctx, cred); provider.CodeOf(err) != tc.code {
+			t.Errorf("verify %q: %v, want %s", tc.msg, err, tc.code)
+		}
+		if _, err := a.ListSessions(ctx, cred); provider.CodeOf(err) != tc.code {
+			t.Errorf("list %q: %v, want %s", tc.msg, err, tc.code)
+		}
+		if _, err := a.ListMessages(ctx, cred, provider.SessionRef{ExternalID: museSideID}, provider.ListOptions{}); provider.CodeOf(err) != tc.code {
+			t.Errorf("messages %q: %v, want %s", tc.msg, err, tc.code)
+		}
+		res, err := a.Send(ctx, cred, provider.SessionRef{ExternalID: museSideID}, provider.Outgoing{Text: "hi"}, provider.SendContext{})
+		if provider.CodeOf(err) != tc.code || !provider.IsRefusal(err) || res.Status != "" {
+			t.Errorf("send %q: %+v, %v, want a %s refusal", tc.msg, res, err, tc.code)
 		}
 	}
 }
