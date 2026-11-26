@@ -29,7 +29,7 @@ func TestMuseSite(t *testing.T) {
 	})
 	a := New(SiteMuse, d)
 	acct, err := a.Verify(ctx, cred)
-	if err != nil || acct.ExternalAccountID != "muse:mm-2" || acct.DisplayName != "Muse · Glint" {
+	if err != nil || acct.ExternalAccountID != "muse:mm-2" || acct.Alias != "Glint" {
 		t.Fatalf("Verify = %+v, err=%v", acct, err)
 	}
 	sessions, err := a.ListSessions(ctx, cred)

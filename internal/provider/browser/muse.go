@@ -153,12 +153,9 @@ return { signedIn, title: await page.title(), challenged };
 		return provider.RemoteAccount{}, &provider.Error{Code: provider.CodeAuthFailed}
 	}
 	cred, _ := ParseCredential(credential)
-	name := a.site.Label
-	// The signed-in title is "Chat — <agent name>".
-	if _, agent, ok := strings.Cut(r.Title, "—"); ok && strings.TrimSpace(agent) != "" {
-		name = a.site.Label + " · " + strings.TrimSpace(agent)
-	}
-	return provider.RemoteAccount{ExternalAccountID: a.site.Provider + ":" + cred.MachineID, DisplayName: name}, nil
+	// The signed-in title is "Chat — <agent name>": the agent is the account's alias.
+	_, agent, _ := strings.Cut(r.Title, "—")
+	return provider.RemoteAccount{ExternalAccountID: a.site.Provider + ":" + cred.MachineID, Alias: strings.TrimSpace(agent)}, nil
 }
 
 // listSessions is the main chat (ExternalID "main", as before side chats were listed, so its synced messages keep
