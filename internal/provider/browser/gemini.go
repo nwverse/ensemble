@@ -102,15 +102,11 @@ const __allTasks = async n => {
 `
 
 // geminiScript wraps body (an async function body of (ARGS) run inside the page) so its answer, or its failure, is
-// the script's value. The RPCs answer on any of Gemini's pages, so a page already on gemini.google.com is not moved:
-// a sync then never navigates away under a send waiting in the same tab for its task to show.
+// the script's value. The RPCs answer on any of Gemini's pages, so a loaded page already on gemini.google.com is not
+// moved (openJS): a sync then never navigates away under a send waiting in the same tab for its task to show.
 func geminiScript(gotoURL string, args any, body string) string {
 	a, _ := json.Marshal(args)
-	return fmt.Sprintf(`
-if (!String(await page.url()).startsWith("https://gemini.google.com/")) {
-  await page.goto(%q);
-  await page.waitForLoadState("domcontentloaded").catch(() => {});
-}
+	return openJS(gotoURL, geminiStay) + fmt.Sprintf(`
 const __out = await page.evaluate(async (ARGS) => {
 %s
   try {
@@ -120,8 +116,11 @@ const __out = await page.evaluate(async (ARGS) => {
   }
 }, %s);
 return __out;
-`, gotoURL, geminiPrelude, body, a)
+`, geminiPrelude, body, a)
 }
+
+// geminiStay is any gemini.google.com page (openJS).
+const geminiStay = `^https://gemini\.google\.com/`
 
 // geminiError maps a script's error string to the provider's error, as dotsError does.
 func geminiError(msg string) error {
@@ -411,7 +410,7 @@ if (signedIn === "human check") {
 		Clicked bool   `json:"clicked"`
 		ID      string `json:"id"`
 	}
-	if err := a.run(ctx, credential, script, &r); err != nil {
+	if err := a.runSend(ctx, credential, script, &r); err != nil {
 		var pe *provider.Error
 		if errors.As(err, &pe) && pe.Code == provider.CodeAuthFailed {
 			return provider.SendResult{}, err

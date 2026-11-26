@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -171,12 +172,16 @@ type Adapter struct {
 	site    Site
 	driver  Driver
 	timeout time.Duration
+	tabs    *tabs
 }
 
 // New creates a browser-backed provider.Adapter for site using driver.
 func New(site Site, driver Driver) *Adapter {
-	return &Adapter{site: site, driver: driver, timeout: 45 * time.Second}
+	return &Adapter{site: site, driver: driver, timeout: 45 * time.Second, tabs: newTabs(DefaultTabRecycle)}
 }
+
+// SetTabRecycle changes when the space's tab is closed and reopened (DefaultTabRecycle unless set).
+func (a *Adapter) SetTabRecycle(p TabRecycle) { a.tabs.policy = p }
 
 var _ provider.Adapter = (*Adapter)(nil)
 
@@ -185,7 +190,18 @@ func (a *Adapter) Connection() string { return protocol.ConnectionBrowser }
 func (a *Adapter) Site() Site         { return a.site }
 func (a *Adapter) Driver() Driver     { return a.driver }
 
+// run runs a read script: one that may stay on the page it finds (openJS) and may close the tab once it has its
+// answer (TabRecycle).
 func (a *Adapter) run(ctx context.Context, rawCred, script string, out any) error {
+	return a.exec(ctx, rawCred, script, out, true)
+}
+
+// runSend runs a send script: it never closes the tab, and no read closes the tab while it runs.
+func (a *Adapter) runSend(ctx context.Context, rawCred, script string, out any) error {
+	return a.exec(ctx, rawCred, script, out, false)
+}
+
+func (a *Adapter) exec(ctx context.Context, rawCred, script string, out any, read bool) error {
 	if a.driver == nil {
 		return &provider.Error{Code: provider.CodeUpstreamError}
 	}
@@ -193,6 +209,22 @@ func (a *Adapter) run(ctx context.Context, rawCred, script string, out any) erro
 	if err != nil {
 		return err
 	}
+	lease, err := a.tabs.begin(ctx, cred.MachineID+"\x00"+cred.Backend, read)
+	if err != nil {
+		return &provider.Error{Code: provider.CodeNetworkError, Retryable: true}
+	}
+	if lease.reload {
+		script = reloadScript(script)
+	}
+	if lease.recycle {
+		script = recycleScript(script)
+	}
+	var answer struct {
+		Error       string `json:"error"`
+		TabRecycled bool   `json:"tabRecycled"`
+	}
+	failed := true
+	defer func() { a.tabs.end(lease, failed || answer.Error != "", answer.TabRecycled) }()
 	res, err := a.driver.Run(ctx, RunRequest{
 		MachineID: cred.MachineID,
 		Backend:   cred.Backend,
@@ -213,6 +245,8 @@ func (a *Adapter) run(ctx context.Context, rawCred, script string, out any) erro
 	if err := json.Unmarshal([]byte(payload), out); err != nil {
 		return &provider.Error{Code: provider.CodeUpstreamError, Retryable: true}
 	}
+	_ = json.Unmarshal([]byte(payload), &answer)
+	failed = false
 	return nil
 }
 
@@ -233,6 +267,11 @@ func scriptValue(output string) string {
 		}
 	}
 	return extractJSONLine(output)
+}
+
+// exactURL is the openJS stay of a page read from its DOM: that very address, nothing else.
+func exactURL(u string) string {
+	return "^" + regexp.QuoteMeta(u) + "$"
 }
 
 func jsonArray(v []string) string {
@@ -259,16 +298,14 @@ func (a *Adapter) Verify(ctx context.Context, credential string) (provider.Remot
 	if a.site.impl != nil {
 		return a.site.impl.verify(ctx, a, credential)
 	}
-	script := fmt.Sprintf(`
-await page.goto(%q);
-await page.waitForLoadState("domcontentloaded").catch(() => {});
+	script := openJS(a.site.AppURL, exactURL(a.site.AppURL)) + fmt.Sprintf(`
 await new Promise(r => setTimeout(r, 1500));
 const composer = await page.waitForSelector("loc=css:" + %q, { state: "visible", timeout: 10000 }).then(() => true).catch(() => false);
 const url = await page.url();
 const title = await page.title();
 const signedOut = /\/login\b|accounts\.google\.com/i.test(url) || %s.some(h => url.includes(h));
 return { url, title, signedOut, composer };
-`, a.site.AppURL, a.site.ComposerSel, jsonArray(a.site.SignedOutHosts))
+`, a.site.ComposerSel, jsonArray(a.site.SignedOutHosts))
 	var r struct {
 		URL       string `json:"url"`
 		Title     string `json:"title"`
@@ -304,9 +341,7 @@ func (a *Adapter) ListSessions(ctx context.Context, credential string) ([]provid
 			Ref:            map[string]string{"url": a.site.AppURL},
 		}}, nil
 	}
-	script := fmt.Sprintf(`
-await page.goto(%q);
-await page.waitForLoadState("domcontentloaded").catch(() => {});
+	script := openJS(a.site.AppURL, exactURL(a.site.AppURL)) + `
 await new Promise(r => setTimeout(r, 1500));
 const items = await page.evaluate(() => {
   const seen = new Set();
@@ -322,7 +357,7 @@ const items = await page.evaluate(() => {
   return out;
 });
 return { sessions: items };
-`, a.site.AppURL)
+`
 	var r struct {
 		Sessions []struct {
 			ID    string `json:"id"`
@@ -375,9 +410,7 @@ func (a *Adapter) ListMessages(ctx context.Context, credential string, session p
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
-	script := fmt.Sprintf(`
-await page.goto(%q);
-await page.waitForLoadState("domcontentloaded").catch(() => {});
+	script := openJS(targetURL, exactURL(targetURL)) + fmt.Sprintf(`
 await new Promise(r => setTimeout(r, 1500));
 const msgs = await page.evaluate(({ sel, limit }) => {
   const nodes = Array.from(document.querySelectorAll(sel));
@@ -393,7 +426,7 @@ const msgs = await page.evaluate(({ sel, limit }) => {
   return out;
 }, { sel: %q, limit: %d });
 return { messages: msgs };
-`, targetURL, a.site.MessageLogSel, limit)
+`, a.site.MessageLogSel, limit)
 	var r struct {
 		Messages []struct {
 			ID   string `json:"id"`
@@ -452,7 +485,7 @@ return { sent: true };
 	var r struct {
 		Sent bool `json:"sent"`
 	}
-	if err := a.run(ctx, credential, script, &r); err != nil {
+	if err := a.runSend(ctx, credential, script, &r); err != nil {
 		return provider.SendResult{Status: provider.Unconfirmed}, err
 	}
 	if !r.Sent {

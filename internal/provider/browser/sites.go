@@ -71,19 +71,17 @@ func siteMessagesPage(msgs []siteMessage) provider.RemotePage {
 	return provider.RemotePage{Messages: out}
 }
 
-// siteScript is a node-side script: it opens gotoURL, defines ARGS, and runs body (which has page in scope and
-// returns its answer). In-page code defines sitePrelude itself.
-func siteScript(gotoURL string, args any, body string) string {
+// siteScript is a node-side script: it opens gotoURL (unless the tab is on a loaded page matching stay, openJS),
+// defines ARGS, and runs body (which has page in scope and returns its answer). In-page code defines sitePrelude
+// itself.
+func siteScript(gotoURL, stay string, args any, body string) string {
 	a, _ := json.Marshal(args)
 	if args == nil {
 		a = []byte("{}")
 	}
 	return fmt.Sprintf(`
 const ARGS = %s;
-await page.goto(%q);
-await page.waitForLoadState("domcontentloaded").catch(() => {});
-%s
-`, a, gotoURL, body)
+`, a) + openJS(gotoURL, stay) + body + "\n"
 }
 
 // sendOutcome turns a send script's answer into a SendResult.
@@ -151,10 +149,13 @@ const __timeline = async (chan, limit) => {
 };
 `
 
+// duetStay is a claude.ai page other than its sign-in, where the API answers from the page (openJS).
+const duetStay = `^https://claude\.ai/(?!login)`
+
 // duetScript runs body in a claude.ai page (in page, async, with sitePrelude, duetPrelude and ARGS), mapping a
-// thrown error to {error}.
+// thrown error to {error}. It only calls the API from the page, so any signed-in claude.ai page will do.
 func duetScript(gotoURL string, args any, body string) string {
-	return siteScript(gotoURL, args, fmt.Sprintf(`
+	return siteScript(gotoURL, duetStay, args, fmt.Sprintf(`
 if (/\/login\b/.test(await page.url())) return { error: "auth" };
 return await page.evaluate(async (ARGS) => {
 %s
@@ -197,8 +198,9 @@ func (duetSite) verify(ctx context.Context, a *Adapter, credential string) (prov
 }
 
 func (duetSite) listSessions(ctx context.Context, a *Adapter, credential string) ([]provider.RemoteSession, error) {
-	// The sidebar is drawn after the page loads; wait for it before reading.
-	script := siteScript(duetOrigin+"/duet", nil, fmt.Sprintf(`
+	// The sidebar is drawn after the page loads; wait for it before reading. The list is read from the page, not an
+	// API, so the page is loaded fresh for it.
+	script := siteScript(duetOrigin+"/duet", "", nil, fmt.Sprintf(`
 if (/\/login\b/.test(await page.url())) return { error: "auth" };
 await page.waitForFunction(() => !!document.querySelector('a[href^="/duet/chan_"]'), undefined, { timeout: 15000 }).catch(() => {});
 return await page.evaluate(async () => {
@@ -306,7 +308,7 @@ func (duetSite) send(ctx context.Context, a *Adapter, credential string, session
 	}
 	// Typed into the channel's composer, then read back from the timeline: sent once the owner's message with this
 	// text shows up after the send started.
-	script := siteScript(duetOrigin+"/duet/"+ch, map[string]any{"chan": ch, "text": text}, fmt.Sprintf(`
+	script := siteScript(duetOrigin+"/duet/"+ch, "", map[string]any{"chan": ch, "text": text}, fmt.Sprintf(`
 if (/\/login\b/.test(await page.url())) return { error: "auth" };
 const sel = %q;
 const ready = await page.waitForSelector("loc=css:" + sel, { state: "visible", timeout: 20000 }).then(() => true).catch(() => false);
@@ -339,6 +341,6 @@ return found ? (found.error ? { clicked, error: found.error } : { sent: true, cl
 		Sent  bool   `json:"sent"`
 		ID    string `json:"id"`
 	}
-	err := a.run(ctx, credential, script, &r)
+	err := a.runSend(ctx, credential, script, &r)
 	return sendOutcome(err, r.Error, r.Sent, r.ID)
 }
