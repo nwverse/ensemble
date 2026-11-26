@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "personal-agent-club",
   "name": "Personal Agent Club",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "把你在 Grok、Muse、Claude、Gemini、ChatGPT 等 AI 服务上的账号接进 Persona：它们的对话会出现在「Agents」页，你可以直接看、直接给它们发消息，也可以允许 Persona 助手替你读、替你发（每次发之前先在手机上问你）。第一次用：打开左侧导航里的「我的 AI 助手」（或者下面的「账号」），照页面上的提示添加第一个账号。",
   "publisher": "nwverse",
   "engines": {
