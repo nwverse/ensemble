@@ -23,22 +23,37 @@ const (
 
 func (a *accounts) doneView(ctx context.Context, l lang, st pageState) *wire.View {
 	v := &wire.View{Title: l.t("已添加", "Added")}
+	finish := wire.Section{Items: []wire.Component{{Type: "button", Title: l.t("好了", "Done"), Action: &wire.Action{ID: actFinish}}}}
 	space, err := a.club.Space(ctx, core.DefaultSpace)
 	if err != nil {
-		v.Sections = []wire.Section{{Items: []wire.Component{{Type: "text", Text: reason(l, err, "")}}}}
+		v.Sections = []wire.Section{{Items: []wire.Component{{Type: "text", Text: reason(l, err, "")}}}, finish}
 		return v
 	}
 	acct, err := space.Account(ctx, st.Account)
 	if err != nil {
+		// Removed meanwhile (or never there): say so, and still offer the way back.
 		v.Sections = []wire.Section{{Items: []wire.Component{{Type: "empty", Icon: "warning",
-			Title: l.t("这个账号已不在", "This account is gone"), Detail: reason(l, err, "")}}}}
+			Title: l.t("这个账号已不在", "This account is gone"), Detail: reason(l, err, "")}}}, finish}
 		return v
 	}
-	control, _ := space.AssistantControl(ctx, acct.AccountID)
+	control, err := space.AssistantControl(ctx, acct.AccountID)
+	if err != nil {
+		// Without the level the question would show a choice that is not the saved one: say so instead.
+		v.Sections = []wire.Section{{Items: []wire.Component{{Type: "text",
+			Text: l.t("已添加「", "Added \"") + accountTitle(l, acct) + l.t("」，但现在读不到 Persona 助手能不能用它：", "\", but whether the Persona assistant may use it cannot be read now: ") +
+				reason(l, err, "") + l.t(" 稍后到这个账号的页面里看「助手指挥」。", " Look at Assistant control on its page later.")}}},
+			{Items: []wire.Component{finish.Items[0],
+				{Type: "button", Title: l.t("打开这个账号", "Open this account"), Action: &wire.Action{ID: actOpenAccount}}}}}
+		return v
+	}
 
-	added := wire.Section{Items: []wire.Component{{Type: "text",
-		Text: l.t("已添加「", "Added \"") + accountTitle(l, acct) + l.t("」。它的对话正在同步，过一会儿就会出现在 Persona 的「Agents」页。",
-			"\". Its chats are syncing and will show on Persona's Agents page shortly.")}}}
+	// Pairing synced the account before this step (core AddAccount), so its chats are in, unless that sync failed.
+	synced := l.t("」。它的对话已经同步好，可以在 Persona 的「Agents」页看到；之后会自动更新。",
+		"\". Its chats are synced and on Persona's Agents page; they keep updating on their own.")
+	if acct.Status == protocol.AccountError || acct.LastError != "" {
+		synced = l.t("」，但第一次同步没成功：", "\", but its first sync did not work: ") + problemWords(l, acct)
+	}
+	added := wire.Section{Items: []wire.Component{{Type: "text", Text: l.t("已添加「", "Added \"") + accountTitle(l, acct) + synced}}}
 
 	now := l.t("现在是「", "Now: ") + controlChoiceTitle(l, control) + l.t("」。", ". ")
 	if control == core.ControlOff {
@@ -75,10 +90,9 @@ func (a *accounts) doneView(ctx context.Context, l lang, st pageState) *wire.Vie
 			}})
 	}
 
-	sections = append(sections, wire.Section{Items: []wire.Component{
-		{Type: "button", Title: l.t("好了", "Done"), Action: &wire.Action{ID: actFinish}},
-		{Type: "button", Title: l.t("打开这个账号", "Open this account"), Action: &wire.Action{ID: actOpenAccount}},
-	}})
+	finish.Items = append(finish.Items, wire.Component{Type: "button", Title: l.t("打开这个账号", "Open this account"),
+		Action: &wire.Action{ID: actOpenAccount}})
+	sections = append(sections, finish)
 	v.Sections = sections
 	return v
 }

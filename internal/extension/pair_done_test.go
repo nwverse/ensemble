@@ -63,7 +63,7 @@ func TestKeyPairingEndsOnTheDoneStep(t *testing.T) {
 	v := res.View
 	noJargon(t, "done step", v)
 	all := text(v)
-	for _, want := range []string{"已添加「工作用演示」", "「Agents」页", "要让 Persona 助手用这个账号吗？",
+	for _, want := range []string{"已添加「工作用演示」。它的对话已经同步好，可以在 Persona 的「Agents」页看到；之后会自动更新。", "要让 Persona 助手用这个账号吗？",
 		"关闭：Persona 助手完全看不到这个账号", "只读：Persona 助手能读它的对话", "可代发（逐次确认）：还能替你给它发消息，每次发之前都先在手机上问你",
 		"不选就一直保持关闭", "要不要让它直接当你的主助手？", "和上面不一样", "好了", "打开这个账号"} {
 		if !strings.Contains(all, want) {
@@ -231,5 +231,45 @@ func TestGrokBotSignInEndsOnTheDoneStep(t *testing.T) {
 	}
 	if res := act(t, h, done, actFinish, nil); !res.Pop {
 		t.Fatalf("finish: %+v", res)
+	}
+}
+
+// A first sync that failed is not called synced: the step says what is wrong instead, and still asks.
+func TestDoneStepSaysWhenTheFirstSyncFailed(t *testing.T) {
+	f := &flaky{}
+	f.failing.Store(true)
+	club := core.New(core.Options{Registry: provider.NewRegistry(f), FollowUps: []time.Duration{}})
+	h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), nil)
+	res := act(t, h, pageState{Page: pagePair, Provider: "groq"}, actPair, map[string]string{fieldCredential: "gsk_fixture_0000001"})
+	if !pairedDone(res) {
+		t.Fatalf("pair: %+v", res)
+	}
+	all := text(res.View)
+	if strings.Contains(all, "已经同步好") || !strings.Contains(all, "但第一次同步没成功：密钥失效了") {
+		t.Fatalf("a failed first sync: %s", all)
+	}
+	if _, ok := segmentedValue(res.View, fieldControl); !ok {
+		t.Fatalf("助手指挥 not asked: %s", all)
+	}
+}
+
+// An account removed elsewhere, or an id that never was, is no dead end: the step says so and offers 好了.
+func TestDoneStepForAGoneAccountOffersTheWayBack(t *testing.T) {
+	h, _ := start(t)
+	res := act(t, h, pageState{Page: pagePair, Provider: echo.Name}, actPair, map[string]string{fieldCredential: demoCredential})
+	st := stateFrom(t, res.View)
+	if res := act(t, h, pageState{Page: pageAccount, Account: st.Account}, actRemove, nil); !res.Pop {
+		t.Fatalf("remove: %+v", res)
+	}
+	for _, gone := range []pageState{st, {Page: pageDone, Account: "a-never-there"}} {
+		v := render(t, h, gone)
+		noJargon(t, "done step for a gone account", v)
+		if !strings.Contains(text(v), "这个账号已不在") || !strings.Contains(text(v), `"id":"`+actFinish+`"`) ||
+			strings.Contains(text(v), actOpenAccount) || strings.Contains(text(v), fieldControl) {
+			t.Fatalf("gone %+v: %s", gone, text(v))
+		}
+		if res := act(t, h, gone, actFinish, nil); !res.Pop || res.Toast != "" {
+			t.Fatalf("finish for a gone account: %+v", res)
+		}
 	}
 }

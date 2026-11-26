@@ -161,7 +161,7 @@ func (g *geminiHub) send(t *testing.T, key string) string {
 func (g *geminiHub) paired(t *testing.T) (string, string) {
 	t.Helper()
 	g.mode = "ok"
-	if res := g.pair(t); !res.Pop {
+	if res := g.pair(t); !pairedDone(res) {
 		t.Fatalf("pair: %+v", res)
 	}
 	st, err := g.space(t).Status(context.Background())
