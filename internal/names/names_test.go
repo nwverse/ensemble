@@ -108,6 +108,13 @@ func TestStoredIsReadBackAsComposed(t *testing.T) {
 		for _, alias := range []string{"", "Ada", "ada@example.com", "Grok 秘书"} {
 			for _, src := range []string{SourceAuto, SourceLegacy} {
 				got, owner := Split(p, Stored(p, alias), src)
+				if src == SourceLegacy && alias != "" && bareBefore[p] {
+					// club never wrote an alias for these before: a legacy "<Brand> · x" is the owner's
+					if !owner || got != Stored(p, alias) {
+						t.Errorf("Split(%q, Stored(%q), legacy) = %q %v, want the owner's", p, alias, got, owner)
+					}
+					continue
+				}
 				if owner || got != alias {
 					t.Errorf("Split(%q, Stored(%q), %q) = %q %v", p, alias, src, got, owner)
 				}
@@ -171,6 +178,51 @@ func TestFallbackIsNeverARawProviderID(t *testing.T) {
 	} {
 		if got := Fallback(c.lang, c.provider, c.name); got != c.want {
 			t.Errorf("Fallback(%s, %s, %q) = %q, want %q", c.lang, c.provider, c.name, got, c.want)
+		}
+	}
+}
+
+// 0.6.0 prefilled the rename field with the composed name, so an owner's edit often reads "<Brand> · x".
+func TestLegacyBrandDotXOfAProviderThatNeverWroteAnAliasIsTheOwners(t *testing.T) {
+	for _, c := range []struct{ provider, stored string }{
+		{"grok_bot", "Grok Bot · Work"}, {"groq", "Groq · fast"}, {"muse2api", "Muse (muse2api) · home"}, {"echo", "Echo · test"},
+	} {
+		if !OwnerChose(c.provider, c.stored) || Title("en", c.provider, c.stored, SourceLegacy) != c.stored {
+			t.Errorf("%+v: %v %q", c, OwnerChose(c.provider, c.stored), Title("en", c.provider, c.stored, SourceLegacy))
+		}
+		if _, ok := LegacyAlias(c.provider, c.stored); ok {
+			t.Errorf("%+v: offered for re-verification", c)
+		}
+	}
+	got := Distinct("zh", []Account{{ID: "a", Provider: "grok_bot", Stored: "Grok Bot · Work"}, {ID: "b", Provider: "grok_bot", Stored: "Grok Bot · Work"}})
+	if got["a"] != "Grok Bot · Work" || got["b"] != "Grok Bot · Work" {
+		t.Fatal(got)
+	}
+	// Their bare brand and raw id are still club's.
+	for _, c := range []struct{ provider, stored string }{{"grok_bot", "Grok Bot"}, {"groq", "groq"}, {"echo", "Echo"}} {
+		if OwnerChose(c.provider, c.stored) {
+			t.Errorf("%+v is club's", c)
+		}
+	}
+}
+
+func TestLegacyAliasIsOfferedOnlyWhereClubWroteThatShape(t *testing.T) {
+	for _, c := range []struct {
+		provider, stored, x string
+		ok                  bool
+	}{
+		{"claude_duet", "Claude Duet · Shengtao 工作", "Shengtao 工作", true},
+		{"cue", "Cue · 小助手", "小助手", true},
+		{"dots", "Dots · Ada", "Ada", true},
+		{"gemini_tasks", "Gemini Tasks · ada@example.com", "ada@example.com", true},
+		{"muse", "Muse · Glint", "Glint", true},
+		{"claude_duet", "Claude Duet · Claude", "", false}, // only the brand's words: club's, re-verified as before
+		{"claude_duet", "Claude Duet - Claude", "", false}, // a tab title
+		{"claude_duet", "Claude Duet", "", false},
+		{"grok_bot", "Grok Bot · Work", "", false},
+	} {
+		if x, ok := LegacyAlias(c.provider, c.stored); x != c.x || ok != c.ok {
+			t.Errorf("LegacyAlias(%s, %q) = %q %v", c.provider, c.stored, x, ok)
 		}
 	}
 }

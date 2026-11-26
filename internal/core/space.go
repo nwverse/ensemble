@@ -798,8 +798,10 @@ func nameSource(ownerName string) string {
 }
 
 // settleName works out, once, who named an account stored before club kept that (names.SourceLegacy), after a sync
-// that succeeded: the owner's name is kept as theirs; a name club composed, or a tab title an early version saved,
-// is replaced by the brand and the alias Verify reads now. A failed Verify leaves it for the next sync.
+// that succeeded: the owner's name is kept exactly and marked theirs; a bare brand, raw id or tab title an early
+// version saved is replaced by the brand and the alias Verify reads now; a "<Brand> · x" is club's (and rewritten in
+// today's form) only while x is the alias Verify reports, else the owner's. A failed Verify leaves it for the next
+// sync.
 func (s *Space) settleName(ctx context.Context, id string) {
 	a, ok, err := s.store.Account(ctx, id)
 	if err != nil || !ok || a.NameSource != names.SourceLegacy || a.Status != protocol.AccountActive || a.LastError != "" {
@@ -819,8 +821,15 @@ func (s *Space) settleName(ctx context.Context, id string) {
 		if err != nil {
 			return
 		}
-		stored, auto := names.Stored(a.Provider, aliasOf(ctx, a.Provider, adapter, cred, remote)), names.SourceAuto
-		patch.DisplayName, patch.NameSource = &stored, &auto
+		alias := aliasOf(ctx, a.Provider, adapter, cred, remote)
+		if x, ok := names.LegacyAlias(a.Provider, a.DisplayName); ok && x != alias {
+			// "<Brand> · x" with an x the provider does not report: the owner edited it. Kept exactly.
+			owner := names.SourceOwner
+			patch.NameSource = &owner
+		} else {
+			stored, auto := names.Stored(a.Provider, alias), names.SourceAuto
+			patch.DisplayName, patch.NameSource = &stored, &auto
+		}
 	}
 	// Only onto the row as it was read: a rename (or another settle) while Verify ran wins.
 	if ok, err := s.store.UpdateAccountIf(ctx, id, store.AccountMatch{DisplayName: a.DisplayName, NameSource: names.SourceLegacy}, patch, s.now()); err == nil && ok {

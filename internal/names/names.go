@@ -165,13 +165,38 @@ func Stored(provider, alias string) string { return Compose("en", provider, alia
 // composedAlias reads a name in the exact form club composes: a brand spelling alone (alias "") or a brand spelling,
 // Sep and an alias.
 func composedAlias(provider, stored string) (string, bool) {
+	raw, ok := composedRaw(provider, stored)
+	return Alias(provider, raw), ok
+}
+
+// composedRaw is composedAlias with the alias as written, before Alias drops the brand's own words.
+func composedRaw(provider, stored string) (string, bool) {
 	if isBrand(provider, stored) {
 		return "", true
 	}
 	for _, f := range brandForms(provider) {
 		if len(stored) > len(f)+len(Sep) && strings.EqualFold(stored[:len(f)], f) && stored[len(f):len(f)+len(Sep)] == Sep {
-			return Alias(provider, stored[len(f)+len(Sep):]), true
+			return strings.TrimSpace(stored[len(f)+len(Sep):]), true
 		}
+	}
+	return "", false
+}
+
+// bareBefore are the providers whose Verify, before club kept who named an account, only ever named it with the
+// bare brand ("Grok Bot", "Groq", "Muse (muse2api)", "Echo"): a legacy "<Brand> · x" of theirs was typed by the owner
+// (0.6.0 prefilled the rename field with the name, so editing it gives this shape).
+var bareBefore = map[string]bool{"grok_bot": true, "groq": true, "muse2api": true, "echo": true}
+
+// LegacyAlias is the x of a legacy row named "<Brand> · x" with an x that is not only the brand's own words, for a
+// provider whose earlier Verify did write that shape: such a row is club's only while x is still the alias Verify
+// reports; otherwise the owner wrote it. ok is false for any other row.
+func LegacyAlias(provider, stored string) (x string, ok bool) {
+	stored = strings.TrimSpace(stored)
+	if bareBefore[provider] {
+		return "", false
+	}
+	if raw, composed := composedRaw(provider, stored); composed && Alias(provider, raw) != "" {
+		return Alias(provider, raw), true
 	}
 	return "", false
 }
@@ -192,8 +217,11 @@ func Split(provider, stored, source string) (alias string, owner bool) {
 	if stored == "" {
 		return "", false
 	}
-	if a, ok := composedAlias(provider, stored); ok {
-		return a, false
+	if raw, ok := composedRaw(provider, stored); ok {
+		if source == SourceLegacy && raw != "" && bareBefore[provider] {
+			return stored, true // the owner's: club never wrote an alias for this provider
+		}
+		return Alias(provider, raw), false
 	}
 	if source == SourceLegacy && isPageTitle(provider, stored) {
 		return "", false

@@ -373,3 +373,50 @@ func TestSettlingNeverOverwritesARenameMadeMeanwhile(t *testing.T) {
 		t.Fatalf("%+v", a)
 	}
 }
+
+// An owner's "<Brand> · x" from 0.6.0 (whose rename field was prefilled with the composed name) survives the
+// settle and later syncs exactly; a "<Brand> · x" club wrote, whose x is still the alias Verify reports, is club's.
+func TestLegacyBrandDotXIsKeptUnlessItIsTheVerifiedAlias(t *testing.T) {
+	ctx := context.Background()
+	s := namingSpace(t)
+	rows := []struct {
+		id, provider, stored, cred, wantStored, wantSource, wantShown string
+	}{
+		// providers whose 0.6.0 Verify only gave the bare brand: any "· x" is the owner's, Verify or not
+		{"a000000000001", "grok_bot", "Grok Bot · Work", "bot:Grok 秘书|account-1", "Grok Bot · Work", names.SourceOwner, "Grok Bot · Work"},
+		{"a000000000002", "groq", "Groq · fast", "|account-2", "Groq · fast", names.SourceOwner, "Groq · fast"},
+		{"a000000000003", "echo", "Echo · test", "|account-3", "Echo · test", names.SourceOwner, "Echo · test"},
+		// x differs from the alias Verify reports now ("Shengtao"): the owner edited it
+		{"a000000000004", "claude_duet", "Claude Duet · Shengtao 工作", "Shengtao|account-4", "Claude Duet · Shengtao 工作", names.SourceOwner, "Claude Duet · Shengtao 工作"},
+		// x is the verified alias: club's own, rewritten in today's form
+		{"a000000000005", "claude_duet", "Claude Duet · Shengtao", "Shengtao|account-5", "Claude Duet · Shengtao", names.SourceAuto, "Claude Duet · Shengtao"},
+		{"a000000000006", "dots", "Dots · Ada", "Ada|account-6", "ChatGPT Dots · Ada", names.SourceAuto, "ChatGPT Dots · Ada"},
+		{"a000000000007", "cue", "Cue · 小助手 Pro", "小助手|account-7", "Cue · 小助手 Pro", names.SourceOwner, "Cue · 小助手 Pro"},
+		// the page-title rule is unchanged
+		{"a000000000008", "claude_duet", "Claude Duet - Claude", "Ada|account-8", "Claude Duet · Ada", names.SourceAuto, "Claude Duet · Ada"},
+	}
+	for i, r := range rows {
+		if err := s.store.InsertAccount(ctx, store.Account{AccountID: r.id, Provider: r.provider, DisplayName: r.stored,
+			Status: protocol.AccountActive, AssistantControl: string(DefaultControl), CreatedAt: int64(i + 1)}); err != nil {
+			t.Fatal(err)
+		}
+		_ = s.vault.Put(ctx, r.id, r.cred)
+	}
+	for round := 1; round <= 2; round++ {
+		for _, r := range rows {
+			_ = s.SyncAccount(ctx, r.id)
+		}
+		st, _ := s.Status(ctx)
+		shown := map[string]string{}
+		for _, a := range st.Accounts {
+			shown[a.AccountID] = a.DisplayName
+		}
+		for _, r := range rows {
+			a, _, _ := s.store.Account(ctx, r.id)
+			if a.DisplayName != r.wantStored || a.NameSource != r.wantSource || shown[r.id] != r.wantShown {
+				t.Errorf("sync %d, %s %q: stored %q (%s), shown %q; want %q (%s), %q", round, r.provider, r.stored,
+					a.DisplayName, a.NameSource, shown[r.id], r.wantStored, r.wantSource, r.wantShown)
+			}
+		}
+	}
+}
