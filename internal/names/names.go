@@ -45,16 +45,17 @@ type brand struct {
 
 // brands are the providers' labels, the one table every page and host-facing name uses. Trademarks stay as they are
 // in both languages; a label that describes rather than names (the web and self-hosted Muse, the demo) is
-// translated.
+// translated. A label carries no brackets: "Muse（网页版） · Ada" leaves a wider gap before the dot than any other
+// title, so the bracketed labels 0.6.1 and 0.6.2 showed are legacy spellings, read back as club's and shown anew.
 var brands = map[string]brand{
 	"grok_bot":     {zh: "Grok Bot", en: "Grok Bot"},
-	"muse":         {zh: "Muse（网页版）", en: "Muse (web)", legacy: []string{"Muse"}, site: []string{"Muse", "Chat", "聊天"}},
+	"muse":         {zh: "Muse 网页版", en: "Muse (web)", legacy: []string{"Muse", "Muse（网页版）"}, site: []string{"Muse", "Chat", "聊天"}},
 	"claude_duet":  {zh: "Claude Duet", en: "Claude Duet", site: []string{"Claude", "Duet", "Claude.ai", "Anthropic"}},
 	"gemini_tasks": {zh: "Gemini", en: "Gemini", legacy: []string{"Gemini Tasks", "Gemini 任务"}, site: []string{"Gemini", "Google", "Google Gemini", "Tasks", "任务"}},
 	"dots":         {zh: "ChatGPT Dots", en: "ChatGPT Dots", legacy: []string{"Dots"}, site: []string{"ChatGPT", "Dots", "Dot", "OpenAI"}},
 	"cue":          {zh: "Cue", en: "Cue"},
 	"groq":         {zh: "Groq", en: "Groq"},
-	"muse2api":     {zh: "Muse（自建转接）", en: "Muse (own relay)", legacy: []string{"Muse (muse2api)"}},
+	"muse2api":     {zh: "Muse 自建转接", en: "Muse (own relay)", legacy: []string{"Muse (muse2api)", "Muse（自建转接）"}},
 	"echo":         {zh: "演示账号", en: "Demo account", legacy: []string{"Echo", "Echo（演示）", "Echo (demo)"}},
 }
 

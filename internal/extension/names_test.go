@@ -21,7 +21,7 @@ import (
 // Chinese (accountName). Neither ever shows the raw provider id.
 func TestAccountAndProviderNamesAreHuman(t *testing.T) {
 	duet := protocol.Account{Provider: "claude_duet", DisplayName: "Claude Duet · Ada", DisplayNameEn: "Claude Duet · Ada"}
-	muse := protocol.Account{Provider: "muse", DisplayName: "Muse（网页版） · Wren", DisplayNameEn: "Muse (web) · Wren"}
+	muse := protocol.Account{Provider: "muse", DisplayName: "Muse 网页版 · Wren", DisplayNameEn: "Muse (web) · Wren"}
 	bare := protocol.Account{Provider: "gemini_tasks"}
 	raw := protocol.Account{Provider: "muse2api", DisplayName: "muse2api"}
 	for _, c := range []struct {
@@ -29,20 +29,20 @@ func TestAccountAndProviderNamesAreHuman(t *testing.T) {
 		a    protocol.Account
 		page string
 	}{
-		{"zh-Hans", muse, "Muse（网页版） · Wren"}, {"en", muse, "Muse (web) · Wren"}, {"en", duet, "Claude Duet · Ada"},
-		{"zh", bare, "Gemini"}, {"en", bare, "Gemini"}, {"en", raw, "Muse (own relay)"}, {"zh", raw, "Muse（自建转接）"},
+		{"zh-Hans", muse, "Muse 网页版 · Wren"}, {"en", muse, "Muse (web) · Wren"}, {"en", duet, "Claude Duet · Ada"},
+		{"zh", bare, "Gemini"}, {"en", bare, "Gemini"}, {"en", raw, "Muse (own relay)"}, {"zh", raw, "Muse 自建转接"},
 	} {
 		if got := accountTitle(c.l, c.a); got != c.page {
 			t.Errorf("accountTitle(%s, %+v) = %q, want %q", c.l, c.a, got, c.page)
 		}
 	}
-	if accountName(muse) != "Muse（网页版） · Wren" || accountName(raw) != "Muse（自建转接）" || accountName(bare) != "Gemini" {
+	if accountName(muse) != "Muse 网页版 · Wren" || accountName(raw) != "Muse 自建转接" || accountName(bare) != "Gemini" {
 		t.Fatal(accountName(muse), accountName(raw), accountName(bare))
 	}
 	for _, c := range []struct {
 		l              lang
 		provider, want string
-	}{{"zh-Hans", "muse", "Muse（网页版）"}, {"en", "muse", "Muse (web)"}, {"zh", "echo", "演示账号"}, {"en", "echo", "Demo account"},
+	}{{"zh-Hans", "muse", "Muse 网页版"}, {"en", "muse", "Muse (web)"}, {"zh", "echo", "演示账号"}, {"en", "echo", "Demo account"},
 		{"en", "muse2api", "Muse (own relay)"}, {"en", "dots", "ChatGPT Dots"}, {"zh", "gemini_tasks", "Gemini"}} {
 		if got := providerName(c.l, c.provider); got != c.want {
 			t.Errorf("providerName(%s, %s) = %q, want %q", c.l, c.provider, got, c.want)
@@ -162,6 +162,22 @@ func TestEmailNamedAccountsShowTheShortNameAndKeepTheEmailOnTheirPage(t *testing
 		page = renderIn(t, h, c.locale, pageState{Page: pageAccount, Account: owned.AccountID})
 		if page.Title != "other@example.com" || infoRow(page, c.emailRow) != "" || renameField(t, page).Value != "other@example.com" {
 			t.Errorf("%s owner's page: %q, %s row %q", c.locale, page.Title, c.emailRow, infoRow(page, c.emailRow))
+		}
+	}
+}
+
+// The pages name the web and the self-hosted Muse with the labels' table, in the rows to add one and on the
+// self-hosted one's page that sends people to the web one.
+func TestMuseLabelsOnThePages(t *testing.T) {
+	h, _ := start(t)
+	for _, c := range []struct{ locale, web, relay string }{{"zh-Hans", "Muse 网页版", "Muse 自建转接"}, {"en", "Muse (web)", "Muse (own relay)"}} {
+		list := text(renderIn(t, h, c.locale, pageState{}))
+		if !strings.Contains(list, `"title":"`+c.web+`"`) || !strings.Contains(list, `"title":"`+c.relay+`"`) || strings.Contains(list, "（网页版）") {
+			t.Errorf("%s list: %s", c.locale, list)
+		}
+		relay := text(renderIn(t, h, c.locale, pageState{Page: pagePair, Provider: "muse2api"}))
+		if !strings.Contains(relay, c.web) || strings.Contains(relay, "（网页版）") {
+			t.Errorf("%s muse2api page: %s", c.locale, relay)
 		}
 	}
 }

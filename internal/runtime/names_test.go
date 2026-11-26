@@ -14,7 +14,7 @@ func TestLauncherAndSessionTitlesNeverFallBackToAProviderID(t *testing.T) {
 		{"gemini_tasks", "", "Gemini"},
 		{"gemini_tasks", "gemini_tasks", "Gemini"},
 		{"grok_bot", "", "Grok Bot"},
-		{"muse2api", "", "Muse（自建转接）"}, {"my_site", "", "My Site"},
+		{"muse2api", "", "Muse 自建转接"}, {"my_site", "", "My Site"},
 		{"echo", "", "演示账号"},
 		{"claude_duet", "Claude Duet · Ada", "Claude Duet · Ada"},
 		{"grok_bot", "Grok Bot (2)", "Grok Bot (2)"},

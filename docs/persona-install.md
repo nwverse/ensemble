@@ -95,7 +95,7 @@ personad extension config personal-agent-club muse2api_url=http://<host>:18610
 personad extension config personal-agent-club muse2api_model=muse-spark
 ```
 
-Then add "Muse（自建转接）" (Muse, own relay) on the home page with the server's API key (`MUSE2API_KEY`).
+Then add "Muse 自建转接" (Muse, own relay) on the home page with the server's API key (`MUSE2API_KEY`).
 
 The accounts through a computer's browser (Muse on the web, Claude Duet, Gemini, ChatGPT Dots) are on by default
 since 0.6.0 (`browser_providers`; nothing is reached until one is added on a computer). To switch them off:
@@ -125,12 +125,12 @@ The home (**我的 AI 助手**) shows, top to bottom:
 - the ways to add an account, grouped by how one connects:
   - **在浏览器里登录** (sign in in your browser): **Grok Bot**. Start the sign-in, approve on the page that opens in
     your browser, and the page checks the result every 30 seconds (or at once with *check now*).
-  - **借用电脑上已登录的网页** (a website signed in on your computer): **Muse（网页版）**, **Claude Duet**,
+  - **借用电脑上已登录的网页** (a website signed in on your computer): **Muse 网页版**, **Claude Duet**,
     **Gemini** and **ChatGPT Dots**, through the browser Persona drives on a computer connected to it (ego lite;
     pairing and every read run in a task space of its own inside that browser, with its sign-ins). The page lists
     your computers and says to sign in to the site in that browser first. With the setting `browser_providers` off, the rows and pages say
     so and where to switch it on.
-  - **粘贴密钥** (paste a key): **Cue**, **Groq** and **Muse（自建转接）** (your own muse2api server, which needs
+  - **粘贴密钥** (paste a key): **Cue**, **Groq** and **Muse 自建转接** (your own muse2api server, which needs
     `muse2api_url` first; the row says so until it is written). The key field is a secret field: the apps never show
     it, the extension cannot fill it in, and the extension never shows, returns or logs a saved key.
   - **先试试** (try it first): the demo account, with `demo_echo` on.

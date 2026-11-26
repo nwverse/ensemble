@@ -9,9 +9,9 @@ var providers = []string{"grok_bot", "muse", "claude_duet", "gemini_tasks", "dot
 
 func TestBrandsAreOneTable(t *testing.T) {
 	for _, c := range []struct{ provider, zh, en string }{
-		{"grok_bot", "Grok Bot", "Grok Bot"}, {"muse", "Muse（网页版）", "Muse (web)"}, {"claude_duet", "Claude Duet", "Claude Duet"},
+		{"grok_bot", "Grok Bot", "Grok Bot"}, {"muse", "Muse 网页版", "Muse (web)"}, {"claude_duet", "Claude Duet", "Claude Duet"},
 		{"gemini_tasks", "Gemini", "Gemini"}, {"dots", "ChatGPT Dots", "ChatGPT Dots"}, {"cue", "Cue", "Cue"}, {"groq", "Groq", "Groq"},
-		{"muse2api", "Muse（自建转接）", "Muse (own relay)"}, {"echo", "演示账号", "Demo account"}, {"my_site", "My Site", "My Site"},
+		{"muse2api", "Muse 自建转接", "Muse (own relay)"}, {"echo", "演示账号", "Demo account"}, {"my_site", "My Site", "My Site"},
 	} {
 		if Brand("zh-Hans", c.provider) != c.zh || Brand("en", c.provider) != c.en || Brand("", c.provider) != c.zh {
 			t.Errorf("%s: %q / %q", c.provider, Brand("zh", c.provider), Brand("en", c.provider))
@@ -31,11 +31,11 @@ func TestComposeAddsTheBrandOnceAndDropsItsOwnWords(t *testing.T) {
 		{"zh", "gemini_tasks", "ada@example.com", "Gemini · ada@example.com"},
 		{"zh", "gemini_tasks", "Google Gemini", "Gemini"},
 		{"en", "muse", "Wren", "Muse (web) · Wren"},
-		{"zh", "muse", "Wren", "Muse（网页版） · Wren"},
+		{"zh", "muse", "Wren", "Muse 网页版 · Wren"},
 		{"zh", "dots", "ChatGPT", "ChatGPT Dots"},
 		{"zh", "grok_bot", "Grok 秘书", "Grok Bot · Grok 秘书"},
 		{"zh", "grok_bot", "Grok", "Grok Bot"},
-		{"zh", "muse2api", "", "Muse（自建转接）"},
+		{"zh", "muse2api", "", "Muse 自建转接"},
 		{"en", "echo", "Echo", "Demo account"},
 	} {
 		if got := Compose(c.lang, c.provider, c.alias); got != c.want {
@@ -75,12 +75,12 @@ func TestLegacyRowsReadOnlyExactGeneratedFormsAsClubs(t *testing.T) {
 		{"gemini_tasks", "gemini_tasks", "Gemini", "Gemini"},
 		{"gemini_tasks", "Google Gemini", "Gemini", "Gemini"},
 		{"grok_bot", "Grok Bot", "Grok Bot", "Grok Bot"},
-		{"muse", "Muse · Wren", "Muse（网页版） · Wren", "Muse (web) · Wren"},
-		{"muse", "Chat — Muse", "Muse（网页版）", "Muse (web)"},
+		{"muse", "Muse · Wren", "Muse 网页版 · Wren", "Muse (web) · Wren"},
+		{"muse", "Chat — Muse", "Muse 网页版", "Muse (web)"},
 		{"dots", "Dots · Ada", "ChatGPT Dots · Ada", "ChatGPT Dots · Ada"},
 		{"dots", "ChatGPT", "ChatGPT Dots", "ChatGPT Dots"},
 		{"cue", "Cue · 小助手", "Cue · 小助手", "Cue · 小助手"},
-		{"muse2api", "Muse (muse2api)", "Muse（自建转接）", "Muse (own relay)"},
+		{"muse2api", "Muse (muse2api)", "Muse 自建转接", "Muse (own relay)"},
 		{"echo", "Echo", "演示账号", "Demo account"},
 		{"echo", "", "演示账号", "Demo account"},
 		// the owner's
@@ -138,7 +138,7 @@ func TestDistinctNumbersCollidingComposedNamesOnly(t *testing.T) {
 	})
 	want := map[string]string{
 		"a1": "Grok Bot (1)", "a2": "Grok Bot (2)", "a3": "Grok Bot · Grok 秘书",
-		"b1": "Muse（网页版） · Wren (1)", "b2": "Muse（网页版） · Wren (2)",
+		"b1": "Muse 网页版 · Wren (1)", "b2": "Muse 网页版 · Wren (2)",
 		"c1": "Claude Duet",
 		"d1": "工作号", "d2": "工作号",
 		"e1": "ChatGPT Dots (1)", "e2": "ChatGPT Dots (2)",
@@ -239,7 +239,7 @@ func TestEmailAliasesAreTitledBeforeTheirAt(t *testing.T) {
 		{"dots", Stored("dots", "ada.lovelace@example.com"), SourceAuto, "ChatGPT Dots · ada.lovelace", "ChatGPT Dots · ada.lovelace", "ada.lovelace@example.com"},
 		// stored by 0.6.1, read as it is, without re-pairing
 		{"grok_bot", "Grok Bot · someone@example.com", SourceAuto, "Grok Bot · someone", "Grok Bot · someone", "someone@example.com"},
-		{"muse", "Muse (web) · wren@example.com", SourceAuto, "Muse（网页版） · wren", "Muse (web) · wren", "wren@example.com"},
+		{"muse", "Muse (web) · wren@example.com", SourceAuto, "Muse 网页版 · wren", "Muse (web) · wren", "wren@example.com"},
 		// a legacy Gemini row club wrote
 		{"gemini_tasks", "Gemini Tasks · ada@example.com", SourceLegacy, "Gemini · ada", "Gemini · ada", "ada@example.com"},
 		// the owner's: as typed, even when it is an e-mail or reads like club's
@@ -292,5 +292,82 @@ func TestEmailAliasesSharingTheirLocalPartAreNumbered(t *testing.T) {
 				t.Errorf("%s %s: %q, want %q", l, id, got[id], w)
 			}
 		}
+	}
+}
+
+// No Chinese label is bracketed: "Muse（网页版） · Ada" leaves a wider gap before the dot than "Claude Duet · Ada".
+func TestChineseLabelsHaveNoBrackets(t *testing.T) {
+	for _, p := range providers {
+		if b := Brand("zh", p); strings.ContainsAny(b, "（）()") {
+			t.Errorf("%s: %q", p, b)
+		}
+	}
+	if Brand("zh", "muse") == Brand("zh", "muse2api") || Brand("en", "muse") == Brand("en", "muse2api") {
+		t.Fatal("the web and the self-hosted Muse read the same")
+	}
+}
+
+// A new pairing stores the English composition and is titled with the new labels in both languages.
+func TestNewPairingReadsWithTheNewLabels(t *testing.T) {
+	for _, c := range []struct{ provider, alias, stored, zh, en string }{
+		{"muse", "Wren", "Muse (web) · Wren", "Muse 网页版 · Wren", "Muse (web) · Wren"},
+		{"muse", "", "Muse (web)", "Muse 网页版", "Muse (web)"},
+		{"muse2api", "", "Muse (own relay)", "Muse 自建转接", "Muse (own relay)"},
+	} {
+		stored := Stored(c.provider, c.alias)
+		if stored != c.stored || Title("zh", c.provider, stored, SourceAuto) != c.zh || Title("en", c.provider, stored, SourceAuto) != c.en {
+			t.Errorf("%s %q: stored %q, %q / %q", c.provider, c.alias, stored,
+				Title("zh", c.provider, stored, SourceAuto), Title("en", c.provider, stored, SourceAuto))
+		}
+	}
+}
+
+// A row stored under the bracketed label 0.6.1 and 0.6.2 showed, by club (auto) or before club kept who named it
+// (legacy), is still club's and reads with today's label, without pairing again; the owner's own name is as typed.
+func TestBracketedLabelsOfEarlierVersionsAreStillClubs(t *testing.T) {
+	for _, c := range []struct{ provider, stored, source, zh, en string }{
+		{"muse", "Muse（网页版） · Wren", SourceAuto, "Muse 网页版 · Wren", "Muse (web) · Wren"},
+		{"muse", "Muse（网页版） · Wren", SourceLegacy, "Muse 网页版 · Wren", "Muse (web) · Wren"},
+		{"muse", "Muse（网页版）", SourceAuto, "Muse 网页版", "Muse (web)"},
+		{"muse", "Muse（网页版）", SourceLegacy, "Muse 网页版", "Muse (web)"},
+		{"muse", "Muse（网页版） · wren@example.com", SourceAuto, "Muse 网页版 · wren", "Muse (web) · wren"},
+		{"muse2api", "Muse（自建转接）", SourceAuto, "Muse 自建转接", "Muse (own relay)"},
+		{"muse2api", "Muse（自建转接）", SourceLegacy, "Muse 自建转接", "Muse (own relay)"},
+		{"muse2api", "Muse（自建转接） · home", SourceAuto, "Muse 自建转接 · home", "Muse (own relay) · home"},
+	} {
+		if _, owner := Split(c.provider, c.stored, c.source); owner {
+			t.Errorf("Split(%s, %q, %q) reads it as the owner's", c.provider, c.stored, c.source)
+		}
+		if got := Title("zh", c.provider, c.stored, c.source); got != c.zh {
+			t.Errorf("Title(zh, %s, %q, %q) = %q, want %q", c.provider, c.stored, c.source, got, c.zh)
+		}
+		if got := Title("en", c.provider, c.stored, c.source); got != c.en {
+			t.Errorf("Title(en, %s, %q, %q) = %q, want %q", c.provider, c.stored, c.source, got, c.en)
+		}
+	}
+	// a legacy Muse row of that shape is offered for the one re-verification like "Muse · x"
+	if x, ok := LegacyAlias("muse", "Muse（网页版） · Wren"); !ok || x != "Wren" {
+		t.Fatal(x, ok)
+	}
+	// muse2api never wrote an alias before club kept who named a row: a legacy "<Brand> · x" stays the owner's
+	if !OwnerChose("muse2api", "Muse（自建转接） · home") {
+		t.Fatal("a legacy muse2api name with an x is the owner's")
+	}
+	// the owner's: exactly as typed, the old bracket included, in both languages
+	for _, stored := range []string{"Muse（网页版） · Wren", "Muse（网页版）", "我的 Muse（网页版）"} {
+		for _, l := range []string{"zh", "en"} {
+			if got := Title(l, "muse", stored, SourceOwner); got != stored {
+				t.Errorf("Title(%s, muse, %q, owner) = %q", l, stored, got)
+			}
+		}
+	}
+	if !OwnerChose("muse", "我的 Muse（网页版）") {
+		t.Fatal("a legacy name that is not a shape club wrote is the owner's")
+	}
+	// two of them still read apart
+	got := Distinct("zh", []Account{{ID: "a", Provider: "muse", Stored: "Muse（网页版） · Wren", Source: SourceAuto, CreatedAt: 1},
+		{ID: "b", Provider: "muse", Stored: "Muse (web) · Wren", Source: SourceAuto, CreatedAt: 2}})
+	if got["a"] != "Muse 网页版 · Wren (1)" || got["b"] != "Muse 网页版 · Wren (2)" {
+		t.Fatal(got)
 	}
 }

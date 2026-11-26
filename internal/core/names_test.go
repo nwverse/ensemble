@@ -224,10 +224,10 @@ func TestPairingNamesGrokBotAfterItsSoleBot(t *testing.T) {
 func TestLegacyAccountNamesRenderAndSettleOnSync(t *testing.T) {
 	before := map[string][]string{
 		"grok_bot":     {"Grok Bot (1)", "Grok Bot (2)"},
-		"muse":         {"Muse（网页版） · Wren (1)", "Muse（网页版） · Wren (2)"},
+		"muse":         {"Muse 网页版 · Wren (1)", "Muse 网页版 · Wren (2)"},
 		"claude_duet":  {"Claude Duet"},
 		"gemini_tasks": {"Gemini"},
-		"muse2api":     {"Muse（自建转接）"},
+		"muse2api":     {"Muse 自建转接"},
 		"echo":         {"演示账号"},
 		"cue":          {"Cue · 小助手"},
 	}
@@ -480,4 +480,56 @@ func TestEmailAliasesAreShownBeforeTheirAt(t *testing.T) {
 		_ = s.SyncAccount(ctx, id)
 	}
 	check("after sync")
+}
+
+// Rows 0.6.1 and 0.6.2 stored under the bracketed Muse labels ("Muse（网页版） · x", "Muse（自建转接）"), by club or
+// from before club kept who named a row, read with today's labels without pairing again, before and after a sync; an
+// owner's name in that shape is kept as typed.
+func TestBracketedMuseLabelsStoredBeforeReadWithTodaysLabels(t *testing.T) {
+	ctx := context.Background()
+	s := namingSpace(t)
+	rows := []struct {
+		id, provider, stored, source, cred, zh, en string
+		owner                                      bool
+	}{
+		{"a000000000001", "muse", "Muse（网页版） · Wren", names.SourceAuto, "Wren|account-1", "Muse 网页版 · Wren", "Muse (web) · Wren", false},
+		{"a000000000002", "muse", "Muse（网页版） · Kit", names.SourceLegacy, "Kit|account-2", "Muse 网页版 · Kit", "Muse (web) · Kit", false},
+		{"a000000000003", "muse2api", "Muse（自建转接）", names.SourceAuto, "|account-3", "Muse 自建转接 (1)", "Muse (own relay) (1)", false},
+		{"a000000000004", "muse2api", "Muse（自建转接）", names.SourceLegacy, "|account-4", "Muse 自建转接 (2)", "Muse (own relay) (2)", false}, // two read alike: numbered
+		{"a000000000005", "muse", "Muse（网页版） · 工作", names.SourceOwner, "Wren|account-5", "Muse（网页版） · 工作", "Muse（网页版） · 工作", true},
+	}
+	for i, r := range rows {
+		if err := s.store.InsertAccount(ctx, store.Account{AccountID: r.id, Provider: r.provider, DisplayName: r.stored, NameSource: r.source,
+			Status: protocol.AccountActive, AssistantControl: string(DefaultControl), CreatedAt: int64(i + 1)}); err != nil {
+			t.Fatal(err)
+		}
+		_ = s.vault.Put(ctx, r.id, r.cred)
+	}
+	check := func(when string) {
+		t.Helper()
+		st, err := s.Status(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		shown := map[string]protocol.Account{}
+		for _, a := range st.Accounts {
+			shown[a.AccountID] = a
+		}
+		for _, r := range rows {
+			a := shown[r.id]
+			zh, en := r.zh, r.en
+			if a.DisplayName != zh || a.DisplayNameEn != en || (a.OwnerName != "") != r.owner {
+				t.Errorf("%s %s %q (%s): shown %q / %q, owner %q; want %q / %q", when, r.provider, r.stored, r.source,
+					a.DisplayName, a.DisplayNameEn, a.OwnerName, zh, en)
+			}
+		}
+	}
+	check("before sync")
+	for _, r := range rows {
+		_ = s.SyncAccount(ctx, r.id)
+	}
+	check("after sync")
+	if a, _, _ := s.store.Account(ctx, "a000000000005"); a.DisplayName != "Muse（网页版） · 工作" || a.NameSource != names.SourceOwner {
+		t.Fatalf("the owner's name changed: %+v", a)
+	}
 }
