@@ -70,8 +70,9 @@ question). It contributes:
 - the connector `club`, shown as **让 Persona 助手使用 Ensemble** ("Let the Persona assistant use Ensemble"), which
   carries the assistant's `club_agent_*` tools;
 
-and asks for network access to `api.manus.ai` (Cue), `api2.cursor.sh` (Grok Bot) and `api.groq.com` (Groq), and to the
-address you write in the setting `muse2api_url` (muse2api; nothing until you write one).
+and asks for network access to `api.manus.ai` (Cue, the agents of a Manus account), `api2.cursor.sh` (Grok Bot) and
+`api.groq.com` (Groq), and to the address you write in the setting `muse2api_url` (muse2api; nothing until you write
+one).
 
 **No hub restart is needed.** The hub starts the extension right after the install (it runs from startup on, as
 agent sources must) and the source appears on the Agents page within seconds. `personad extension list` should show

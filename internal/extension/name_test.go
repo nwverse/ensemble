@@ -13,6 +13,7 @@ import (
 	pac "github.com/nwverse/personal-agent-club"
 	"github.com/nwverse/personal-agent-club/internal/core"
 	"github.com/nwverse/personal-agent-club/internal/provider"
+	"github.com/nwverse/personal-agent-club/internal/provider/cue"
 	"github.com/nwverse/personal-agent-club/internal/provider/echo"
 )
 
@@ -189,5 +190,36 @@ func TestContributionNamesSayWhatEachIs(t *testing.T) {
 	}
 	if source.Name == conn.Name || source.Name == m.Name || conn.Name == m.Name {
 		t.Fatalf("contributions read alike: %q %q %q", m.Name, source.Name, conn.Name)
+	}
+}
+
+// Cue's add row and pairing page say which service it is (a Manus account's agents, through the Manus API, the only
+// thing provider/cue talks to) and where its key comes from, in Chinese and English; its brand stays "Cue".
+func TestCueSaysItIsManus(t *testing.T) {
+	club := core.New(core.Options{Registry: provider.NewRegistry(cue.New(cue.Options{Origin: "http://127.0.0.1:1"})), FollowUps: []time.Duration{}})
+	h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{}`))
+	for _, c := range []struct{ locale, row, intro, key, footer string }{
+		{"zh-Hans", "你在 Manus 上的智能体：到 Manus 网站复制你的 API Key 粘贴进来。", "Cue 就是你在 Manus 上的智能体，这里通过 Manus 的官方接口收发消息。",
+			"你 Manus 账号的 API Key：到 Manus 网站复制，整串粘贴到这里。", "只会发给 Manus（api.manus.ai）"},
+		{"en", "Your agents on Manus: copy your API key from Manus and paste it.", "Cue means your agents on Manus, reached through Manus's official API.",
+			"Your Manus account's API key: copy it from Manus and paste all of it.", "sent only to Manus (api.manus.ai)"},
+	} {
+		var row *wire.Component
+		for _, s := range renderIn(t, h, c.locale, pageState{}).Sections {
+			for i := range s.Items {
+				if s.Items[i].Key == "pair-"+cue.Name {
+					row = &s.Items[i]
+				}
+			}
+		}
+		if row == nil || row.Title != "Cue" || row.Subtitle != c.row {
+			t.Errorf("%s add row: %+v", c.locale, row)
+		}
+		page := renderIn(t, h, c.locale, pageState{Page: pagePair, Provider: cue.Name})
+		s := page.Sections[0]
+		if page.Title != "添加 Cue" && page.Title != "Add Cue" || s.Items[0].Type != "text" || s.Items[0].Text != c.intro ||
+			s.Items[1].Name != fieldCredential || s.Items[1].Detail != c.key || !strings.Contains(s.Footer, c.footer) {
+			t.Errorf("%s pairing page: %s", c.locale, text(page))
+		}
 	}
 }
