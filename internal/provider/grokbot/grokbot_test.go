@@ -460,3 +460,61 @@ func TestTokens(t *testing.T) {
 		t.Fatal("pasted token")
 	}
 }
+
+func TestListMessagesAllowsOmittedEntriesFieldAndRejectsMalformed(t *testing.T) {
+	empty := providertest.Serve(t, func(providertest.Call) providertest.Answer {
+		return providertest.Answer{Body: map[string]any{}}
+	})
+	page, err := New(Options{Origin: empty.URL}).ListMessages(ctx, key, session, provider.ListOptions{Limit: 50})
+	if err != nil || len(page.Messages) != 0 {
+		t.Fatalf("empty entries: page=%+v err=%v", page, err)
+	}
+
+	malformed := providertest.Serve(t, func(providertest.Call) providertest.Answer {
+		return providertest.Answer{Body: map[string]any{"entries": "bad"}}
+	})
+	if _, err := New(Options{Origin: malformed.URL}).ListMessages(ctx, key, session, provider.ListOptions{Limit: 50}); provider.CodeOf(err) != provider.CodeRequestFailed {
+		t.Fatalf("malformed entries: %v", err)
+	}
+}
+
+func TestListSessionsSkipsNotFoundSideSessionList(t *testing.T) {
+	base := routes(t)
+	roster := func(c providertest.Call) providertest.Answer {
+		if method(c) == "ListGrokBotAgents" {
+			return providertest.Answer{Body: map[string]any{
+				"agents": []any{
+					map[string]any{"agentId": "bot_alpha", "name": "Grok 秘书", "viewerSessionId": ""},
+					map[string]any{"agentId": "bot_stale", "name": "Stale Bot", "viewerSessionId": "v1"},
+				},
+			}}
+		}
+		if method(c) == "ListGrokBotAgentSessions" && string(c.JSON(t)["agentId"].(string)) == "bot_stale" {
+			return providertest.Answer{Status: http.StatusNotFound}
+		}
+		return base(c)
+	}
+	sessions, err := New(Options{Origin: providertest.Serve(t, roster).URL}).ListSessions(ctx, key)
+	if err != nil {
+		t.Fatalf("expected stale side-session 404 to keep roster: %v", err)
+	}
+	var ids []string
+	for _, s := range sessions {
+		ids = append(ids, s.ExternalID)
+	}
+	if !reflect.DeepEqual(ids, []string{"bot_alpha/", "bot_alpha/sess-side-42", "bot_stale/v1"}) {
+		t.Fatalf("sessions = %v", ids)
+	}
+
+	for _, status := range []int{http.StatusUnauthorized, http.StatusInternalServerError} {
+		errSrv := providertest.Serve(t, func(c providertest.Call) providertest.Answer {
+			if method(c) == "ListGrokBotAgentSessions" {
+				return providertest.Answer{Status: status}
+			}
+			return base(c)
+		})
+		if _, err := New(Options{Origin: errSrv.URL}).ListSessions(ctx, key); err == nil {
+			t.Fatalf("status %d should propagate", status)
+		}
+	}
+}
