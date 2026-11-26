@@ -160,7 +160,7 @@ func TestHomeSaysWhatWhereAndNext(t *testing.T) {
 	v := renderUI(t, h, HomeUI, wire.PlacementNavPage, pageState{})
 	noJargon(t, "home (empty)", v)
 	for _, want := range []string{"接进 Persona", "现在的状态", "还没有接入任何账号", "下一步", "连接你的第一个账号",
-		"添加账号：借用电脑上已登录的网页", "借用电脑上的浏览器」是指"} {
+		"怎么选：", "借用电脑上已登录的网页", "pair-claude_duet"} {
 		if !strings.Contains(text(v), want) {
 			t.Errorf("home (empty) lacks %q: %s", want, text(v))
 		}
@@ -289,9 +289,9 @@ func TestMainAssistantNeedsTheSetting(t *testing.T) {
 func TestBrowserAccountsSwitchedOffSayWhy(t *testing.T) {
 	club := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
 	h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{"browser_providers":false}`))
-	v := render(t, h, pageState{})
+	v := render(t, h, pageState{Page: pageAdd})
 	for _, s := range browserProviders {
-		for _, c := range v.Sections[sectionIndex(v, "添加账号：借用")].Items {
+		for _, c := range v.Sections[sectionIndex(v, "借用")].Items {
 			if c.Key == "pair-"+s.Provider && (c.Badge == nil || !strings.Contains(c.Subtitle, settingBrowser)) {
 				t.Errorf("row %s does not say what to switch on: %+v", s.Provider, c)
 			}

@@ -22,6 +22,30 @@ func TestBrandsAreOneTable(t *testing.T) {
 	}
 }
 
+// Every service has a letter avatar of its own, in both languages, that the view schema takes (at most 2 characters,
+// none empty); an unknown provider gets its readable name's first letter.
+func TestLettersDifferPerService(t *testing.T) {
+	for _, lang := range []string{"zh-Hans", "en"} {
+		seen := map[string]string{}
+		for _, p := range providers {
+			l := Letters(lang, p)
+			if n := len([]rune(l)); n == 0 || n > 2 {
+				t.Errorf("%s %s: letters %q", lang, p, l)
+			}
+			if other, dup := seen[strings.ToLower(l)]; dup {
+				t.Errorf("%s: %s and %s both draw %q", lang, other, p, l)
+			}
+			seen[strings.ToLower(l)] = p
+		}
+	}
+	if Letters("en", "my_site") != "M" || Letters("zh", "") != "账" {
+		t.Errorf("unknown: %q %q", Letters("en", "my_site"), Letters("zh", ""))
+	}
+	if Letters("zh", "echo") != "演" || Letters("en", "echo") != "De" {
+		t.Errorf("demo: %q %q", Letters("zh", "echo"), Letters("en", "echo"))
+	}
+}
+
 func TestComposeAddsTheBrandOnceAndDropsItsOwnWords(t *testing.T) {
 	for _, c := range []struct{ lang, provider, alias, want string }{
 		{"zh", "claude_duet", "Ada", "Claude Duet · Ada"},

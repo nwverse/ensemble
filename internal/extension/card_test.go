@@ -153,7 +153,7 @@ func TestSettingsLinksOpenDifferentViews(t *testing.T) {
 		if sectionIndex(list, "现在的状态") >= 0 || strings.Contains(text(list), "接进 Persona") || strings.Contains(text(list), "下一步") {
 			t.Errorf("%s: 账号 repeats the home's introduction or state: %s", when, text(list))
 		}
-		if sectionIndex(home, "现在的状态") < 0 || sectionIndex(list, "已接入的账号") != 1 || sectionIndex(list, "添加账号") < 0 {
+		if sectionIndex(home, "现在的状态") < 0 || sectionIndex(list, "已接入的账号") != 1 || !strings.Contains(text(list), `"key":"add"`) {
 			t.Errorf("%s: home has no state, or 账号 does not start with the accounts and offer to add one: %s", when, text(list))
 		}
 		if top := list.Sections[0]; top.Title != "" || len(top.Items) != 1 || top.Items[0].Text != accountsAbout("zh-Hans") {
