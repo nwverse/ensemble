@@ -46,7 +46,7 @@ func TestBrowserPairDots(t *testing.T) {
 
 	st := pageState{Page: pageBrowserPair, Provider: "dots"}
 	v := render(t, h, st)
-	if !strings.Contains(text(v), "MacBook (ego)") {
+	if !strings.Contains(text(v), "MacBook · 在线") || strings.Contains(text(v), "(ego)") {
 		t.Fatalf("pair page: %s", text(v))
 	}
 	res := act(t, h, st, actBrowserPair, map[string]string{fieldMachine: "mac|ego"})

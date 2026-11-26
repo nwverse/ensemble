@@ -60,7 +60,9 @@ The command first shows what the extension contributes and asks for, then asks t
 question). It contributes:
 
 - the agent source `pac` (its sessions appear on the Agents page as `pac:<sessionKey>`);
-- the page **Settings › Extensions › Personal Agent Club › Accounts**;
+- the home page **我的 AI 助手** ("My AI assistants"): an entry in the main navigation (icon `robot`), a card on
+  Overview (on the phones, above the list in Settings › Extensions) and the link **账号** ("Accounts") in
+  **Settings › Extensions › Personal Agent Club**. All three open the same home;
 - the connector `club`, which carries the assistant's `club_agent_*` tools;
 
 and asks for network access to `api.manus.ai` (Cue), `api2.cursor.sh` (Grok Bot) and `api.groq.com` (Groq), and to the
@@ -77,7 +79,7 @@ reaches nothing:
 personad extension config personal-agent-club demo_echo=true
 ```
 
-Then pair an "Echo (demo)" account on the Accounts page with any text starting with `echo-`.
+Then add a "演示账号" (demo account) on the home page with any text starting with `echo-`.
 
 To use Muse through your own [muse2api](https://github.com/czg86389-hub/muse2api) server, write its address (http or
 https; a server on the hub machine itself is `http://host.persona.internal:<port>`) and, if you like, the model:
@@ -87,30 +89,60 @@ personad extension config personal-agent-club muse2api_url=http://<host>:18610
 personad extension config personal-agent-club muse2api_model=muse-spark
 ```
 
-Then pair "Muse (muse2api)" on the Accounts page with the server's API key (`MUSE2API_KEY`).
+Then add "Muse（自建转接）" (Muse, own relay) on the home page with the server's API key (`MUSE2API_KEY`).
 
-## Accounts page
+The accounts through a computer's browser (Muse on the web, Claude Duet, Gemini, ChatGPT Dots) are on by default
+since 0.6.0 (`browser_providers`; nothing is reached until one is added on a computer). To switch them off:
 
-**Settings › Extensions › Personal Agent Club › Accounts** lists the paired accounts with their provider, status, last
-sync and last error, and pairs new ones:
+```sh
+personad extension config personal-agent-club browser_providers=false
+```
 
-- **Cue**, **Groq** and **Muse (muse2api)**: paste an API key (for muse2api, your server's `MUSE2API_KEY`; the row
-  says *Set its address in settings* until `muse2api_url` is written). The key field is a secret field: the apps never show it, the extension
-  cannot fill it in, and the extension never shows, returns or logs a saved key.
-- **Grok Bot**: start the sign-in, approve on the page that opens in your browser, and the page checks the result every
-  30 seconds (or at once with *check now*).
+## Home page
 
-An account's page syncs it now, pauses or resumes its syncing, unpairs it (keeping or deleting its sessions and
-messages) and sets its **assistant control**. When the club behind the page cannot do something yet, the page says
-so ("Not supported: …") instead of pretending.
+The extension's pages are written for someone who has never read this guide; their copy is Chinese (English for an
+English-language app) and avoids the program's own terms. The manifest itself (name, description, settings) is
+written in Chinese, since the hub shows a manifest's own language and the package carries no translations.
+
+The home (**我的 AI 助手**) shows, top to bottom:
+
+- what the extension is for, in two sentences;
+- **现在的状态** (where things stand): how many accounts are connected, how many need you, how many the Persona
+  assistant may use, and the one next step: connect the first account, fix a broken one (it opens that account), or
+  let the assistant use them through **助手指挥**;
+- **已接入的账号** (your accounts): each with its service, its state in words and what the assistant may do with it;
+- the ways to add an account, grouped by how one connects:
+  - **在浏览器里登录** (sign in in your browser): **Grok Bot**. Start the sign-in, approve on the page that opens in
+    your browser, and the page checks the result every 30 seconds (or at once with *check now*).
+  - **借用电脑上已登录的网页** (a website signed in on your computer): **Muse（网页版）**, **Claude Duet**,
+    **Gemini** and **ChatGPT Dots**, through the browser of a computer connected to Persona. The page lists your
+    computers and says what to sign in to first. With the setting `browser_providers` off, the rows and pages say
+    so and where to switch it on.
+  - **粘贴密钥** (paste a key): **Cue**, **Groq** and **Muse（自建转接）** (your own muse2api server, which needs
+    `muse2api_url` first; the row says so until it is written). The key field is a secret field: the apps never show
+    it, the extension cannot fill it in, and the extension never shows, returns or logs a saved key.
+  - **先试试** (try it first): the demo account, with `demo_echo` on.
+
+An account's page starts with its state (and, when it needs you, what to do and *重新检查* / check again), then:
+
+- **名字**: rename it (shown only in Persona);
+- **助手指挥** (assistant control): *关闭* (off, the default), *只读* (read) or *可代发（逐次确认）* (confirm);
+- **主助手** (main assistant): the account itself answering as a Persona main assistant. With
+  `assistant_runtime` off the page says to switch that on instead of offering a switch that does nothing;
+- syncing (sync now, pause, resume), which allowance the avatar shows, and for Grok Bot and Muse an advanced part that
+  connects the agent's own cloud computer to Persona;
+- removing it, keeping or deleting its chats.
+
+Every change says what it changed, and a refusal says what to do next, in words rather than error codes.
 
 ## The assistant's tools
 
 The connector `club` (Settings › Connectors) gives the assistant `club_agents_list`, `club_agent_read`,
 `club_agent_send`, `club_agent_start` and `club_agent_interrupt`:
 
-- An account the assistant may use is chosen on its page under **Assistant control**: *Off* (the default for every
-  account: the assistant does not see it), *Read* (list and read) or *Confirm* (also write).
+- An account the assistant may use is chosen on its page under **助手指挥** (assistant control): *关闭* (off, the
+  default for every account: the assistant does not see it), *只读* (read: list and read) or *可代发（逐次确认）*
+  (confirm: also write).
 - Every write is confirmed on your phone, every time, whatever your gate rules say: the manifest lists the writes in
   `confirm_always`. A scheduled task or background follow-up, with nobody there to confirm, can only read.
 - Starting a new session and interrupting a turn depend on the provider; where they are not available the tool says

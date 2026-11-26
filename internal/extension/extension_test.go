@@ -54,7 +54,7 @@ func TestConformance(t *testing.T) {
 		info := &wire.ExtensionInfo{ID: ID, Version: m.Version, Dir: t.TempDir(), DataDir: t.TempDir()}
 		var res wire.InitializeResult
 		if err := h.call("initialize", wire.InitializeParams{Protocol: ext.Protocol, Extension: info, Plugin: info,
-			Config: json.RawMessage(`{"demo_echo":false}`)}, &res); err != nil {
+			Config: json.RawMessage(`{"demo_echo":false,"browser_providers":false}`)}, &res); err != nil {
 			t.Fatal(err)
 		}
 		var raw json.RawMessage
