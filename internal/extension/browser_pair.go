@@ -59,7 +59,8 @@ func (a *accounts) browserPairView(ctx context.Context, l lang, st pageState) *w
 		Footer: l.t("不会导出或上传任何 Cookie：仅在所选电脑的隔离浏览器空间里访问已登录页面。",
 			"No cookies are exported or uploaded: the site is accessed inside an isolated browser space on the selected computer."),
 		Items: []wire.Component{
-			{Type: "segmented", Name: fieldMachine, Choices: choices, Value: choices[0].Value},
+			{Type: "field", Name: fieldMachine, Label: l.t("电脑", "Computer"), Kind: wire.FieldKindChoice, Choices: choices,
+				Value: choices[0].Value},
 			{Type: "field", Name: fieldName, Label: l.t("名称（可选）", "Name (optional)"), Kind: wire.FieldKindText},
 			{Type: "button", Title: l.t("验证并配对", "Verify and pair"), Action: &wire.Action{ID: actBrowserPair, Submit: true}},
 		},

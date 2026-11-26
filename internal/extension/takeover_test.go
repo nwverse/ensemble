@@ -95,20 +95,26 @@ func TestTakeoverAndWakeFlow(t *testing.T) {
 	if err != nil || len(sessions.Sessions) == 0 {
 		t.Fatalf("sessions = %+v err=%v", sessions, err)
 	}
-	msgs, err := space.Messages(ctx, protocol.MessagesParams{SessionKey: sessions.Sessions[0].SessionKey})
-	if err != nil {
-		t.Fatalf("messages: %v", err)
-	}
+	// The account has more than one session (echo's main and its read-only notes), listed in no fixed order: look
+	// in all of them.
 	foundBootstrap := false
-	for _, m := range msgs.Messages {
-		for _, b := range m.Blocks {
-			if strings.Contains(b.Text, "persona://link?token=jp_test&machine="+wantMID) {
-				foundBootstrap = true
+	var seen []protocol.Message
+	for _, sess := range sessions.Sessions {
+		msgs, err := space.Messages(ctx, protocol.MessagesParams{SessionKey: sess.SessionKey})
+		if err != nil {
+			t.Fatalf("messages: %v", err)
+		}
+		seen = append(seen, msgs.Messages...)
+		for _, m := range msgs.Messages {
+			for _, b := range m.Blocks {
+				if strings.Contains(b.Text, "persona://link?token=jp_test&machine="+wantMID) {
+					foundBootstrap = true
+				}
 			}
 		}
 	}
 	if !foundBootstrap {
-		t.Fatalf("bootstrap prompt not found in messages: %+v", msgs.Messages)
+		t.Fatalf("bootstrap prompt not found in messages: %+v", seen)
 	}
 
 	// 3. Machine confirmed & then goes offline -> Wake Machine sends wake prompt.

@@ -101,7 +101,7 @@ func TestLiveEgoSmoke(t *testing.T) {
 	ctx := context.Background()
 	drv := &LocalEgoDriver{}
 	cred := EncodeCredential(Credential{MachineID: "local", Backend: "ego"})
-	for _, site := range []Site{SiteMuse, SiteClaudeDuet} {
+	for _, site := range []Site{SiteMuse, SiteClaudeDuet, SiteDots} {
 		a := New(site, drv)
 		acct, err := a.Verify(ctx, cred)
 		if err != nil {

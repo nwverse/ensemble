@@ -10,8 +10,8 @@ github.com/mattn/go-isatty v0.0.24 h1:tGZZoVgT/KiqK1c8ocVLeDS8BSWMRd47J3Lbz7vsRe
 github.com/mattn/go-isatty v0.0.24/go.mod h1:nMCL3Zebbrt45jsMDgnfIwz6ydEQApk5oEI3HqDio6A=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
-github.com/nwverse/persona/sdk/go v0.0.0-20261113101817-65cbb6b95096 h1:92O4l3fA9MD1B3VvGqpH7o1VtDeMu1aAWWNnrhnCp1s=
-github.com/nwverse/persona/sdk/go v0.0.0-20261113101817-65cbb6b95096/go.mod h1:5270/bhN/R89mTgouwg/5tTuCUgRLn4EDN51ofvIn4Y=
+github.com/nwverse/persona/sdk/go v0.0.0-20261126042423-c034eb93a3c5 h1:2OPaBJGNJWl+HiO2d9JSxim13n7P10MeHH2+gn7gJ2I=
+github.com/nwverse/persona/sdk/go v0.0.0-20261126042423-c034eb93a3c5/go.mod h1:5270/bhN/R89mTgouwg/5tTuCUgRLn4EDN51ofvIn4Y=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 golang.org/x/mod v0.41.0 h1:qJmnOUb4YB+FsEuM3HcWucdZASCPGhsX6uljO6pog0c=

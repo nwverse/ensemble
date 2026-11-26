@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -84,25 +85,52 @@ func (d *LocalEgoDriver) Run(ctx context.Context, req RunRequest) (RunResult, er
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	spaceName := fmt.Sprintf("pac-%s-%d", req.Slot, time.Now().UnixNano())
+	// Wrapped as Persona's node wraps browser.run scripts (server/internal/node/browser.go browserScript): the script
+	// is the body of an async function with page in scope, and one marked line carries what it returned or threw.
 	wrapped := fmt.Sprintf(`const task = await taskSpace(%q);
 const page = task.page("p1");
+const __r = {};
 try {
+  __r.value = await (async () => {
 %s
-} finally {
-  await task.finish({ keep: [] }).catch(() => {});
-}
-`, spaceName, req.Script)
+  })() ?? null;
+} catch (e) { __r.error = String(e && e.message || e); }
+try { __r.url = await page.url(); __r.title = await page.title(); } catch (e) {}
+await task.finish({ keep: [] }).catch(() => {});
+console.log(%q + JSON.stringify(__r));
+`, spaceName, req.Script, egoResultMark)
 	cmd := exec.CommandContext(rctx, d.bin(), "nodejs")
 	cmd.Stdin = strings.NewReader(wrapped)
 	// ego-browser emits script console.log output on stderr; capture combined output
 	// just like Persona's node/browser.go does.
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			msg = err.Error()
+	out, runErr := cmd.CombinedOutput()
+	text := string(out)
+	i := strings.LastIndex(text, egoResultMark)
+	if i < 0 {
+		msg := strings.TrimSpace(text)
+		if msg == "" && runErr != nil {
+			msg = runErr.Error()
 		}
-		return RunResult{Backend: "ego", Output: string(out), Error: msg}, nil
+		if msg == "" {
+			msg = "ego-browser gave no result"
+		}
+		return RunResult{Backend: "ego", Output: text, Error: msg}, nil
 	}
-	return RunResult{Backend: "ego", Output: string(out)}, nil
+	line, _, _ := strings.Cut(text[i+len(egoResultMark):], "\n")
+	var result map[string]any
+	if err := json.Unmarshal([]byte(line), &result); err != nil {
+		return RunResult{Backend: "ego", Output: text, Error: "ego-browser result unreadable"}, nil
+	}
+	if console := strings.TrimSpace(text[:i]); console != "" {
+		result["console"] = console
+	}
+	raw, _ := json.Marshal(result)
+	res := RunResult{Backend: "ego", Output: string(raw)}
+	if e, _ := result["error"].(string); strings.TrimSpace(e) != "" {
+		res.Error = strings.TrimSpace(e)
+	}
+	return res, nil
 }
+
+// egoResultMark starts the line a wrapped script prints its result on (as Persona's node does).
+const egoResultMark = "@@pac-browser@@"
