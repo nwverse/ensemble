@@ -194,7 +194,10 @@ type Account struct {
 	DisplayName string `json:"displayName,omitempty"`
 	// DisplayNameEn is the same name with the service's English label, for English pages (club's own addition;
 	// DisplayName uses the Chinese one). Equal to DisplayName for a name the owner chose.
-	DisplayNameEn     string `json:"displayNameEn,omitempty"`
+	DisplayNameEn string `json:"displayNameEn,omitempty"`
+	// OwnerName is the name the owner gave the account, when they gave one (club's own addition); "" when club
+	// composed DisplayName.
+	OwnerName         string `json:"ownerName,omitempty"`
 	Status            string `json:"status,omitempty"`
 	ExternalAccountID string `json:"externalAccountId,omitempty"`
 	LastSyncedAt      int64  `json:"lastSyncedAt,omitempty"`

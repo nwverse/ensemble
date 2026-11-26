@@ -168,6 +168,7 @@ func (s *Space) accountViewWithBackends(ctx context.Context, a store.Account, ba
 	control, _ := ParseControl(a.AssistantControl)
 	return protocol.Account{AccountID: a.AccountID, Provider: a.Provider, DisplayName: cmp.Or(titles.zh[a.AccountID], names.Title(names.Default, a.Provider, a.DisplayName, a.NameSource)),
 		DisplayNameEn: cmp.Or(titles.en[a.AccountID], names.Title("en", a.Provider, a.DisplayName, a.NameSource)),
+		OwnerName:     ownerName(a),
 		Status:        a.Status, ExternalAccountID: a.ExternalAccountID, LastSyncedAt: a.LastSyncedAt, LastError: a.LastError,
 		SessionCount: len(sessions), AssistantControl: string(control), AssistantBackend: backends[a.AccountID],
 		ShowQuota: a.ShowQuota, QuotaDisplay: a.QuotaDisplay, Quota: s.quotaView(a, s.now())}, nil
@@ -781,6 +782,14 @@ func aliasOf(ctx context.Context, prov string, adapter provider.Adapter, cred st
 	return names.Alias(prov, alias)
 }
 
+// ownerName is the account's name when the owner chose it (names.Split), else "".
+func ownerName(a store.Account) string {
+	if name, owner := names.Split(a.Provider, a.DisplayName, a.NameSource); owner {
+		return name
+	}
+	return ""
+}
+
 func nameSource(ownerName string) string {
 	if ownerName != "" {
 		return names.SourceOwner
@@ -813,7 +822,8 @@ func (s *Space) settleName(ctx context.Context, id string) {
 		stored, auto := names.Stored(a.Provider, aliasOf(ctx, a.Provider, adapter, cred, remote)), names.SourceAuto
 		patch.DisplayName, patch.NameSource = &stored, &auto
 	}
-	if err := s.store.UpdateAccount(ctx, id, patch, s.now()); err == nil {
+	// Only onto the row as it was read: a rename (or another settle) while Verify ran wins.
+	if ok, err := s.store.UpdateAccountIf(ctx, id, store.AccountMatch{DisplayName: a.DisplayName, NameSource: names.SourceLegacy}, patch, s.now()); err == nil && ok {
 		s.notify(nil)
 	}
 }

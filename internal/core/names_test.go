@@ -323,3 +323,53 @@ func TestAWholeVerifiedNameIsReadForItsAlias(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// slowVerify is a Claude Duet fake whose Verify waits until released, telling it has started.
+type slowVerify struct {
+	named
+	started, release chan struct{}
+}
+
+func (v slowVerify) Verify(ctx context.Context, cred string) (provider.RemoteAccount, error) {
+	v.started <- struct{}{}
+	<-v.release
+	return v.named.Verify(ctx, cred)
+}
+
+// A rename made while a legacy row's settling Verify runs wins: the settle writes only onto the row as it read it.
+func TestSettlingNeverOverwritesARenameMadeMeanwhile(t *testing.T) {
+	ctx := context.Background()
+	v := slowVerify{named{fake: newFake(), id: "claude_duet"}, make(chan struct{}, 1), make(chan struct{})}
+	club := New(Options{Registry: provider.NewRegistry(v), FollowUps: []time.Duration{}})
+	t.Cleanup(club.Close)
+	s, _ := club.Space(ctx, DefaultSpace)
+	id := "a000000000001"
+	if err := s.store.InsertAccount(ctx, store.Account{AccountID: id, Provider: "claude_duet", DisplayName: "Claude Duet - Claude",
+		Status: protocol.AccountActive, AssistantControl: string(DefaultControl)}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.vault.Put(ctx, id, "Ada|account-1")
+	done := make(chan struct{})
+	go func() { _ = s.SyncAccount(ctx, id); close(done) }()
+	<-v.started
+	name := "工作用 Claude"
+	if _, err := s.UpdateAccount(ctx, protocol.UpdateAccountParams{AccountID: id, DisplayName: &name}); err != nil {
+		t.Fatal(err)
+	}
+	close(v.release)
+	<-done
+	a, _, _ := s.store.Account(ctx, id)
+	if a.DisplayName != name || a.NameSource != names.SourceOwner {
+		t.Fatalf("the rename was lost: %+v", a)
+	}
+	// Without a rename in between the same settle does rename it.
+	id2 := "a000000000002"
+	_ = s.store.InsertAccount(ctx, store.Account{AccountID: id2, Provider: "claude_duet", DisplayName: "Claude Duet - Claude",
+		Status: protocol.AccountActive, AssistantControl: string(DefaultControl)})
+	_ = s.vault.Put(ctx, id2, "Ada|account-2")
+	go func() { <-v.started }()
+	_ = s.SyncAccount(ctx, id2)
+	if a, _, _ := s.store.Account(ctx, id2); a.DisplayName != "Claude Duet · Ada" || a.NameSource != names.SourceAuto {
+		t.Fatalf("%+v", a)
+	}
+}

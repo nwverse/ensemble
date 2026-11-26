@@ -625,10 +625,9 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 				State: ext.EncodeState(pageState{Page: pageGrok, Account: acct.AccountID})}}})
 	}
 
-	name := acct.DisplayName
-	if name == acct.Provider {
-		name = ""
-	}
+	// Only a name the owner chose is prefilled: a composed title ("Grok Bot (2)", a brand in another language) is
+	// the placeholder, so 「改名」 pressed unchanged does not freeze it as theirs.
+	name := acct.OwnerName
 	rename := wire.Section{Title: l.t("名字", "Name"),
 		Footer: l.t("给它起个好认的名字，比如「工作用 Claude」。只在 Persona 里显示，不会改对方网站上的名字。",
 			"A name you will recognize, like \"Work Claude\". Shown only in Persona; the service's own name is not changed."),

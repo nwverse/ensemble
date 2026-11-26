@@ -56,6 +56,11 @@ type AccountPatch struct {
 	QuotaDisplay     *string
 }
 
+// AccountMatch is what UpdateAccountIf requires of the row: its display name and name source as they were read.
+type AccountMatch struct {
+	DisplayName, NameSource string
+}
+
 // Session is one stored session.
 type Session struct {
 	SessionKey       string
@@ -136,6 +141,9 @@ type Store interface {
 	Account(ctx context.Context, accountID string) (Account, bool, error)
 	InsertAccount(ctx context.Context, a Account) error
 	UpdateAccount(ctx context.Context, accountID string, p AccountPatch, now int64) error
+	// UpdateAccountIf is UpdateAccount only while the row still matches m (a compare-and-set); ok says whether it
+	// was applied.
+	UpdateAccountIf(ctx context.Context, accountID string, m AccountMatch, p AccountPatch, now int64) (ok bool, err error)
 	// RemoveAccount unpairs the account: with deleteData its sessions, messages and outbox go too; otherwise it is
 	// marked removed and its data stays (unlisted) for a later export.
 	RemoveAccount(ctx context.Context, accountID string, deleteData bool, now int64) error
