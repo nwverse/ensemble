@@ -235,11 +235,14 @@ func (s *Space) runSync(ctx context.Context, id, only string, refreshed bool) er
 			return nil
 		}
 		patch := store.AccountPatch{LastError: &code}
-		if auth {
+		// A human check, like a refused credential, waits for the user: the account is in error, so polling backs
+		// off to every 15 minutes instead of knocking on the blocked site each round; the next sync that gets
+		// through clears it.
+		if auth || code == provider.CodeHumanCheck {
 			st := protocol.AccountError
 			patch.Status = &st
 		}
-		if (auth || acct.Status == protocol.AccountError) && only == "" {
+		if (patch.Status != nil || acct.Status == protocol.AccountError) && only == "" {
 			now := s.now()
 			patch.LastSyncedAt = &now
 		}
@@ -273,7 +276,7 @@ func isSessionIsolatedError(err error) bool {
 		return false
 	}
 	switch provider.CodeOf(err) {
-	case provider.CodeAuthFailed, provider.CodeRateLimited, provider.CodeNetworkError, provider.CodeUpstreamError:
+	case provider.CodeAuthFailed, provider.CodeRateLimited, provider.CodeNetworkError, provider.CodeUpstreamError, provider.CodeHumanCheck:
 		return false
 	default:
 		return true

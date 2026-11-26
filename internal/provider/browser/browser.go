@@ -464,3 +464,14 @@ return { sent: true };
 	}
 	return provider.SendResult{Status: provider.Sent}, nil
 }
+
+var _ provider.MachineBound = (*Adapter)(nil)
+
+// Machine is the computer and backend a credential names (provider.MachineBound).
+func (a *Adapter) Machine(credential string) (string, string) {
+	c, err := ParseCredential(credential)
+	if err != nil {
+		return "", ""
+	}
+	return c.MachineID, c.Backend
+}

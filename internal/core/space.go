@@ -412,7 +412,7 @@ func (s *Space) attempt(ctx context.Context, row store.Outbox, sess store.Sessio
 			return protocol.LocalUnconfirmed, "SEND_UNCONFIRMED"
 		}
 		code := provider.CodeOf(err)
-		if code == provider.CodeAuthFailed {
+		if code == provider.CodeAuthFailed || code == provider.CodeHumanCheck {
 			st := protocol.AccountError
 			_ = s.store.UpdateAccount(ctx, sess.AccountID, store.AccountPatch{Status: &st, LastError: &code}, s.now())
 		}
@@ -721,6 +721,9 @@ func (s *Space) adapter(name string) (provider.Adapter, error) {
 func verifyError(err error) error {
 	if provider.IsRefusal(err) {
 		code := provider.CodeOf(err)
+		if code == provider.CodeHumanCheck {
+			return protocol.Invalid("the site asks for a human verification before it lets the browser in: " + code).Because(code)
+		}
 		return protocol.Invalid("the provider refused the credential: " + code).Because(code)
 	}
 	return protocol.Failure("SYNC_FAILED", "verify failed")

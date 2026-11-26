@@ -154,7 +154,7 @@ func Program(club *core.Club, version string) ext.Program {
 		},
 		UI: map[string]ext.Page{HomeUI: page, HomeCardUI: page, AccountsUI: page},
 		Namespaces: map[string]ext.Handler{
-			ext.ConnectorNamespace: toolsHandler(club),
+			ext.ConnectorNamespace: toolsHandler(club, driver),
 			protocol.AgentSourceNamespace: func(ctx context.Context, method string, params json.RawMessage) (any, error) {
 				if c := ext.Contribution(params); c != "" && c != Contribution {
 					return nil, ext.NoContribution(c)
