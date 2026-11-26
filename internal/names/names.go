@@ -65,7 +65,7 @@ var brands = map[string]brand{
 }
 
 // Letters is a provider's letter avatar in lang: what an account's or a service's row draws when the app shows no
-// picture (Tile), so services tell apart at a glance (the pages draw no brand images). Every known service has letters
+// picture (Tile), so services tell apart at a glance. Every known service has letters
 // of its own; an unknown one shows the first letter of its readable name.
 func Letters(lang, provider string) string {
 	if b, ok := brands[provider]; ok && b.letters != "" {

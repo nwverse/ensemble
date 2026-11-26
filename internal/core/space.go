@@ -183,7 +183,7 @@ func (s *Space) accountViewWithBackends(ctx context.Context, a store.Account, ba
 func ownAvatar(sessions []store.Session) string {
 	own := ""
 	for _, r := range sessions {
-		if r.IsHidden || r.Kind != protocol.KindMain || r.AvatarURL == "" {
+		if r.IsHidden || r.Kind != protocol.KindMain || names.Avatar(names.Default, r.Provider, r.AvatarURL).Own == "" {
 			continue
 		}
 		if own != "" && own != r.AvatarURL {
