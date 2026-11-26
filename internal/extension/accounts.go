@@ -772,12 +772,15 @@ func (a *accounts) addSections(r *ext.UIRequest, l lang, at string, providers []
 		}
 		keys.Items = append(keys.Items, c)
 	}
-	m := row(muse2api.Name, l.t("只有你自己搭了 Muse 转接服务才用得上，粘贴那个服务的密钥。", "Only if you run your own Muse relay: paste its key."),
-		pageState{Page: pagePair, Provider: muse2api.Name})
+	// The relay is not the Muse app and looks like it by name: its line says so first, and where an ordinary Muse
+	// account goes instead.
+	notMuse := l.t("不是 Muse 官方的：你自己搭了 Muse 转接服务才用，", "Not Muse's own: only if you run your own Muse relay, ")
+	ordinary := l.t("普通 Muse 账号选上面的「", " An ordinary Muse account goes under ") + providerName(l, providerMuse) + l.t("」。", " above.")
+	m := row(muse2api.Name, notMuse+l.t("粘贴它的密钥。", "paste its key.")+ordinary, pageState{Page: pagePair, Provider: muse2api.Name})
 	if !available[muse2api.Name] {
 		// Not missing from the build: it waits for its server's address in the extension's settings.
-		m = off(m, l.t("自己搭了 Muse 转接服务才需要：先在 ", "Only for your own Muse relay: first write its address in ")+settingsPath(l)+
-			l.t(" 里填「"+settingMuse2API+"」。", " → \""+settingMuse2API+"\"."))
+		m = off(m, notMuse+l.t("先在 ", "first write its address in ")+settingsPath(l)+
+			l.t(" 里填「"+settingMuse2API+"」。", " → \""+settingMuse2API+"\".")+ordinary)
 	}
 	keys.Items = append(keys.Items, m)
 	sections := []wire.Section{signIn, web, keys}
