@@ -100,6 +100,9 @@ func (c *Club) Registry() *provider.Registry { return c.opts.Registry }
 
 func (c *Club) now() int64 { return c.opts.Now().UnixMilli() }
 
+// Now is the club's clock (Options.Now), for what is written relative to it ("3 minutes ago").
+func (c *Club) Now() time.Time { return c.opts.Now() }
+
 // Info is club.info's answer.
 func (c *Club) Info() protocol.ClubInfo {
 	return protocol.ClubInfo{Version: c.opts.Version, ProtocolVersion: protocol.Version,
