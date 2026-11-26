@@ -2,13 +2,18 @@ package extension
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/nwverse/persona/sdk/go/exttest"
 	"github.com/nwverse/persona/sdk/go/wire"
 
+	pac "github.com/nwverse/personal-agent-club"
 	"github.com/nwverse/personal-agent-club/internal/core"
 	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/personal-agent-club/internal/provider"
 	"github.com/nwverse/personal-agent-club/internal/provider/echo"
 )
 
@@ -89,5 +94,74 @@ func TestRenameFieldIsPrefilledOnlyWithTheOwnersName(t *testing.T) {
 	}
 	if f := renameField(t, render(t, h, pageState{Page: pageAccount, Account: id})); f.Value != name {
 		t.Fatalf("owner name not prefilled: %+v", f)
+	}
+}
+
+// emailGrok is a Grok Bot whose Verify gives the e-mail after the credential's "|" as the account's alias, as GetMe
+// does for an account without a single bot.
+type emailGrok struct{ *fakeGrok }
+
+func (emailGrok) Verify(_ context.Context, cred string) (provider.RemoteAccount, error) {
+	_, email, _ := strings.Cut(cred, "|")
+	return provider.RemoteAccount{ExternalAccountID: "grok-" + email, Alias: email}, nil
+}
+
+// renderIn is render in a page language.
+func renderIn(t *testing.T, h *exttest.Host, locale string, st pageState) *wire.View {
+	t.Helper()
+	var v wire.View
+	if err := h.Call("ui.render", wire.UIParams{Contribution: AccountsUI, Placement: wire.PlacementPluginPage, Size: "full",
+		UIVersion: 6, Locale: locale, State: stateOf(st)}, &v); err != nil {
+		t.Fatalf("ui.render %+v: %v", st, err)
+	}
+	checkView(t, &v)
+	return &v
+}
+
+// infoRow is the value of the account page's row titled title, "" when there is none.
+func infoRow(v *wire.View, title string) string {
+	for _, s := range v.Sections {
+		for _, c := range s.Items {
+			if c.Type == "row" && c.Title == title {
+				return c.Value
+			}
+		}
+	}
+	return ""
+}
+
+// An account named after its e-mail is titled by the part before @ on the list and its own page, in Chinese and
+// English; its page keeps the whole e-mail as a row. An e-mail the owner typed as the name is shown as typed, with no
+// extra row.
+func TestEmailNamedAccountsShowTheShortNameAndKeepTheEmailOnTheirPage(t *testing.T) {
+	club := core.New(core.Options{Registry: provider.NewRegistry(emailGrok{&fakeGrok{}}), FollowUps: []time.Duration{}, WatchLimit: -1})
+	h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{}`))
+	ctx := context.Background()
+	space, _ := club.Space(ctx, core.DefaultSpace)
+	auto, err := space.AddAccount(ctx, protocol.AddAccountParams{Provider: grokBot, Credential: grokCredential + "|someone@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned, err := space.AddAccount(ctx, protocol.AddAccountParams{Provider: grokBot, Credential: grokCredential + "|other@example.com",
+		DisplayName: "other@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ locale, emailRow string }{{"zh-Hans", "邮箱"}, {"en", "Email"}} {
+		list := text(renderIn(t, h, c.locale, pageState{}))
+		if !strings.Contains(list, "Grok Bot · someone") || strings.Contains(list, "someone@example.com") {
+			t.Errorf("%s list: %s", c.locale, list)
+		}
+		page := renderIn(t, h, c.locale, pageState{Page: pageAccount, Account: auto.AccountID})
+		if page.Title != "Grok Bot · someone" || infoRow(page, c.emailRow) != "someone@example.com" {
+			t.Errorf("%s account page: %q, %s row %q", c.locale, page.Title, c.emailRow, infoRow(page, c.emailRow))
+		}
+		if f := renameField(t, page); f.Value != "" || f.Placeholder != "Grok Bot · someone" {
+			t.Errorf("%s rename field: %+v", c.locale, f)
+		}
+		page = renderIn(t, h, c.locale, pageState{Page: pageAccount, Account: owned.AccountID})
+		if page.Title != "other@example.com" || infoRow(page, c.emailRow) != "" || renameField(t, page).Value != "other@example.com" {
+			t.Errorf("%s owner's page: %q, %s row %q", c.locale, page.Title, c.emailRow, infoRow(page, c.emailRow))
+		}
 	}
 }

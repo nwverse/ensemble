@@ -1,7 +1,8 @@
 // Package names is how a paired account is called for people: its provider's brand, then who the account is (a
 // person's name or email, a bot's or agent's name), e.g. "Claude Duet · Ada". A provider's Verify reports only the
-// second part (provider.RemoteAccount.Alias); the brand is added here, once, so it never shows twice. A name the owner
-// chose is shown exactly as typed and never renamed or numbered.
+// second part (provider.RemoteAccount.Alias); the brand is added here, once, so it never shows twice. An alias that is
+// an e-mail is shown by the part before @ ("Grok Bot · ada"), the whole e-mail kept in the stored name. A name the
+// owner chose is shown exactly as typed and never renamed or numbered.
 //
 // An account row stores its display name and who chose it (store.Account.NameSource): SourceOwner, SourceAuto
 // (Stored(provider, alias), the English composition), or SourceLegacy for rows from before club kept this. A legacy
@@ -230,13 +231,46 @@ func Split(provider, stored, source string) (alias string, owner bool) {
 	return stored, true
 }
 
-// Title is how an account is called in lang: the owner's own name as it is, else the brand and the alias.
+// Title is how an account is called in lang: the owner's own name as it is, else the brand and the alias, an e-mail
+// alias shortened to the part before @ (Short).
 func Title(lang, provider, stored, source string) string {
 	alias, owner := Split(provider, stored, source)
 	if owner {
 		return alias
 	}
-	return Compose(lang, provider, alias)
+	return Compose(lang, provider, Short(provider, alias))
+}
+
+// Short is how a composed title shows an alias: an e-mail ("ada@example.com", the alias Grok Bot, Gemini and ChatGPT
+// Dots fall back to) by the part before @ ("ada"), unless that part is only the brand's own words and would vanish;
+// any other alias as it is. Only titles use it: the stored name keeps the whole e-mail (Email), so a row stored
+// before reads short too, and two e-mails sharing that part are told apart by Distinct's numbering.
+func Short(provider, alias string) string {
+	if local, ok := emailLocal(alias); ok && Alias(provider, local) != "" {
+		return local
+	}
+	return alias
+}
+
+// emailLocal is the part before @ of s when s is one e-mail address.
+func emailLocal(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	local, domain, ok := strings.Cut(s, "@")
+	if !ok || local == "" || strings.ContainsAny(s, " \t\n") || strings.Contains(domain, "@") ||
+		!strings.Contains(strings.Trim(domain, "."), ".") {
+		return "", false
+	}
+	return local, true
+}
+
+// Email is the whole e-mail a composed title shortened (Short), for the account's page; "" for an owner's name or
+// an alias that is not an e-mail.
+func Email(provider, stored, source string) string {
+	alias, owner := Split(provider, stored, source)
+	if owner || Short(provider, alias) == alias {
+		return ""
+	}
+	return alias
 }
 
 // Account is what Distinct needs of a paired account.

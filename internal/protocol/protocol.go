@@ -197,7 +197,10 @@ type Account struct {
 	DisplayNameEn string `json:"displayNameEn,omitempty"`
 	// OwnerName is the name the owner gave the account, when they gave one (club's own addition); "" when club
 	// composed DisplayName.
-	OwnerName         string `json:"ownerName,omitempty"`
+	OwnerName string `json:"ownerName,omitempty"`
+	// Email is the whole e-mail address a composed DisplayName shows only the part before @ of (club's own addition);
+	// "" otherwise.
+	Email             string `json:"email,omitempty"`
 	Status            string `json:"status,omitempty"`
 	ExternalAccountID string `json:"externalAccountId,omitempty"`
 	LastSyncedAt      int64  `json:"lastSyncedAt,omitempty"`

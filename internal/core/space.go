@@ -169,6 +169,7 @@ func (s *Space) accountViewWithBackends(ctx context.Context, a store.Account, ba
 	return protocol.Account{AccountID: a.AccountID, Provider: a.Provider, DisplayName: cmp.Or(titles.zh[a.AccountID], names.Title(names.Default, a.Provider, a.DisplayName, a.NameSource)),
 		DisplayNameEn: cmp.Or(titles.en[a.AccountID], names.Title("en", a.Provider, a.DisplayName, a.NameSource)),
 		OwnerName:     ownerName(a),
+		Email:         names.Email(a.Provider, a.DisplayName, a.NameSource),
 		Status:        a.Status, ExternalAccountID: a.ExternalAccountID, LastSyncedAt: a.LastSyncedAt, LastError: a.LastError,
 		SessionCount: len(sessions), AssistantControl: string(control), AssistantBackend: backends[a.AccountID],
 		ShowQuota: a.ShowQuota, QuotaDisplay: a.QuotaDisplay, Quota: s.quotaView(a, s.now())}, nil

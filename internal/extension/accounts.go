@@ -18,6 +18,7 @@ import (
 	"github.com/nwverse/personal-agent-club/internal/protocol"
 	"github.com/nwverse/personal-agent-club/internal/provider"
 	"github.com/nwverse/personal-agent-club/internal/provider/browser"
+	"github.com/nwverse/personal-agent-club/internal/provider/cue"
 	"github.com/nwverse/personal-agent-club/internal/provider/echo"
 	"github.com/nwverse/personal-agent-club/internal/provider/muse2api"
 )
@@ -557,6 +558,10 @@ func (a *accounts) addSections(l lang, at string, providers []protocol.Provider)
 			"A key (API key) is a string the service gives you that acts on your behalf. It is sent once when adding, kept encrypted, and never shown again.")}
 	for _, p := range keyProviders {
 		c := row(p, l.t("到 ", "Copy a key from ")+providerName(l, p)+l.t(" 网站复制一串密钥粘贴进来。", " and paste it."), pageState{Page: pagePair, Provider: p})
+		if p == cue.Name {
+			// "Cue" alone does not say which service it is: the agents of a Manus account (provider/cue).
+			c.Subtitle = l.t("你在 Manus 上的智能体：到 Manus 网站复制你的 API Key 粘贴进来。", "Your agents on Manus: copy your API key from Manus and paste it.")
+		}
 		if !available[p] {
 			c = off(c, l.t("这个版本没有带上它。", "This version does not include it."))
 		}
@@ -608,10 +613,16 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 	// What it is and how it is doing, with the fix when it needs one.
 	info := wire.Section{Items: []wire.Component{
 		{Type: "row", Title: l.t("服务", "Service"), Value: providerName(l, acct.Provider)},
+	}}
+	if acct.Email != "" {
+		// The name above shows only the part before @.
+		info.Items = append(info.Items, wire.Component{Type: "row", Title: l.t("邮箱", "Email"), Value: acct.Email})
+	}
+	info.Items = append(info.Items, []wire.Component{
 		{Type: "row", Title: l.t("现在", "Now"), Value: stateWords(l, acct), Badge: statusBadge(l, acct)},
 		{Type: "row", Title: l.t("上次同步", "Last synced"), Value: when(l, acct.LastSyncedAt, r.Location())},
 		{Type: "row", Title: l.t("对话", "Chats"), Value: fmt.Sprint(acct.SessionCount)},
-	}}
+	}...)
 	if words := problemWords(l, acct); words != "" {
 		if p, ok := problemOf(l, acct.LastError, placerFor(ctx, space, a.browser).of(ctx, acct, acct.LastError)); ok {
 			words = p.Text(l)
@@ -877,26 +888,38 @@ func (a *accounts) pairView(l lang, st pageState) *wire.View {
 	}
 	keyLabel := l.t("密钥（API Key）", "Key (API key)")
 	keyHelp := l.t("到 ", "Copy the API key from ") + name + l.t(" 网站的设置里找到 API Key，复制整串粘贴到这里。", "'s settings and paste all of it.")
+	sendsTo := name
+	var intro []wire.Component
 	switch st.Provider {
+	case cue.Name:
+		intro = []wire.Component{{Type: "text", Text: cueWhat(l)}}
+		keyHelp = l.t("你 Manus 账号的 API Key：到 Manus 网站复制，整串粘贴到这里。", "Your Manus account's API key: copy it from Manus and paste all of it.")
+		sendsTo = l.t("Manus（api.manus.ai）", "Manus (api.manus.ai)")
 	case muse2api.Name:
 		keyHelp = l.t("你自己搭的 Muse 转接服务启动时设的那串密钥。", "The key your own Muse relay was started with.")
 	case echo.Name:
 		keyLabel = l.t("随便填一串字", "Any text")
 		keyHelp = l.t("演示账号不连任何网站：填一串以 echo- 开头的字就行，比如 echo-test-001。", "The demo reaches nothing: any text starting with echo-, like echo-test-001.")
 	}
-	footer := l.t("密钥加密保存在你的 Persona 上，只会发给 ", "The key is kept encrypted on your Persona and sent only to ") + name +
+	footer := l.t("密钥加密保存在你的 Persona 上，只会发给 ", "The key is kept encrypted on your Persona and sent only to ") + sendsTo +
 		l.t("，之后不会再显示出来。", "; it is never shown again.")
 	if st.Provider == echo.Name {
 		footer = l.t("演示账号不会把任何东西发到外面。", "The demo account sends nothing anywhere.")
 	}
 	return &wire.View{Title: title, Sections: []wire.Section{{
 		Footer: footer,
-		Items: []wire.Component{
+		Items: append(intro, []wire.Component{
 			{Type: "field", Name: fieldCredential, Label: keyLabel, Kind: wire.FieldKindSecret, Detail: keyHelp},
 			{Type: "field", Name: fieldName, Label: l.t("名字（可不填）", "Name (optional)"), Kind: wire.FieldKindText,
 				Detail: l.t("给它起个好认的名字，比如「工作用 ", "A name you will recognize, like \"Work ") + name + l.t("」，以后也能改。", "\"; you can change it later.")},
 			{Type: "button", Title: l.t("添加", "Add"), Action: &wire.Action{ID: actPair, Submit: true}},
-		}}}}
+		}...)}}}
+}
+
+// cueWhat says on Cue's pairing page which service it is, for someone who has not heard the name: the agents of a
+// Manus account, reached through the official Manus API (provider/cue).
+func cueWhat(l lang) string {
+	return l.t("Cue 就是你在 Manus 上的智能体，这里通过 Manus 的官方接口收发消息。", "Cue means your agents on Manus, reached through Manus's official API.")
 }
 
 // grokView is the Grok Bot sign-in (club.logins.grok_bot.*): start gives a login id and the https page the user

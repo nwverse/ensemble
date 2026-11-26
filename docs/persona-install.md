@@ -59,17 +59,20 @@ personad extension install file:/path/to/personal-agent-club-<version>.tar.gz
 The command first shows what the extension contributes and asks for, then asks to continue (`--yes` skips the
 question). It contributes:
 
-- the agent source `pac` (its sessions appear on the Agents page as `pac:<sessionKey>`);
+- the agent source `pac`, shown as **Ensemble 的账号和对话** ("Ensemble's accounts and chats") among the extension's
+  switches (its sessions appear on the Agents page as `pac:<sessionKey>`);
 - the home page **我的 AI 助手** ("My AI assistants"): an entry in the navigation (icon `robot`) and a card on
   Overview (on the phones, above the list in Settings › Extensions) that opens it. The web's sidebar lists only the
   first few extension pages (three) and puts the rest under **更多** ("More"), so with other extensions installed the
   entry may be there; the card always opens it;
 - the link **账号** ("Accounts") in **Settings › Extensions › Ensemble**: the same accounts and ways to add one,
   without the home's introduction and state;
-- the connector `club`, which carries the assistant's `club_agent_*` tools;
+- the connector `club`, shown as **让 Persona 助手使用 Ensemble** ("Let the Persona assistant use Ensemble"), which
+  carries the assistant's `club_agent_*` tools;
 
-and asks for network access to `api.manus.ai` (Cue), `api2.cursor.sh` (Grok Bot) and `api.groq.com` (Groq), and to the
-address you write in the setting `muse2api_url` (muse2api; nothing until you write one).
+and asks for network access to `api.manus.ai` (Cue, the agents of a Manus account), `api2.cursor.sh` (Grok Bot) and
+`api.groq.com` (Groq), and to the address you write in the setting `muse2api_url` (muse2api; nothing until you write
+one).
 
 **No hub restart is needed.** The hub starts the extension right after the install (it runs from startup on, as
 agent sources must) and the source appears on the Agents page within seconds. `personad extension list` should show
@@ -147,7 +150,7 @@ Every change says what it changed (*重新检查* reads the account back and say
 
 ## The assistant's tools
 
-The connector `club` (Settings › Connectors) gives the assistant `club_agents_list`, `club_agent_read`,
+The connector `club` (**让 Persona 助手使用 Ensemble** in Settings › Connectors) gives the assistant `club_agents_list`, `club_agent_read`,
 `club_agent_send`, `club_agent_start` and `club_agent_interrupt`:
 
 - An account the assistant may use is chosen on its page under **助手指挥** (assistant control): *关闭* (off, the

@@ -213,7 +213,7 @@ func TestPairingNamesGrokBotAfterItsSoleBot(t *testing.T) {
 	s := namingSpace(t)
 	one, _ := s.AddAccount(ctx, protocol.AddAccountParams{Provider: "grok_bot", Credential: "bot:Grok 秘书|account-1"})
 	several, _ := s.AddAccount(ctx, protocol.AddAccountParams{Provider: "grok_bot", Credential: "bot:|account-2"})
-	if one.DisplayName != "Grok Bot · Grok 秘书" || several.DisplayName != "Grok Bot · ada@example.com" {
+	if one.DisplayName != "Grok Bot · Grok 秘书" || several.DisplayName != "Grok Bot · ada" || several.Email != "ada@example.com" {
 		t.Fatalf("%q %q", one.DisplayName, several.DisplayName)
 	}
 }
@@ -419,4 +419,65 @@ func TestLegacyBrandDotXIsKeptUnlessItIsTheVerifiedAlias(t *testing.T) {
 			}
 		}
 	}
+}
+
+// An e-mail alias is shown before its @ wherever the account is named, in both languages, while the stored name and
+// the account's Email keep the whole address: for an account paired now, for a row 0.6.1 stored (also after it
+// syncs), and with two e-mails sharing that part numbered. A name the owner typed, an e-mail or not, is kept as typed.
+func TestEmailAliasesAreShownBeforeTheirAt(t *testing.T) {
+	ctx := context.Background()
+	s := namingSpace(t)
+	pair := func(p, cred, name string) protocol.Account {
+		t.Helper()
+		a, err := s.AddAccount(ctx, protocol.AddAccountParams{Provider: p, Credential: cred, DisplayName: name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	grok := pair("grok_bot", "bot:|account-1", "") // no single bot: GetMe's e-mail, ada@example.com
+	gemini := pair("gemini_tasks", "ada@example.com|account-2", "")
+	dotsA := pair("dots", "ada@example.com|account-3", "")
+	dotsB := pair("dots", "ada@example.org|account-4", "")
+	owner := pair("gemini_tasks", "bob@example.com|account-5", "bob@example.com")
+	// as 0.6.1 stored a Grok Bot account without a single bot
+	old := "a000000000009"
+	if err := s.store.InsertAccount(ctx, store.Account{AccountID: old, Provider: "grok_bot", DisplayName: "Grok Bot · someone@example.com",
+		NameSource: names.SourceAuto, ExternalAccountID: "grok_bot-old", Status: protocol.AccountActive,
+		AssistantControl: string(DefaultControl), CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.vault.Put(ctx, old, "bot:|account-9")
+	want := map[string]struct{ zh, en, email, stored string }{
+		grok.AccountID:   {"Grok Bot · ada", "Grok Bot · ada", "ada@example.com", "Grok Bot · ada@example.com"},
+		gemini.AccountID: {"Gemini · ada", "Gemini · ada", "ada@example.com", "Gemini · ada@example.com"},
+		dotsA.AccountID:  {"ChatGPT Dots · ada (1)", "ChatGPT Dots · ada (1)", "ada@example.com", "ChatGPT Dots · ada@example.com"},
+		dotsB.AccountID:  {"ChatGPT Dots · ada (2)", "ChatGPT Dots · ada (2)", "ada@example.org", "ChatGPT Dots · ada@example.org"},
+		owner.AccountID:  {"bob@example.com", "bob@example.com", "", "bob@example.com"},
+		old:              {"Grok Bot · someone", "Grok Bot · someone", "someone@example.com", "Grok Bot · someone@example.com"},
+	}
+	check := func(when string) {
+		t.Helper()
+		st, err := s.Status(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range st.Accounts {
+			w := want[a.AccountID]
+			one, _ := s.Account(ctx, a.AccountID)
+			row, _, _ := s.store.Account(ctx, a.AccountID)
+			if a.DisplayName != w.zh || a.DisplayNameEn != w.en || one.DisplayName != w.zh || one.Email != w.email || row.DisplayName != w.stored {
+				t.Errorf("%s %s: shown %q / %q, email %q, stored %q (%s); want %+v", when, a.AccountID, a.DisplayName, a.DisplayNameEn,
+					one.Email, row.DisplayName, row.NameSource, w)
+			}
+			if wantOwner := a.AccountID == owner.AccountID; (one.OwnerName != "") != wantOwner || (row.NameSource == names.SourceOwner) != wantOwner {
+				t.Errorf("%s %s: owner name %q, source %q", when, a.AccountID, one.OwnerName, row.NameSource)
+			}
+		}
+	}
+	check("before sync")
+	for id := range want {
+		_ = s.SyncAccount(ctx, id)
+	}
+	check("after sync")
 }
