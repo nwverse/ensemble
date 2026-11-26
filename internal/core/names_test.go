@@ -43,14 +43,14 @@ func (n namedGrok) PairingAlias(_ context.Context, cred string) string {
 
 // What each provider's Verify reports as the alias, as its adapter reads it (see the provider tests).
 var verifiedAlias = map[string]string{
-	"grok_bot": "bot:Grok 秘书", "muse": "Glint", "claude_duet": "Ada", "gemini_tasks": "Ada", "dots": "Ada",
+	"grok_bot": "bot:Grok 秘书", "muse": "Wren", "claude_duet": "Ada", "gemini_tasks": "Ada", "dots": "Ada",
 	"cue": "小助手", "groq": "", "muse2api": "", "echo": "",
 }
 
 // What versions before this one stored for an account of each provider: Muse, Claude Duet, Gemini and Dots rows from
 // before 0.5 hold the tab's title.
 var legacyStored = map[string]string{
-	"grok_bot": "Grok Bot", "muse": "Muse · Glint", "claude_duet": "Claude Duet - Claude", "gemini_tasks": "gemini_tasks",
+	"grok_bot": "Grok Bot", "muse": "Muse · Wren", "claude_duet": "Claude Duet - Claude", "gemini_tasks": "gemini_tasks",
 	"dots": "Dots · Ada", "cue": "Cue · 小助手", "groq": "Groq", "muse2api": "Muse (muse2api)", "echo": "Echo",
 }
 
@@ -224,7 +224,7 @@ func TestPairingNamesGrokBotAfterItsSoleBot(t *testing.T) {
 func TestLegacyAccountNamesRenderAndSettleOnSync(t *testing.T) {
 	before := map[string][]string{
 		"grok_bot":     {"Grok Bot (1)", "Grok Bot (2)"},
-		"muse":         {"Muse（网页版） · Glint (1)", "Muse（网页版） · Glint (2)"},
+		"muse":         {"Muse（网页版） · Wren (1)", "Muse（网页版） · Wren (2)"},
 		"claude_duet":  {"Claude Duet"},
 		"gemini_tasks": {"Gemini"},
 		"muse2api":     {"Muse（自建转接）"},
@@ -308,7 +308,7 @@ func TestAWholeVerifiedNameIsReadForItsAlias(t *testing.T) {
 	club := New(Options{Registry: provider.NewRegistry(wholeName{named{fake: newFake(), id: "muse"}}), FollowUps: []time.Duration{}})
 	t.Cleanup(club.Close)
 	s, _ := club.Space(ctx, DefaultSpace)
-	for i, verified := range []string{"Muse · Glint", "Muse", "Muse · Muse"} {
+	for i, verified := range []string{"Muse · Wren", "Muse", "Muse · Muse"} {
 		if _, err := s.AddAccount(ctx, protocol.AddAccountParams{Provider: "muse", Credential: fmt.Sprintf("%s|account-%d", verified, i)}); err != nil {
 			t.Fatal(err)
 		}
@@ -319,7 +319,7 @@ func TestAWholeVerifiedNameIsReadForItsAlias(t *testing.T) {
 		got = append(got, a.DisplayNameEn)
 	}
 	slices.Sort(got)
-	if strings.Join(got, ", ") != "Muse (web) (1), Muse (web) (2), Muse (web) · Glint" {
+	if strings.Join(got, ", ") != "Muse (web) (1), Muse (web) (2), Muse (web) · Wren" {
 		t.Fatal(got)
 	}
 }
@@ -386,10 +386,10 @@ func TestLegacyBrandDotXIsKeptUnlessItIsTheVerifiedAlias(t *testing.T) {
 		{"a000000000001", "grok_bot", "Grok Bot · Work", "bot:Grok 秘书|account-1", "Grok Bot · Work", names.SourceOwner, "Grok Bot · Work"},
 		{"a000000000002", "groq", "Groq · fast", "|account-2", "Groq · fast", names.SourceOwner, "Groq · fast"},
 		{"a000000000003", "echo", "Echo · test", "|account-3", "Echo · test", names.SourceOwner, "Echo · test"},
-		// x differs from the alias Verify reports now ("Shengtao"): the owner edited it
-		{"a000000000004", "claude_duet", "Claude Duet · Shengtao 工作", "Shengtao|account-4", "Claude Duet · Shengtao 工作", names.SourceOwner, "Claude Duet · Shengtao 工作"},
+		// x differs from the alias Verify reports now ("Rowan"): the owner edited it
+		{"a000000000004", "claude_duet", "Claude Duet · Rowan 工作", "Rowan|account-4", "Claude Duet · Rowan 工作", names.SourceOwner, "Claude Duet · Rowan 工作"},
 		// x is the verified alias: club's own, rewritten in today's form
-		{"a000000000005", "claude_duet", "Claude Duet · Shengtao", "Shengtao|account-5", "Claude Duet · Shengtao", names.SourceAuto, "Claude Duet · Shengtao"},
+		{"a000000000005", "claude_duet", "Claude Duet · Rowan", "Rowan|account-5", "Claude Duet · Rowan", names.SourceAuto, "Claude Duet · Rowan"},
 		{"a000000000006", "dots", "Dots · Ada", "Ada|account-6", "ChatGPT Dots · Ada", names.SourceAuto, "ChatGPT Dots · Ada"},
 		{"a000000000007", "cue", "Cue · 小助手 Pro", "小助手|account-7", "Cue · 小助手 Pro", names.SourceOwner, "Cue · 小助手 Pro"},
 		// the page-title rule is unchanged

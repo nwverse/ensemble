@@ -30,8 +30,8 @@ func TestComposeAddsTheBrandOnceAndDropsItsOwnWords(t *testing.T) {
 		{"zh", "claude_duet", "Duet - Claude", "Claude Duet"},
 		{"zh", "gemini_tasks", "ada@example.com", "Gemini · ada@example.com"},
 		{"zh", "gemini_tasks", "Google Gemini", "Gemini"},
-		{"en", "muse", "Glint", "Muse (web) · Glint"},
-		{"zh", "muse", "Glint", "Muse（网页版） · Glint"},
+		{"en", "muse", "Wren", "Muse (web) · Wren"},
+		{"zh", "muse", "Wren", "Muse（网页版） · Wren"},
 		{"zh", "dots", "ChatGPT", "ChatGPT Dots"},
 		{"zh", "grok_bot", "Grok 秘书", "Grok Bot · Grok 秘书"},
 		{"zh", "grok_bot", "Grok", "Grok Bot"},
@@ -75,7 +75,7 @@ func TestLegacyRowsReadOnlyExactGeneratedFormsAsClubs(t *testing.T) {
 		{"gemini_tasks", "gemini_tasks", "Gemini", "Gemini"},
 		{"gemini_tasks", "Google Gemini", "Gemini", "Gemini"},
 		{"grok_bot", "Grok Bot", "Grok Bot", "Grok Bot"},
-		{"muse", "Muse · Glint", "Muse（网页版） · Glint", "Muse (web) · Glint"},
+		{"muse", "Muse · Wren", "Muse（网页版） · Wren", "Muse (web) · Wren"},
 		{"muse", "Chat — Muse", "Muse（网页版）", "Muse (web)"},
 		{"dots", "Dots · Ada", "ChatGPT Dots · Ada", "ChatGPT Dots · Ada"},
 		{"dots", "ChatGPT", "ChatGPT Dots", "ChatGPT Dots"},
@@ -128,8 +128,8 @@ func TestDistinctNumbersCollidingComposedNamesOnly(t *testing.T) {
 		{ID: "a2", Provider: "grok_bot", Stored: "Grok Bot", Source: SourceAuto, CreatedAt: 2},
 		{ID: "a1", Provider: "grok_bot", Stored: "Grok Bot", Source: SourceAuto, CreatedAt: 1},
 		{ID: "a3", Provider: "grok_bot", Stored: "Grok Bot · Grok 秘书", Source: SourceAuto, CreatedAt: 3},
-		{ID: "b1", Provider: "muse", Stored: "Muse · Glint", CreatedAt: 1},
-		{ID: "b2", Provider: "muse", Stored: "Muse · Glint", CreatedAt: 2},
+		{ID: "b1", Provider: "muse", Stored: "Muse · Wren", CreatedAt: 1},
+		{ID: "b2", Provider: "muse", Stored: "Muse · Wren", CreatedAt: 2},
 		{ID: "c1", Provider: "claude_duet", Stored: "Claude Duet", Source: SourceAuto, CreatedAt: 1},
 		{ID: "d1", Provider: "groq", Stored: "工作号", Source: SourceOwner, CreatedAt: 1},
 		{ID: "d2", Provider: "cue", Stored: "工作号", Source: SourceOwner, CreatedAt: 2},
@@ -138,7 +138,7 @@ func TestDistinctNumbersCollidingComposedNamesOnly(t *testing.T) {
 	})
 	want := map[string]string{
 		"a1": "Grok Bot (1)", "a2": "Grok Bot (2)", "a3": "Grok Bot · Grok 秘书",
-		"b1": "Muse（网页版） · Glint (1)", "b2": "Muse（网页版） · Glint (2)",
+		"b1": "Muse（网页版） · Wren (1)", "b2": "Muse（网页版） · Wren (2)",
 		"c1": "Claude Duet",
 		"d1": "工作号", "d2": "工作号",
 		"e1": "ChatGPT Dots (1)", "e2": "ChatGPT Dots (2)",
@@ -211,11 +211,11 @@ func TestLegacyAliasIsOfferedOnlyWhereClubWroteThatShape(t *testing.T) {
 		provider, stored, x string
 		ok                  bool
 	}{
-		{"claude_duet", "Claude Duet · Shengtao 工作", "Shengtao 工作", true},
+		{"claude_duet", "Claude Duet · Rowan 工作", "Rowan 工作", true},
 		{"cue", "Cue · 小助手", "小助手", true},
 		{"dots", "Dots · Ada", "Ada", true},
 		{"gemini_tasks", "Gemini Tasks · ada@example.com", "ada@example.com", true},
-		{"muse", "Muse · Glint", "Glint", true},
+		{"muse", "Muse · Wren", "Wren", true},
 		{"claude_duet", "Claude Duet · Claude", "", false}, // only the brand's words: club's, re-verified as before
 		{"claude_duet", "Claude Duet - Claude", "", false}, // a tab title
 		{"claude_duet", "Claude Duet", "", false},
@@ -239,7 +239,7 @@ func TestEmailAliasesAreTitledBeforeTheirAt(t *testing.T) {
 		{"dots", Stored("dots", "ada.lovelace@example.com"), SourceAuto, "ChatGPT Dots · ada.lovelace", "ChatGPT Dots · ada.lovelace", "ada.lovelace@example.com"},
 		// stored by 0.6.1, read as it is, without re-pairing
 		{"grok_bot", "Grok Bot · someone@example.com", SourceAuto, "Grok Bot · someone", "Grok Bot · someone", "someone@example.com"},
-		{"muse", "Muse (web) · glint@example.com", SourceAuto, "Muse（网页版） · glint", "Muse (web) · glint", "glint@example.com"},
+		{"muse", "Muse (web) · wren@example.com", SourceAuto, "Muse（网页版） · wren", "Muse (web) · wren", "wren@example.com"},
 		// a legacy Gemini row club wrote
 		{"gemini_tasks", "Gemini Tasks · ada@example.com", SourceLegacy, "Gemini · ada", "Gemini · ada", "ada@example.com"},
 		// the owner's: as typed, even when it is an e-mail or reads like club's
