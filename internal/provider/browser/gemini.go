@@ -80,12 +80,15 @@ const __allTasks = async n => {
 `
 
 // geminiScript wraps body (an async function body of (ARGS) run inside the page) so its answer, or its failure, is
-// the script's value.
+// the script's value. The RPCs answer on any of Gemini's pages, so a page already on gemini.google.com is not moved:
+// a sync then never navigates away under a send waiting in the same tab for its task to show.
 func geminiScript(gotoURL string, args any, body string) string {
 	a, _ := json.Marshal(args)
 	return fmt.Sprintf(`
-await page.goto(%q);
-await page.waitForLoadState("domcontentloaded").catch(() => {});
+if (!String(await page.url()).startsWith("https://gemini.google.com/")) {
+  await page.goto(%q);
+  await page.waitForLoadState("domcontentloaded").catch(() => {});
+}
 const __out = await page.evaluate(async (ARGS) => {
 %s
   try {

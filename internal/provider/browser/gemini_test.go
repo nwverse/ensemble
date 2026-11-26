@@ -41,6 +41,9 @@ func TestGeminiTasksReadsThroughTheHubFormat(t *testing.T) {
 	if !strings.Contains(fd.gotReqs[0].Script, `startsWith("/sorry")`) {
 		t.Fatalf("verify script does not tell Google's unusual-traffic page from signed out")
 	}
+	if !strings.Contains(fd.gotReqs[0].Script, `if (!String(await page.url()).startsWith("https://gemini.google.com/"))`) {
+		t.Fatalf("a read moves a page already on Gemini (it would pull a waiting send's task away)")
+	}
 	if !strings.Contains(fd.gotReqs[0].Script, `"MaZiqc"`) || !strings.Contains(fd.gotReqs[0].Script, "https://gemini.google.com/app") {
 		t.Fatalf("verify script does not read the tasks on gemini.google.com")
 	}
