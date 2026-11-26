@@ -197,7 +197,8 @@ func TestPicturesServedByRef(t *testing.T) {
 			}
 		}
 	}
-	if own != 1 || len(refs) < 3 {
+	// One own picture and at least one tile (the demo account's; every product with an icon is drawn by url).
+	if own != 1 || len(refs) < 2 {
 		t.Errorf("refs drawn: %v", refs)
 	}
 	for id, a := range accts {
