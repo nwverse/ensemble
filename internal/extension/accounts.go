@@ -67,6 +67,11 @@ const (
 // homeTitle is the home's title, as the manifest's navigation entry has it (one language there too).
 const homeTitle = "我的 AI 助手"
 
+// homeCardTitle is the Overview card's title, as the manifest's overview_card has it. The hub lists every
+// contribution by its title on the extension's settings page, so the card must not read as the home does; the
+// Overview page draws it as the card's header too, where "· 概况" (at a glance) reads as what the card is.
+const homeCardTitle = homeTitle + " · 概况"
+
 // accountsTitle is the settings page's link to the accounts, as the manifest has it.
 const accountsTitle = "账号"
 
@@ -315,7 +320,7 @@ func openAccount(l lang, at string, acct protocol.Account) *wire.Action {
 // first), how many the Persona assistant may use, and the one next step. A card has room for a few lines only
 // (exttest.CheckView: 2 sections, 12 components), so it is one section: the counts, then the step.
 func (a *accounts) cardView(ctx context.Context, l lang) *wire.View {
-	v := &wire.View{Title: l.t(homeTitle, homeTitle+" (My AI assistants)"), RefreshAfter: 300}
+	v := &wire.View{Title: l.t(homeCardTitle, homeCardTitle+" (My AI assistants at a glance)"), RefreshAfter: 300}
 	accts, err := a.accounts(ctx)
 	if err != nil {
 		v.Sections = []wire.Section{{Items: []wire.Component{{Type: "text", Text: reason(l, err, "")}}}}

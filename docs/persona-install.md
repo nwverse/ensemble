@@ -62,7 +62,7 @@ question). It contributes:
 - the agent source `pac`, shown as **Ensemble 的账号和对话** ("Ensemble's accounts and chats") among the extension's
   switches (its sessions appear on the Agents page as `pac:<sessionKey>`);
 - the home page **我的 AI 助手** ("My AI assistants"): an entry in the navigation (icon `robot`) and a card on
-  Overview (on the phones, above the list in Settings › Extensions) that opens it. The web's sidebar lists only the
+  Overview, **我的 AI 助手 · 概况** (on the phones, above the list in Settings › Extensions) that opens it. The web's sidebar lists only the
   first few extension pages (three) and puts the rest under **更多** ("More"), so with other extensions installed the
   entry may be there; the card always opens it;
 - the link **账号** ("Accounts") in **Settings › Extensions › Ensemble**: the same accounts and ways to add one,
@@ -73,7 +73,10 @@ question). It contributes:
 
 and asks for network access to `api.manus.ai` (Cue, the agents of a Manus account), `api2.cursor.sh` (Grok Bot) and
 `api.groq.com` (Groq), and to the address you write in the setting `muse2api_url` (muse2api; nothing until you write
-one).
+one). The settings page draws these permissions in the hub's own words: the network entries as the bare host names
+(the manifest's `permissions.network` holds host names only, with no label) and `agent_runtimes` (the main
+assistant bridge) in the hub's description of that permission (which names the node's `runtime.sock`); the manifest has only
+`"agent_runtimes": true`, so none of that text comes from it.
 
 **No hub restart is needed.** The hub starts the extension right after the install (it runs from startup on, as
 agent sources must) and the source appears on the Agents page within seconds. `personad extension list` should show
@@ -111,7 +114,8 @@ The extension's pages are written for someone who has never read this guide; the
 English-language app) and avoids the program's own terms. The manifest itself (name, description, settings) is
 written in Chinese, since the hub shows a manifest's own language and the package carries no translations.
 
-The Overview card (**我的 AI 助手**) shows where things stand at a glance, without scrolling: how many accounts are
+The Overview card (**我的 AI 助手 · 概况**, "My AI assistants at a glance", so that the extension's settings page
+does not list two contributions named alike) shows where things stand at a glance, without scrolling: how many accounts are
 connected, how many need you (naming the first), how many the Persona assistant may use, and the one next step
 (connect the first account, fix the broken one, let the assistant use them, or, when nothing needs you, where the
 chats are). With no account it says so and offers to connect the first one. Tapping it opens the home.

@@ -223,3 +223,69 @@ func TestCueSaysItIsManus(t *testing.T) {
 		}
 	}
 }
+
+// The hub lists the UI contributions by their titles too: the home and its Overview card must not read alike, and the
+// card's title is the one its view draws as its header on Overview, where it must still read well.
+func TestUIContributionTitlesNeverReadAlike(t *testing.T) {
+	var m wire.Manifest
+	if err := json.Unmarshal(pac.Manifest, &m); err != nil {
+		t.Fatal(err)
+	}
+	titles := map[string]string{}
+	seen := map[string]string{}
+	for _, u := range m.Contributes.UI {
+		titles[u.ID] = u.Title
+		if other, dup := seen[u.Title]; dup {
+			t.Errorf("%s and %s are both titled %q", other, u.ID, u.Title)
+		}
+		seen[u.Title] = u.ID
+	}
+	if titles[HomeUI] != homeTitle || titles[HomeCardUI] != homeCardTitle || titles[AccountsUI] != accountsTitle {
+		t.Fatalf("titles: %v", titles)
+	}
+	// the card names the home it opens, then what it is
+	if !strings.HasPrefix(homeCardTitle, homeTitle+" · ") || len([]rune(homeCardTitle)) > 40 {
+		t.Fatalf("card title %q", homeCardTitle)
+	}
+	h, _ := start(t)
+	for _, c := range []struct{ locale, want string }{{"zh-Hans", homeCardTitle}, {"en", homeCardTitle + " (My AI assistants at a glance)"}} {
+		var v wire.View
+		if err := h.Call("ui.render", wire.UIParams{Contribution: HomeCardUI, Placement: wire.PlacementOverviewCard, Size: "medium",
+			UIVersion: 11, Locale: c.locale}, &v); err != nil {
+			t.Fatal(err)
+		}
+		if v.Title != c.want {
+			t.Errorf("%s card header %q, want %q", c.locale, v.Title, c.want)
+		}
+	}
+	// the manifest's description sends people to the card by the title it now has
+	if !strings.Contains(m.Description, "「"+homeCardTitle+"」卡片") {
+		t.Errorf("description: %s", m.Description)
+	}
+}
+
+// The settings page's permission lines (network hosts, the agent runtime's socket) are the hub's words: the manifest's
+// own text never names the plumbing, and its network entries are bare host names or config: forms with no label.
+func TestManifestOwnWordsNameNoPlumbing(t *testing.T) {
+	_, shown := manifestDisplay(t)
+	for _, s := range shown {
+		for _, w := range []string{"runtime.sock", "socket", "PERSONA_RUNTIME_SOCKET", "agent_runtimes"} {
+			if strings.Contains(s, w) {
+				t.Errorf("the manifest says %q: %s", w, s)
+			}
+		}
+	}
+	var m struct {
+		Permissions struct {
+			Network []string `json:"network"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(pac.Manifest, &m); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range m.Permissions.Network {
+		if strings.ContainsAny(n, " （(") {
+			t.Errorf("network entry %q", n)
+		}
+	}
+}
