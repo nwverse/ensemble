@@ -1,0 +1,55 @@
+{
+  "manifestVersion": 2,
+  "id": "ensemble",
+  "name": "Ensemble",
+  "version": "0.1.0",
+  "description": "Your personal agents (Muse, Gemini Tasks, Grok Bot, Claude Duet, Dots…) from Persona's Ensemble, in Orca's sidebar: read, reply and get a notification when one answers.",
+  "author": { "name": "nwverse" },
+  "repository": "https://github.com/nwverse/ensemble",
+  "license": "MIT",
+  "engines": { "orca": ">=1.4.248" },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "capabilities": [
+    { "kind": "storage:own" },
+    { "kind": "secrets:own" },
+    { "kind": "settings:own" },
+    { "kind": "notifications:show" }
+  ],
+  "contributes": {
+    "panels": [
+      { "id": "ensemble", "title": "Ensemble", "icon": "bot", "entry": "src/panel.tsx", "ui": "components" }
+    ],
+    "commands": [
+      { "id": "ensemble.refresh", "title": "Ensemble: Refresh agents" }
+    ],
+    "statusBarItems": [
+      { "id": "unread", "icon": "bot", "text": "Ensemble", "tooltip": "Ensemble: unread agent replies", "command": "ensemble.refresh" }
+    ],
+    "settings": [
+      {
+        "key": "hubUrl",
+        "title": "Persona hub URL",
+        "description": "Where your Persona hub answers, such as https://persona.example.ts.net. The device token is kept in Orca's encrypted secrets, not here.",
+        "type": "string",
+        "default": "",
+        "placeholder": "https://persona.example.ts.net"
+      },
+      {
+        "key": "pollSeconds",
+        "title": "Check every (seconds)",
+        "type": "integer",
+        "default": 30,
+        "minimum": 10,
+        "maximum": 600
+      },
+      {
+        "key": "notify",
+        "title": "Notify when an agent replies",
+        "type": "boolean",
+        "default": true
+      }
+    ]
+  }
+}
