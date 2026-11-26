@@ -46,6 +46,8 @@ const threadProblem = atom<Problem | null>(null)
 const draft = atom('draft', '')
 /** The UUID for the text in `draft`, kept so a retry after a timeout is the same message. */
 const clientId = atom<string | null>('clientId', null)
+/** The conversation `draft` was written in. */
+const draftFor = atom<string | null>('draftFor', null)
 const sending = atom(false)
 const sendProblem = atom<Problem | null>(null)
 
@@ -116,6 +118,12 @@ async function loadThread(id: string, rank: number): Promise<void> {
 }
 
 async function open(s: Session): Promise<void> {
+  // A draft (and its clientId) belongs to the conversation it was written in.
+  if (read(draftFor) !== s.id) {
+    set(draft, '')
+    set(clientId, null)
+    set(draftFor, s.id)
+  }
   set(selected, s.id)
   set(thread, null)
   set(threadProblem, null)

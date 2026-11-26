@@ -130,3 +130,33 @@ test('a send that times out keeps its clientId for the retry', async () => {
   assert.equal(ids.length, 2)
   assert.equal(ids[0], ids[1])
 })
+
+test('a draft stays with its conversation', async () => {
+  const sent: any[] = []
+  view = await mount(panel, {
+    host: mockHost({
+      requests: {
+        'config.get': () => ({ hubUrl: 'https://hub.test', hasToken: true }),
+        'overview.get': () => ({ ok: true, value: ov }),
+        'messages.get': () => ({ ok: true, value: { messages: [], hasMore: false } }),
+        'session.read': () => ({ ok: true, value: { ok: true } }),
+        'message.send': (input) => {
+          sent.push(input)
+          if (sent.length === 1) throw Object.assign(new Error('timed out'), { code: 'timeout' })
+          return { ok: true, value: { status: 'pending', duplicate: false } }
+        }
+      }
+    })
+  })
+  await view.press({ text: /旧金山天气/ })
+  await view.type({ label: '回复' }, '给 Gemini 的话')
+  await view.press({ text: '发送' })
+  await view.press({ text: '‹ 返回' })
+  await view.press({ text: /主聊天/ })
+  assert.equal(view.valueOf({ label: '回复' }), '')
+  await view.type({ label: '回复' }, '给 Muse 的话')
+  await view.press({ text: '发送' })
+  assert.equal(sent[1].id, 'pac:s2')
+  assert.equal(sent[1].text, '给 Muse 的话')
+  assert.notEqual(sent[1].clientId, sent[0].clientId)
+})
