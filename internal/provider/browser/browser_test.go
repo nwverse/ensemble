@@ -41,7 +41,7 @@ var genericSite = Site{
 
 func TestGenericSiteVerifyListReadSend(t *testing.T) {
 	ctx := context.Background()
-	cred := EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})
+	cred := EncodeCredential(Credential{MachineID: "mac-2", Backend: "ego"})
 	fd := &fakeDriver{
 		name: "ego",
 		answer: func(req RunRequest) (RunResult, error) {
@@ -62,7 +62,7 @@ func TestGenericSiteVerifyListReadSend(t *testing.T) {
 		t.Fatalf("unexpected adapter metadata: %s %s", a.Name(), a.Connection())
 	}
 	acct, err := a.Verify(ctx, cred)
-	if err != nil || acct.Alias != "Agent" || acct.ExternalAccountID != "generic:mm-2" {
+	if err != nil || acct.Alias != "Agent" || acct.ExternalAccountID != "generic:mac-2" {
 		t.Fatalf("Verify = %+v, err=%v", acct, err)
 	}
 	sessions, err := a.ListSessions(ctx, cred)
@@ -110,7 +110,7 @@ func siteDriver(t *testing.T, answers map[string]any) *fakeDriver {
 
 func TestClaudeDuetSite(t *testing.T) {
 	ctx := context.Background()
-	cred := EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})
+	cred := EncodeCredential(Credential{MachineID: "mac-2", Backend: "ego"})
 	d := siteDriver(t, map[string]any{
 		"/api/account": map[string]any{"uuid": "acct-1", "name": "Rowan"},
 		"channels: chans": map[string]any{"channels": []map[string]any{
@@ -125,7 +125,7 @@ func TestClaudeDuetSite(t *testing.T) {
 	})
 	a := New(SiteClaudeDuet, d)
 	acct, err := a.Verify(ctx, cred)
-	if err != nil || acct.ExternalAccountID != "claude_duet:mm-2" || acct.Alias != "Rowan" {
+	if err != nil || acct.ExternalAccountID != "claude_duet:mac-2" || acct.Alias != "Rowan" {
 		t.Fatalf("Verify = %+v, err=%v", acct, err)
 	}
 	sessions, err := a.ListSessions(ctx, cred)

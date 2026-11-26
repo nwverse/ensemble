@@ -37,7 +37,7 @@ func TestScriptValueReadsHubAndPrintedResults(t *testing.T) {
 
 func TestDotsReadsThroughTheHubFormat(t *testing.T) {
 	ctx := context.Background()
-	cred := EncodeCredential(Credential{MachineID: "mm-1", Backend: "ego"})
+	cred := EncodeCredential(Credential{MachineID: "mac-1", Backend: "ego"})
 	const dot, room = "4f33~6abe", "d029"
 	fd := &fakeDriver{name: "ego", answer: func(req RunRequest) (RunResult, error) {
 		switch {
@@ -91,7 +91,7 @@ func TestDotsReadsThroughTheHubFormat(t *testing.T) {
 
 func TestDotsVerifyRefusesSignedOutAndDotless(t *testing.T) {
 	ctx := context.Background()
-	cred := EncodeCredential(Credential{MachineID: "mm-1"})
+	cred := EncodeCredential(Credential{MachineID: "mac-1"})
 	for _, tc := range []struct {
 		value any
 		code  string
@@ -109,7 +109,7 @@ func TestDotsVerifyRefusesSignedOutAndDotless(t *testing.T) {
 
 func TestDotsSend(t *testing.T) {
 	ctx := context.Background()
-	cred := EncodeCredential(Credential{MachineID: "mm-1"})
+	cred := EncodeCredential(Credential{MachineID: "mac-1"})
 	ref := provider.SessionRef{ExternalID: "4f33~6abe", Ref: map[string]string{"room": "d029"}}
 	for _, tc := range []struct {
 		value  any
