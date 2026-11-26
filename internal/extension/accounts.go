@@ -52,15 +52,20 @@ func settingsPath(l lang) string {
 	return l.t("设置 › 扩展 › "+productName+" › 设置", "Settings › Extensions › "+productName+" › Settings")
 }
 
-// The settings' titles as the manifest has them, for the pages that send people to one.
+// The settings' titles as the manifest has them, for the pages that send people to one. The manifest has one
+// language (Chinese), so the English pages quote these titles too: they are what the settings page shows.
 const (
-	settingBrowser   = "用电脑上的浏览器连接网页版助手"
-	settingRuntime   = "让这些账号可以当主助手"
-	settingMuse2API  = "自建 Muse 转接服务的地址"
-	settingBrowserEn = "Connect web assistants through a computer's browser"
-	settingRuntimeEn = "Let these accounts be the main assistant"
-	settingMuseEn    = "Address of your own Muse relay"
+	settingBrowser  = "用电脑上的浏览器连接网页版助手"
+	settingRuntime  = "让这些账号可以当主助手"
+	settingMuse2API = "自建 Muse 转接服务的地址"
 )
+
+// homeTitle is the home's title, as the manifest's navigation entry has it (one language there too).
+const homeTitle = "我的 AI 助手"
+
+// browserName is the browser Persona drives on a computer (browser.run): the one a browser account must be signed
+// in to. Pairing runs in a task space of its own inside it, with that browser's sign-ins.
+const browserName = "ego lite"
 
 // Pages of the accounts UI (pageState.Page).
 const (
@@ -237,7 +242,7 @@ func (o overview) stateLine(l lang) string {
 	if len(o.accounts) == 0 {
 		return l.t("还没有接入任何账号。", "No accounts yet.")
 	}
-	s := l.t(fmt.Sprintf("已接入 %d 个账号", len(o.accounts)), fmt.Sprintf("%d accounts", len(o.accounts)))
+	s := l.t(fmt.Sprintf("已接入 %d 个账号", len(o.accounts)), plural(len(o.accounts), "account"))
 	if n := len(o.broken); n > 0 {
 		s += l.t(fmt.Sprintf("，其中 %d 个要你处理", n), fmt.Sprintf(", %d need you", n))
 	}
@@ -249,6 +254,14 @@ func (o overview) stateLine(l lang) string {
 	}
 	return s + l.t(fmt.Sprintf("；Persona 助手能用其中 %d 个。", o.read+o.send),
 		fmt.Sprintf("; the Persona assistant can use %d of them.", o.read+o.send))
+}
+
+// plural is "1 account", "2 accounts".
+func plural(n int, word string) string {
+	if n == 1 {
+		return "1 " + word
+	}
+	return fmt.Sprintf("%d %ss", n, word)
 }
 
 // nextStep is the one thing most worth doing now: add the first account, fix a broken one, or let the assistant
@@ -285,7 +298,7 @@ func openAccount(l lang, at string, acct protocol.Account) *wire.Action {
 
 // cardView is the home in two lines, for Overview.
 func (a *accounts) cardView(ctx context.Context, l lang) *wire.View {
-	v := &wire.View{Title: l.t("我的 AI 助手", "My AI assistants"), RefreshAfter: 300}
+	v := &wire.View{Title: l.t(homeTitle, homeTitle+" (My AI assistants)"), RefreshAfter: 300}
 	accts, err := a.accounts(ctx)
 	if err != nil {
 		v.Sections = []wire.Section{{Items: []wire.Component{{Type: "text", Text: reason(l, err, "")}}}}
@@ -298,6 +311,14 @@ func (a *accounts) cardView(ctx context.Context, l lang) *wire.View {
 	}
 	v.Sections = []wire.Section{{Items: items}}
 	return v
+}
+
+func (a *accounts) account(ctx context.Context, id string) (protocol.Account, error) {
+	space, err := a.club.Space(ctx, core.DefaultSpace)
+	if err != nil {
+		return protocol.Account{}, err
+	}
+	return space.Account(ctx, id)
 }
 
 func (a *accounts) accounts(ctx context.Context) ([]protocol.Account, error) {
@@ -314,7 +335,7 @@ func (a *accounts) accounts(ctx context.Context) ([]protocol.Account, error) {
 
 func (a *accounts) listView(ctx context.Context, r *ext.UIRequest, l lang) *wire.View {
 	at := ui(r)
-	v := &wire.View{Title: l.t("我的 AI 助手", "My AI assistants"), RefreshAfter: 60}
+	v := &wire.View{Title: l.t(homeTitle, homeTitle+" (My AI assistants)"), RefreshAfter: 60}
 	space, err := a.club.Space(ctx, core.DefaultSpace)
 	if err != nil {
 		v.Sections = []wire.Section{{Items: []wire.Component{{Type: "text", Text: reason(l, err, "")}}}}
@@ -384,7 +405,7 @@ func controlWords(l lang, c core.Control) string {
 	case core.ControlConfirm:
 		return l.t("Persona 助手：可代发（每次先问你）", "assistant: may send, asking first")
 	case core.ControlAuto:
-		return l.t("Persona 助手：可代发（不问你）", "assistant: may send without asking")
+		return l.t("Persona 助手：可代发（每次先问你）", "assistant: may send, asking first")
 	}
 	return l.t("Persona 助手：不能用", "assistant: off")
 }
@@ -408,8 +429,8 @@ func problemWords(l lang, acct protocol.Account) string {
 		case acct.Provider == grokBot:
 			return l.t("登录失效了：点开它，点「重新登录」。", "Signed out: open it and sign in again.")
 		case browserConnection(acct.Provider):
-			return l.t("登录失效了：到那台电脑的浏览器里重新登录 ", "Signed out: sign in to ") + providerName(l, acct.Provider) +
-				l.t("，再回来点「重新检查」。", " again in the computer's browser, then check again.")
+			return l.t("登录失效了：在那台电脑上 Persona 控制的浏览器里重新登录 ", "Signed out: sign in to ") + providerName(l, acct.Provider) +
+				l.t("，再回来点「重新检查」。", " again in the browser Persona controls on that computer, then check again.")
 		}
 		return l.t("密钥失效了：到对方网站复制一个新的密钥，把这个账号移除后重新添加。",
 			"The key no longer works: copy a new key from the service, then remove this account and add it again.")
@@ -449,13 +470,13 @@ func (a *accounts) addSections(l lang, at string, providers []protocol.Provider)
 	}
 
 	web := wire.Section{Title: l.t("添加账号：借用电脑上已登录的网页", "Add an account: use a website signed in on your computer"),
-		Footer: l.t("「借用电脑上的浏览器」是指：你在一台已经连上 Persona 的电脑（比如家里的 Mac）的浏览器里登录好这些网站，Persona 通过那台电脑收发消息。密码和登录信息不会离开那台电脑，那台电脑要开着。",
-			"Using a computer's browser means: you sign in to these sites in the browser of a computer connected to Persona (your Mac at home, say) and Persona reads and writes through it. Passwords and sign-ins never leave that computer, which has to be on.")}
+		Footer: l.t("「借用电脑上的浏览器」是指：一台已经连上 Persona 的电脑（比如家里的 Mac）上有一个 Persona 能控制的浏览器（"+browserName+"），你在这个浏览器里登录好这些网站，Persona 就通过它收发消息。密码和登录信息不会离开那台电脑，那台电脑要开着。",
+			"Using a computer's browser means: a computer connected to Persona (your Mac at home, say) has a browser Persona controls ("+browserName+"); you sign in to these sites in that browser and Persona reads and writes through it. Passwords and sign-ins never leave that computer, which has to be on.")}
 	for _, s := range browserProviders {
-		c := row(s.Provider, l.t("用那台电脑浏览器里登录好的 ", "Through ")+siteHost(s.AppURL)+l.t("。", " signed in on that computer."),
+		c := row(s.Provider, l.t("用那个浏览器里登录好的 ", "Through ")+siteHost(s.AppURL)+l.t("。", " signed in in that browser."),
 			pageState{Page: pageBrowserPair, Provider: s.Provider})
 		if !available[s.Provider] {
-			c = off(c, l.t("要先在 ", "Switch on ")+settingsPath(l)+l.t(" 里打开「"+settingBrowser+"」。", ": "+settingBrowserEn+"."))
+			c = off(c, l.t("要先在 ", "Switch on ")+settingsPath(l)+l.t(" 里打开「"+settingBrowser+"」。", " → \""+settingBrowser+"\"."))
 		}
 		web.Items = append(web.Items, c)
 	}
@@ -475,7 +496,7 @@ func (a *accounts) addSections(l lang, at string, providers []protocol.Provider)
 	if !available[muse2api.Name] {
 		// Not missing from the build: it waits for its server's address in the extension's settings.
 		m = off(m, l.t("自己搭了 Muse 转接服务才需要：先在 ", "Only for your own Muse relay: first write its address in ")+settingsPath(l)+
-			l.t(" 里填「"+settingMuse2API+"」。", " ("+settingMuseEn+")."))
+			l.t(" 里填「"+settingMuse2API+"」。", " → \""+settingMuse2API+"\"."))
 	}
 	keys.Items = append(keys.Items, m)
 	sections := []wire.Section{signIn, web, keys}
@@ -594,7 +615,7 @@ func assistantSection(l lang, acct protocol.Account, control core.Control) wire.
 		{Value: string(core.ControlRead), Title: l.t("只读", "Read")},
 		{Value: string(core.ControlConfirm), Title: l.t("可代发（逐次确认）", "Confirm")}}
 	if control == core.ControlAuto {
-		choices = append(choices, wire.Choice{Value: string(core.ControlAuto), Title: l.t("可代发（不问）", "Auto")})
+		choices = append(choices, wire.Choice{Value: string(core.ControlAuto), Title: l.t("可代发（自动档）", "Auto")})
 	}
 	return wire.Section{Title: l.t("助手指挥：Persona 助手能不能用这个账号", "Assistant control: may the Persona assistant use this account"),
 		Footer: l.t("关闭：Persona 助手完全看不到它（新账号默认这样）。只读：Persona 助手能读它的对话，帮你总结、提醒。可代发：还能替你给它发消息，每次发之前都先在手机上问你。",
@@ -612,7 +633,7 @@ func (a *accounts) mainAssistantSection(l lang, acct protocol.Account) wire.Sect
 			"Unlike Assistant control above (the Persona assistant using this account), this makes the account itself your assistant: once on, you can pick it in Persona's chats and it answers you and supervises tasks.")}
 	if !a.runtimeEnabled() {
 		sec.Items = []wire.Component{{Type: "text", Text: l.t("现在用不了：先到 ", "Not available now: first switch on ") + settingsPath(l) +
-			l.t(" 里打开「"+settingRuntime+"」。", " → "+settingRuntimeEn+".")}}
+			l.t(" 里打开「"+settingRuntime+"」。", " → \""+settingRuntime+"\".")}}
 		if !acct.AssistantBackend {
 			return sec
 		}
@@ -762,7 +783,7 @@ func (a *accounts) pairView(l lang, st pageState) *wire.View {
 		if st.Provider == muse2api.Name {
 			why = l.t("这一项只给自己搭了 Muse 转接服务的人用。先到 ", "This is only for your own Muse relay. First write its address in ") +
 				settingsPath(l) + l.t(" 里填「"+settingMuse2API+"」，保存后再回来。普通的 Muse 账号请用「借用电脑上已登录的网页」那一组里的 Muse（网页版）。",
-				" ("+settingMuseEn+") and save. For an ordinary Muse account use Muse (web) instead.")
+				" → \""+settingMuse2API+"\" and save. For an ordinary Muse account use Muse (web) instead.")
 		}
 		return unavailableView(l, title, why)
 	}
@@ -824,7 +845,15 @@ func (a *accounts) grokView(ctx context.Context, l lang, st *pageState) *wire.Vi
 			v.RefreshAfter = 30
 			return v
 		default:
-			*st = pageState{Page: pageGrok, Account: again, Note: l.t("登录没有完成：", "Sign-in did not finish: ") + reason(l, err, ""),
+			words := reasonWords(l, why)
+			if words == "" && protocol.CodeOf(err) == protocol.CodeInvalid {
+				words = l.t("Grok 没有同意这次登录（可能点了拒绝，或者这个 Grok 账号用不了），请重新开始。",
+					"Grok did not approve this sign-in (refused, or the account cannot be used); start again.")
+			}
+			if words == "" {
+				words = reason(l, err, "")
+			}
+			*st = pageState{Page: pageGrok, Account: again, Note: l.t("登录没有完成：", "Sign-in did not finish: ") + words,
 				NoteTone: wire.ToneDanger}
 		}
 		v.Sections = []wire.Section{{Items: []wire.Component{start}}}
@@ -883,10 +912,24 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 	}
 	switch r.Action {
 	case actSync:
+		// club.accounts.sync answers ok whether or not the sync worked (a failure is kept on the account), so the
+		// outcome is read back from the account.
+		before, _ := a.account(ctx, st.Account)
 		if err := call(ctx, a.club, protocol.MethodClubAccountsSync, protocol.AccountParams{AccountID: st.Account}, nil); err != nil {
 			return failed(err, "")
 		}
-		return done(l.t("已重新检查并同步，最新的对话已经拉下来了", "Checked and synced; the latest chats are in"))
+		after, err := a.account(ctx, st.Account)
+		if err != nil {
+			return failed(err, "")
+		}
+		if after.Status == protocol.AccountError || after.LastError != "" {
+			st.Note, st.NoteTone = l.t("检查过了，还没好。", "Checked; still not working. ")+problemWords(l, after), wire.ToneCaution
+			return &wire.ActionResult{View: a.view(ctx, r, st), Toast: st.Note}, nil
+		}
+		if before.Status == protocol.AccountError || before.LastError != "" {
+			return done(l.t("检查过了，已经恢复正常，最新的对话也拉下来了", "Checked: working again, and the latest chats are in"))
+		}
+		return done(l.t("已同步，最新的对话已经拉下来了", "Synced; the latest chats are in"))
 	case actPause, actResume:
 		paused := r.Action == actPause
 		if err := update(map[string]any{"paused": paused}); err != nil {
@@ -910,14 +953,14 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 		case core.ControlConfirm:
 			return done(l.t("已设为可代发：Persona 助手能读，也能替你发消息，每次发之前先在手机上问你", "Set to Confirm: the Persona assistant can read and write, asking you each time"))
 		case core.ControlAuto:
-			return done(l.t("已设为可代发（不问）：Persona 助手发消息不再每次问你", "Set to Auto: the Persona assistant writes without asking"))
+			return done(l.t("已设为可代发（自动档）：Persona 助手能读也能替你发消息；这个扩展规定每次发送仍要先在手机上问你", "Set to Auto: the Persona assistant can read and write; this extension still has every send confirmed on your phone"))
 		}
 		return done(l.t("已关闭：Persona 助手现在看不到这个账号", "Off: the Persona assistant no longer sees this account"))
 	case actAssistantBackend:
 		on := strings.TrimSpace(r.Values[fieldAssistantBackend]) == "on"
 		if on && !a.runtimeEnabled() {
 			return refuse(l.t("现在开不了：先到 ", "Cannot be switched on: first switch on ") + settingsPath(l) +
-				l.t(" 里打开「"+settingRuntime+"」", " → "+settingRuntimeEn))
+				l.t(" 里打开「"+settingRuntime+"」", " → \""+settingRuntime+"\""))
 		}
 		if err := update(map[string]any{"assistant_backend": on}); err != nil {
 			return failed(err, "")
@@ -978,9 +1021,9 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 	case actBrowserPair:
 		if !a.available(st.Provider) {
 			return refuse(l.t("这类账号还没打开：先到 ", "Not switched on: first switch on ") + settingsPath(l) +
-				l.t(" 里打开「"+settingBrowser+"」", " → "+settingBrowserEn))
+				l.t(" 里打开「"+settingBrowser+"」", " → \""+settingBrowser+"\""))
 		}
-		if r.Values[fieldMachine] == "" {
+		if parseMachineChoice(r.Values[fieldMachine]).MachineID == "" {
 			return refuse(l.t("还没选电脑：在「用哪台电脑」里选一台，再点「检查登录并添加」", "No computer chosen: choose one, then try again"))
 		}
 		if len(utf16.Encode([]rune(strings.TrimSpace(r.Values[fieldName])))) > maxDisplayName {
@@ -989,8 +1032,8 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 		acct, err := a.pairBrowserAccount(ctx, st.Provider, r.Values[fieldMachine], r.Values[fieldName])
 		if why := protocol.ReasonOf(err); why == provider.CodeAuthFailed || why == protocol.ReasonNotSignedIn {
 			site, _ := browserSite(st.Provider)
-			return refuse(l.t("那台电脑的浏览器里还没登录好 ", "That computer's browser is not signed in to ") + siteHost(site.AppURL) +
-				l.t("：先在那台电脑上打开它并登录，再回来点「检查登录并添加」", ": sign in there first, then come back and try again"))
+			return refuse(l.t("那台电脑上 Persona 控制的浏览器里还没登录好 ", "The browser Persona controls on that computer is not signed in to ") + siteHost(site.AppURL) +
+				l.t("：先在那个浏览器里登录，再回来点「检查登录并添加」", ": sign in in that browser first, then come back and try again"))
 		}
 		if err != nil {
 			return failed(err, "")
@@ -1048,10 +1091,13 @@ func accountName(a protocol.Account) string {
 	return providerName("en", a.Provider)
 }
 
+// echoAccountName is what the demo provider names every account it verifies (echo.go); the pages say 演示账号.
+const echoAccountName = "Echo"
+
 // accountTitle is what an account is called on the pages: the name it was given or found, else its service in the
 // page's words (never the raw provider id the core falls back to).
 func accountTitle(l lang, a protocol.Account) string {
-	if a.DisplayName != "" && a.DisplayName != a.Provider {
+	if a.DisplayName != "" && a.DisplayName != a.Provider && !(a.Provider == echo.Name && a.DisplayName == echoAccountName) {
 		return a.DisplayName
 	}
 	return providerName(l, a.Provider)

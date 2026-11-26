@@ -3,7 +3,9 @@ package extension
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,7 +22,7 @@ import (
 
 // jargon are words a first-time user should not meet on the Chinese pages: English UI words, the program's own
 // terms and raw ids.
-var jargon = []string{"provider", "Provider", "runtime", "bridge", "connector", "Hub", "hub", "ego lite", "ego-lite",
+var jargon = []string{"provider", "Provider", "runtime", "bridge", "connector", "Hub", "hub", "ego-lite", "插件",
 	"BrowserBackend", "夺舍", "Persona Link", "muse2api", "MUSE2API_KEY", "claude_duet", "gemini_tasks", "grok_bot",
 	"requests:", "tokens:", "AUTH_FAILED", "RATE_LIMITED", "结果", "已更新", "此版本未接入", "Accounts", "Pair", "Sync",
 	"Demo", "Echo（", "Error", "Active"}
@@ -48,6 +50,10 @@ func noJargon(t *testing.T, where string, v *wire.View) {
 		}
 	}
 	all := strings.Join(visible, "\n")
+	// The browser Persona drives is named once a page, in parentheses after what it is.
+	if n := strings.Count(all, browserName); n > 1 || n != strings.Count(all, "（"+browserName) {
+		t.Errorf("%s names %s %d times, or not as （%s…）:\n%s", where, browserName, n, browserName, all)
+	}
 	for _, w := range jargon {
 		if strings.Contains(all, w) {
 			t.Errorf("%s shows %q:\n%s", where, w, all)
@@ -124,7 +130,10 @@ func TestManifestPagesAndSettingsAreChinese(t *testing.T) {
 		if !han(p.Title) || !han(p.Description) {
 			t.Errorf("setting %s is not in Chinese: %+v", k, p)
 		}
-		for _, w := range []string{"provider", "runtime", "bridge", "ego lite", "CDP", "socket"} {
+		if n := strings.Count(p.Title+p.Description, browserName); n > strings.Count(p.Title+p.Description, "（"+browserName) {
+			t.Errorf("setting %s names %s outside parentheses", k, browserName)
+		}
+		for _, w := range []string{"provider", "runtime", "bridge", "CDP", "socket"} {
 			if strings.Contains(p.Title+p.Description, w) {
 				t.Errorf("setting %s says %q", k, w)
 			}
@@ -344,4 +353,153 @@ func TestReasonsInWords(t *testing.T) {
 
 func storeStatus(status, lastError string) store.AccountPatch {
 	return store.AccountPatch{Status: &status, LastError: &lastError}
+}
+
+// flaky is a key provider whose reads fail while failing is set (an expired key), for 重新检查.
+type flaky struct {
+	failing atomic.Bool
+}
+
+func (f *flaky) Name() string       { return "groq" }
+func (f *flaky) Connection() string { return protocol.ConnectionServer }
+func (f *flaky) Verify(context.Context, string) (provider.RemoteAccount, error) {
+	return provider.RemoteAccount{ExternalAccountID: "flaky-1", DisplayName: "Groq"}, nil
+}
+func (f *flaky) ListSessions(context.Context, string) ([]provider.RemoteSession, error) {
+	if f.failing.Load() {
+		return nil, &provider.Error{Code: provider.CodeAuthFailed, HTTPStatus: 401}
+	}
+	return []provider.RemoteSession{{ExternalID: "main", Title: "Groq", Kind: protocol.KindMain, CanSend: true}}, nil
+}
+func (f *flaky) ListMessages(context.Context, string, provider.SessionRef, provider.ListOptions) (provider.RemotePage, error) {
+	return provider.RemotePage{}, nil
+}
+func (f *flaky) Send(context.Context, string, provider.SessionRef, provider.Outgoing, provider.SendContext) (provider.SendResult, error) {
+	return provider.SendResult{Status: provider.Sent}, nil
+}
+
+// 重新检查 says whether the account works now: club.accounts.sync answers ok either way.
+func TestCheckAgainSaysWhetherItIsFixed(t *testing.T) {
+	f := &flaky{}
+	club := core.New(core.Options{Registry: provider.NewRegistry(f), FollowUps: []time.Duration{}})
+	h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), nil)
+	res := act(t, h, pageState{Page: pagePair, Provider: "groq"}, actPair, map[string]string{fieldCredential: "gsk_fixture_0000001"})
+	if !res.Pop {
+		t.Fatalf("pair: %+v", res)
+	}
+	space, _ := club.Space(context.Background(), core.DefaultSpace)
+	status, _ := space.Status(context.Background())
+	page := pageState{Page: pageAccount, Account: status.Accounts[0].AccountID}
+
+	f.failing.Store(true)
+	res = act(t, h, page, actSync, nil)
+	if !strings.HasPrefix(res.Toast, "检查过了，还没好。密钥失效了") || strings.Contains(res.Toast, "已同步") {
+		t.Fatalf("a failing check said: %+v", res)
+	}
+	if !strings.Contains(text(res.View), "要你处理") || !strings.Contains(text(res.View), `"tone":"caution"`) {
+		t.Fatalf("a failing check's page: %s", text(res.View))
+	}
+	f.failing.Store(false)
+	if res = act(t, h, page, actSync, nil); res.Toast != "检查过了，已经恢复正常，最新的对话也拉下来了" {
+		t.Fatalf("a check that fixed it said: %+v", res)
+	}
+	if res = act(t, h, page, actSync, nil); res.Toast != "已同步，最新的对话已经拉下来了" {
+		t.Fatalf("a check of a working account said: %+v", res)
+	}
+}
+
+// The highest level never claims sends go without asking: club_agent_* is in the manifest's confirm_always.
+func TestAutoLevelStillAsks(t *testing.T) {
+	if !strings.Contains(string(pac.Manifest), `"club_agent_*"`) {
+		t.Fatal("club_agent_* is no longer confirmed always; reword the auto level")
+	}
+	h, club := start(t)
+	act(t, h, pageState{Page: pagePair, Provider: echo.Name}, actPair, map[string]string{fieldCredential: demoCredential})
+	space, _ := club.Space(context.Background(), core.DefaultSpace)
+	status, _ := space.Status(context.Background())
+	id := status.Accounts[0].AccountID
+	setControl(t, club, id, core.ControlAuto)
+	page := pageState{Page: pageAccount, Account: id}
+	for _, v := range []*wire.View{render(t, h, page), render(t, h, pageState{}), act(t, h, page, actControl, map[string]string{fieldControl: "auto"}).View} {
+		if strings.Contains(text(v), "不问") || strings.Contains(text(v), "不再每次问") {
+			t.Errorf("the auto level claims no asking: %s", text(v))
+		}
+	}
+	if res := act(t, h, page, actControl, map[string]string{fieldControl: "auto"}); !strings.Contains(res.Toast, "每次发送仍要先在手机上问你") {
+		t.Errorf("auto: %q", res.Toast)
+	}
+	if v := render(t, h, pageState{}); !strings.Contains(text(v), "Persona 助手：可代发（每次先问你）") {
+		t.Errorf("list: %s", text(v))
+	}
+}
+
+// The browser pairing page gives one instruction: sign in in the browser Persona drives on that computer.
+func TestBrowserPairSaysWhichBrowser(t *testing.T) {
+	club := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
+	h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), nil)
+	h.Answer("browser.machines", func(json.RawMessage) (any, error) {
+		return wire.BrowserMachinesResult{Machines: []wire.BrowserMachine{{MachineID: "m", Name: "Mac", Backend: "ego", Online: true, Ready: true}}}, nil
+	})
+	v := render(t, h, pageState{Page: pageBrowserPair, Provider: "claude_duet"})
+	noJargon(t, "browser pair", v)
+	for _, want := range []string{"打开 Persona 控制的那个浏览器（ego lite，不是你平时用的其他浏览器），在里面登录 claude.ai", "用的就是你在这个浏览器里的登录"} {
+		if !strings.Contains(text(v), want) {
+			t.Errorf("lacks %q: %s", want, text(v))
+		}
+	}
+	for _, not := range []string{"就像平时", "插件", "单独开一个浏览器空间"} {
+		if strings.Contains(text(v), not) {
+			t.Errorf("says %q: %s", not, text(v))
+		}
+	}
+	if res := act(t, h, pageState{Page: pageBrowserPair, Provider: "claude_duet"}, actBrowserPair, map[string]string{fieldMachine: "|ego"}); !strings.HasPrefix(res.Toast, "还没选电脑") {
+		t.Errorf("no computer: %+v", res)
+	}
+}
+
+// English pages quote the settings and the navigation entry by the titles the (Chinese-only) manifest shows.
+func TestEnglishPagesQuoteTheChineseTitles(t *testing.T) {
+	club := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
+	h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{"demo_echo":true,"browser_providers":false,"assistant_runtime":false}`))
+	en := func(st pageState) string {
+		var v wire.View
+		if err := h.Call("ui.render", wire.UIParams{Contribution: HomeUI, Placement: wire.PlacementNavPage, Size: "full",
+			UIVersion: 11, Locale: "en", State: stateOf(st)}, &v); err != nil {
+			t.Fatal(err)
+		}
+		return text(&v)
+	}
+	home := en(pageState{})
+	if !strings.Contains(home, `"title":"我的 AI 助手 (My AI assistants)"`) || !strings.Contains(home, `\"`+settingBrowser+`\"`) ||
+		!strings.Contains(home, `\"`+settingMuse2API+`\"`) {
+		t.Errorf("en home: %s", home)
+	}
+	if !strings.Contains(en(pageState{Page: pageBrowserPair, Provider: "dots"}), `\"`+settingBrowser+`\"`) {
+		t.Error("en browser pair page does not quote the setting")
+	}
+	act(t, h, pageState{Page: pagePair, Provider: echo.Name}, actPair, map[string]string{fieldCredential: demoCredential})
+	space, _ := club.Space(context.Background(), core.DefaultSpace)
+	status, _ := space.Status(context.Background())
+	if home := en(pageState{}); !strings.Contains(home, "1 account;") {
+		t.Errorf("en state: %s", home)
+	}
+	if acct := en(pageState{Page: pageAccount, Account: status.Accounts[0].AccountID}); !strings.Contains(acct, `\"`+settingRuntime+`\"`) {
+		t.Errorf("en account page does not quote the setting: %s", acct)
+	}
+	// and the unnamed demo account is the demo account in Chinese, not "Echo"
+	if v := render(t, h, pageState{}); !strings.Contains(text(v), `"title":"演示账号"`) || strings.Contains(text(v), `"Echo"`) {
+		t.Errorf("zh demo title: %s", text(v))
+	}
+}
+
+// Refusals without words of their own carry no English on the Chinese pages.
+func TestChineseReasonHasNoEnglish(t *testing.T) {
+	for _, err := range []error{protocol.Invalid("choose a computer"), protocol.Unsupported("x"), errors.New("boom")} {
+		if got := reason("zh-Hans", err, ""); strings.ContainsAny(got, "abcdefghijklmnopqrstuvwxyz") {
+			t.Errorf("reason(%v) = %q", err, got)
+		}
+	}
+	if got := reason("en", protocol.Invalid("choose a computer"), ""); !strings.Contains(got, "choose a computer") {
+		t.Errorf("en keeps the detail: %q", got)
+	}
 }

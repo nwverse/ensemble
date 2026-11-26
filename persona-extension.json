@@ -78,7 +78,7 @@
       "browser_providers": {
         "type": "boolean",
         "title": "用电脑上的浏览器连接网页版助手",
-        "description": "打开后可以添加 Muse（网页版）、Claude Duet、Gemini、ChatGPT Dots：借用一台已连上 Persona 的电脑（比如家里的 Mac）浏览器里已经登录好的网页来收发消息，密码和登录信息不会离开那台电脑。默认打开；不想让 Persona 借用电脑浏览器时关掉。",
+        "description": "打开后可以添加 Muse（网页版）、Claude Duet、Gemini、ChatGPT Dots：借用一台已连上 Persona 的电脑（比如家里的 Mac）上 Persona 能控制的浏览器（ego lite）里已经登录好的网页来收发消息，密码和登录信息不会离开那台电脑。默认打开；不想让 Persona 借用电脑浏览器时关掉。",
         "default": true
       },
       "muse2api_url": {
@@ -96,7 +96,7 @@
       "assistant_runtime": {
         "type": "boolean",
         "title": "让这些账号可以当主助手",
-        "description": "打开后，在账号页把「主助手」设为开启的账号，可以在 Persona 对话里被选来直接聊天、督办任务，由它来回答你。关掉后所有账号都不能当主助手（账号页也不再提供这个开关）。默认打开。",
+        "description": "打开后，在账号页把「主助手」设为开启的账号，可以在 Persona 对话里被选来直接聊天、督办任务，由它来回答你。关掉后所有账号都不能当主助手，账号页会提示先回这里打开（已经开启的账号只能在那里关掉）。默认打开。",
         "default": true
       }
     }

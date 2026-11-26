@@ -115,8 +115,9 @@ The home (**我的 AI 助手**) shows, top to bottom:
   - **在浏览器里登录** (sign in in your browser): **Grok Bot**. Start the sign-in, approve on the page that opens in
     your browser, and the page checks the result every 30 seconds (or at once with *check now*).
   - **借用电脑上已登录的网页** (a website signed in on your computer): **Muse（网页版）**, **Claude Duet**,
-    **Gemini** and **ChatGPT Dots**, through the browser of a computer connected to Persona. The page lists your
-    computers and says what to sign in to first. With the setting `browser_providers` off, the rows and pages say
+    **Gemini** and **ChatGPT Dots**, through the browser Persona drives on a computer connected to it (ego lite;
+    pairing and every read run in a task space of its own inside that browser, with its sign-ins). The page lists
+    your computers and says to sign in to the site in that browser first. With the setting `browser_providers` off, the rows and pages say
     so and where to switch it on.
   - **粘贴密钥** (paste a key): **Cue**, **Groq** and **Muse（自建转接）** (your own muse2api server, which needs
     `muse2api_url` first; the row says so until it is written). The key field is a secret field: the apps never show
@@ -126,14 +127,15 @@ The home (**我的 AI 助手**) shows, top to bottom:
 An account's page starts with its state (and, when it needs you, what to do and *重新检查* / check again), then:
 
 - **名字**: rename it (shown only in Persona);
-- **助手指挥** (assistant control): *关闭* (off, the default), *只读* (read) or *可代发（逐次确认）* (confirm);
+- **助手指挥** (assistant control): *关闭* (off, the default), *只读* (read) or *可代发（逐次确认）* (confirm). An account set to *auto* shows *可代发（自动档）*;
+  its sends are still confirmed on the phone every time, since the manifest lists `club_agent_*` in `confirm_always`;
 - **主助手** (main assistant): the account itself answering as a Persona main assistant. With
   `assistant_runtime` off the page says to switch that on instead of offering a switch that does nothing;
 - syncing (sync now, pause, resume), which allowance the avatar shows, and for Grok Bot and Muse an advanced part that
   connects the agent's own cloud computer to Persona;
 - removing it, keeping or deleting its chats.
 
-Every change says what it changed, and a refusal says what to do next, in words rather than error codes.
+Every change says what it changed (*重新检查* reads the account back and says whether it works now), and a refusal says what to do next, in words rather than error codes.
 
 ## The assistant's tools
 

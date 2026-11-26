@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 
 	"github.com/nwverse/personal-agent-club/internal/core"
@@ -46,7 +47,10 @@ func reason(l lang, err error, secret string) string {
 	if words := reasonWords(l, protocol.ReasonOf(err)); words != "" {
 		return words
 	}
-	detail := l.t("（详情：", " (detail: ") + msg + l.t("）", ")")
+	// The core's own message is English, for developers: the English pages add it as a detail, the Chinese ones say
+	// what to do and leave it to the log.
+	slog.Debug("refusal without words", "err", msg)
+	detail := l.t("如果一直这样，请把出错的时间告诉开发者。", " (detail: "+msg+")")
 	switch protocol.CodeOf(err) {
 	case protocol.CodeUnsupported:
 		return l.t("暂时做不到这件事。", "This cannot be done for now.") + detail

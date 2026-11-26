@@ -139,7 +139,7 @@ func TestAccountsPage(t *testing.T) {
 	if v := render(t, h, page); !strings.Contains(text(v), fieldControl) || !strings.Contains(text(v), "立即同步") {
 		t.Fatalf("account: %s", text(v))
 	}
-	if res := act(t, h, page, actSync, nil); !strings.Contains(res.Toast, "已重新检查并同步") {
+	if res := act(t, h, page, actSync, nil); res.Toast != "已同步，最新的对话已经拉下来了" {
 		t.Fatalf("sync: %+v", res)
 	}
 	// pause and the assistant control level go through club.accounts.update
@@ -556,7 +556,7 @@ func TestGrokBotSignIn(t *testing.T) {
 		t.Fatalf("%+v", sa)
 	}
 	grok.answer(&provider.Error{Code: "LOGIN_REFUSED", HTTPStatus: 403})
-	if v := render(t, h, sa); !strings.Contains(text(v), "LOGIN_REFUSED") || !strings.Contains(text(v), "开始登录") {
+	if v := render(t, h, sa); !strings.Contains(text(v), "Grok 没有同意这次登录") || strings.Contains(text(v), "LOGIN_REFUSED") || !strings.Contains(text(v), "开始登录") {
 		t.Fatalf("a refused sign-in: %s", text(v))
 	}
 	again = act(t, h, pageState{Page: pageGrok, Account: id}, actGrokStart, nil)
