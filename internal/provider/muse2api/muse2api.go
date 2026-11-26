@@ -23,9 +23,6 @@ import (
 // Name is the provider's name.
 const Name = "muse2api"
 
-// DisplayName is how the provider is shown.
-const DisplayName = "Muse (muse2api)"
-
 // DefaultModel is muse2api's chat model; the server routes every chat to muse.ai's one assistant whatever the model.
 const DefaultModel = "muse-spark"
 
@@ -133,7 +130,7 @@ func (a *Adapter) Verify(ctx context.Context, key string) (provider.RemoteAccoun
 		// Not a model list: the address is something other than a muse2api (or OpenAI-compatible) server.
 		return provider.RemoteAccount{}, &provider.Error{Code: provider.CodeRequestFailed, HTTPStatus: r.Status}
 	}
-	return provider.RemoteAccount{ExternalAccountID: Name, DisplayName: DisplayName}, nil
+	return provider.RemoteAccount{ExternalAccountID: Name}, nil
 }
 
 // ListSessions is the one chat.

@@ -75,7 +75,7 @@ func TestVerifiesTheKeyAgainstTheServersModelList(t *testing.T) {
 		t.Fatalf("%s %s %v %s", a.Name(), a.Connection(), a.WantsHistory(), a.ModelName())
 	}
 	acct, err := a.Verify(ctx, key)
-	if err != nil || !reflect.DeepEqual(acct, provider.RemoteAccount{ExternalAccountID: Name, DisplayName: DisplayName}) {
+	if err != nil || !reflect.DeepEqual(acct, provider.RemoteAccount{ExternalAccountID: Name}) {
 		t.Fatalf("%+v %v", acct, err)
 	}
 	if c := up.Calls()[0]; c.Path != "/v1/models" || c.Method != "GET" {

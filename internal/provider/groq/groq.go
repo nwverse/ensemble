@@ -131,7 +131,7 @@ func (a *Adapter) Verify(ctx context.Context, key string) (provider.RemoteAccoun
 	}
 	for _, row := range web.Records(web.Record(r.Data)["data"]) {
 		if web.Text(row["id"]) == a.model {
-			return provider.RemoteAccount{ExternalAccountID: "groq", DisplayName: "Groq", Quota: Quota(r.Header, a.now())}, nil
+			return provider.RemoteAccount{ExternalAccountID: "groq", Quota: Quota(r.Header, a.now())}, nil
 		}
 	}
 	return provider.RemoteAccount{}, &provider.Error{Code: "MODEL_UNAVAILABLE"}

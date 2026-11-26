@@ -18,11 +18,20 @@ var ErrNotFound = errors.New("store: not found")
 // listed, as in the Lark gateway.
 const AccountRemoved = "removed"
 
+// Who chose an account's display name (Account.NameSource).
+const (
+	NameAuto  = "auto"
+	NameOwner = "owner"
+)
+
 // Account is a paired account. Credentials are not here: they live in the vault.
 type Account struct {
-	AccountID         string
-	Provider          string
-	DisplayName       string
+	AccountID   string
+	Provider    string
+	DisplayName string
+	// NameSource says who chose DisplayName: NameOwner (shown as it is, never renamed or numbered), NameAuto (club
+	// composed it from the provider's brand and the account's alias), or "" for a row stored before club kept this.
+	NameSource        string
 	ExternalAccountID string
 	Status            string // protocol.AccountActive, AccountPaused, AccountError, or AccountRemoved
 	LastSyncedAt      int64
@@ -39,11 +48,17 @@ type Account struct {
 type AccountPatch struct {
 	Status           *string
 	DisplayName      *string
+	NameSource       *string
 	LastSyncedAt     *int64
 	LastError        *string
 	AssistantControl *string
 	ShowQuota        *bool
 	QuotaDisplay     *string
+}
+
+// AccountMatch is what UpdateAccountIf requires of the row: its display name and name source as they were read.
+type AccountMatch struct {
+	DisplayName, NameSource string
 }
 
 // Session is one stored session.
@@ -126,6 +141,9 @@ type Store interface {
 	Account(ctx context.Context, accountID string) (Account, bool, error)
 	InsertAccount(ctx context.Context, a Account) error
 	UpdateAccount(ctx context.Context, accountID string, p AccountPatch, now int64) error
+	// UpdateAccountIf is UpdateAccount only while the row still matches m (a compare-and-set); ok says whether it
+	// was applied.
+	UpdateAccountIf(ctx context.Context, accountID string, m AccountMatch, p AccountPatch, now int64) (ok bool, err error)
 	// RemoveAccount unpairs the account: with deleteData its sessions, messages and outbox go too; otherwise it is
 	// marked removed and its data stays (unlisted) for a later export.
 	RemoveAccount(ctx context.Context, accountID string, deleteData bool, now int64) error

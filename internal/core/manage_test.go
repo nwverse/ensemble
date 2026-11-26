@@ -52,7 +52,7 @@ func (p *scripted) Verify(_ context.Context, cred string) (provider.RemoteAccoun
 			return provider.RemoteAccount{}, err
 		}
 	}
-	return provider.RemoteAccount{ExternalAccountID: p.ext, DisplayName: "Scripted"}, nil
+	return provider.RemoteAccount{ExternalAccountID: p.ext, Alias: "Scripted"}, nil
 }
 func (p *scripted) ListSessions(_ context.Context, cred string) ([]provider.RemoteSession, error) {
 	p.mu.Lock()

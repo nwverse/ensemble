@@ -96,10 +96,11 @@ func (a *Adapter) Verify(ctx context.Context, key string) (provider.RemoteAccoun
 	if err != nil {
 		return provider.RemoteAccount{}, err
 	}
-	return provider.RemoteAccount{ExternalAccountID: "manus", DisplayName: accountName(list)}, nil
+	return provider.RemoteAccount{ExternalAccountID: "manus", Alias: accountAlias(list)}, nil
 }
 
-func accountName(agents []map[string]any) string {
+// accountAlias is the agent's nickname when the key has exactly one agent; "" otherwise.
+func accountAlias(agents []map[string]any) string {
 	var names []string
 	for _, agent := range agents {
 		if n := web.Text(agent["nickname"]); n != "" {
@@ -107,9 +108,9 @@ func accountName(agents []map[string]any) string {
 		}
 	}
 	if len(names) == 1 {
-		return "Cue · " + names[0]
+		return names[0]
 	}
-	return "Cue"
+	return ""
 }
 
 // ListSessions is each agent's main task, then its subtasks that are not deleted.

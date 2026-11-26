@@ -73,6 +73,8 @@ func (s *Space) sync(ctx context.Context, id, only string) {
 	_, _ = join(&s.mu, s.syncing, id+"|"+only, func() (struct{}, error) {
 		if err := s.runSync(ctx, id, only, false); err != nil {
 			s.log().Warn("sync failed", "space", s.name, "account", id, "err", err)
+		} else {
+			s.settleName(ctx, id)
 		}
 		return struct{}{}, nil
 	})

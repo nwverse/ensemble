@@ -444,7 +444,7 @@ const grokCredential = "fixture-grok-signin-token-0001"
 func (f *fakeGrok) Name() string       { return grokBot }
 func (f *fakeGrok) Connection() string { return protocol.ConnectionServer }
 func (f *fakeGrok) Verify(context.Context, string) (provider.RemoteAccount, error) {
-	return provider.RemoteAccount{ExternalAccountID: "grok-remote-1", DisplayName: "Grok Bot"}, nil
+	return provider.RemoteAccount{ExternalAccountID: "grok-remote-1"}, nil
 }
 func (f *fakeGrok) ListSessions(context.Context, string) ([]provider.RemoteSession, error) {
 	return []provider.RemoteSession{{ExternalID: "bot/", Title: "Grok 秘书", CanSend: true}}, nil
@@ -820,7 +820,7 @@ func TestMuse2APIPairsWithTheConfiguredServer(t *testing.T) {
 		t.Fatalf("a wrong key was paired: %+v", res)
 	}
 	res := act(t, h, st, actPair, map[string]string{fieldCredential: key})
-	if !pairedDone(res) || !strings.Contains(res.Toast, "Muse (muse2api)") || strings.Contains(res.Toast, key) {
+	if !pairedDone(res) || !strings.Contains(res.Toast, "Muse（自建转接）") || strings.Contains(res.Toast, key) {
 		t.Fatalf("pair: %+v", res)
 	}
 	space, _ := club.Space(context.Background(), core.DefaultSpace)

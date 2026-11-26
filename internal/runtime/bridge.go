@@ -16,6 +16,7 @@ import (
 
 	"crypto/rand"
 
+	"github.com/nwverse/personal-agent-club/internal/names"
 	"github.com/nwverse/personal-agent-club/internal/protocol"
 	"github.com/nwverse/personal-agent-club/internal/provider"
 )
@@ -304,15 +305,18 @@ func (b *Bridge) refreshAccounts(ctx context.Context) error {
 	return nil
 }
 
+// accountTitle is what a launcher and an assistant session are called for an account: its display name as the space
+// gives it (Chinese, names.Default), else its provider's brand, never the provider id.
+func accountTitle(a protocol.Account) string {
+	return names.Fallback(names.Default, a.Provider, a.DisplayName)
+}
+
 func (b *Bridge) launcherSnapshot() []Launcher {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	out := make([]Launcher, 0, len(b.accounts))
 	for _, t := range b.accounts {
-		name := t.account.DisplayName
-		if name == "" {
-			name = t.account.Provider
-		}
+		name := accountTitle(t.account)
 		out = append(out, Launcher{
 			Name:        t.launcher,
 			Agent:       t.account.Provider,
@@ -532,7 +536,7 @@ func (b *Bridge) emitUsageWindows(p *Peer) {
 	b.mu.Unlock()
 	now := b.now()
 	for _, t := range targets {
-		ev, ok := QuotaToUsageWindows(t.account.Provider, t.account.DisplayName, t.account.Quota, now)
+		ev, ok := QuotaToUsageWindows(t.account.Provider, accountTitle(t.account), t.account.Quota, now)
 		if !ok {
 			continue
 		}
@@ -633,10 +637,7 @@ func (b *Bridge) handleSessionStart(ctx context.Context, params json.RawMessage)
 	if err != nil {
 		return nil, &RPCError{Code: "upstream_error", Message: err.Error()}
 	}
-	title := target.account.DisplayName
-	if title == "" {
-		title = target.account.Provider
-	}
+	title := accountTitle(target.account)
 	now := b.now().UTC()
 	st := &sessionState{
 		binding: SessionBinding{

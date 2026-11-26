@@ -22,7 +22,7 @@ const schemaVersion = 2
 
 // The tables and columns are the Lark gateway's agent_* tables, so an import can be checked row for row. Booleans
 // are 0/1, JSON is text, the Postgres tsvector is an FTS5 index over search_text and the pre-split cjk_tokens.
-// assistant_control, show_quota and quota_display are club's own.
+// assistant_control, show_quota, quota_display and name_source are club's own.
 const schema = `
 CREATE TABLE IF NOT EXISTS agent_accounts (
   account_id text PRIMARY KEY NOT NULL,
@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS agent_accounts (
   updated_at integer NOT NULL,
   assistant_control text NOT NULL DEFAULT 'off',
   show_quota integer NOT NULL DEFAULT 0,
-  quota_display text NOT NULL DEFAULT ''
+  quota_display text NOT NULL DEFAULT '',
+  name_source text NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS agent_sessions (
   session_key text PRIMARY KEY NOT NULL,
@@ -109,6 +110,9 @@ CREATE TABLE IF NOT EXISTS club_settings (
 // SQLite is a Store in one SQLite file (WAL).
 type SQLite struct {
 	db *sql.DB
+	// selectAccount is the column list accounts are read with: accountColumns, or, for a store opened read-only
+	// before a writer added name_source (0.6.0's), the same with '' in its place.
+	selectAccount string
 }
 
 var _ Store = (*SQLite)(nil)
@@ -134,7 +138,7 @@ func OpenSQLite(path string) (*SQLite, error) {
 	}
 	// One connection: writes are serialized in-process, and another process (an import) waits on busy_timeout.
 	db.SetMaxOpenConns(1)
-	s := &SQLite{db: db}
+	s := &SQLite{db: db, selectAccount: accountColumns}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("open %s: %w", path, err)
@@ -171,7 +175,17 @@ func OpenSQLiteReadOnly(path string, immutable bool) (*SQLite, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("open %s: schema version %d, this program reads %d", path, version, schemaVersion)
 	}
-	return &SQLite{db: db}, nil
+	s := &SQLite{db: db, selectAccount: accountColumns}
+	named, err := s.hasNameSource()
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	if !named {
+		// Not migrated yet (read-only never migrates): read every account's name source as "" (legacy).
+		s.selectAccount = strings.Replace(accountColumns, "name_source", "'' AS name_source", 1)
+	}
+	return s, nil
 }
 
 func (s *SQLite) migrate() error {
@@ -190,8 +204,27 @@ func (s *SQLite) migrate() error {
 			return err
 		}
 	}
-	_, err := s.db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion))
+	// name_source is added without a version bump, so an older program (0.6.0, schema 2) still opens the store: it
+	// ignores the column, and a row it writes anew reads "" again, which core settles on the next sync. Rows from
+	// before keep "" too.
+	named, err := s.hasNameSource()
+	if err != nil {
+		return err
+	}
+	if !named {
+		if _, err := s.db.Exec(`ALTER TABLE agent_accounts ADD COLUMN name_source text NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	_, err = s.db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion))
 	return err
+}
+
+// hasNameSource says whether agent_accounts has the name_source column.
+func (s *SQLite) hasNameSource() (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT count(*) FROM pragma_table_info('agent_accounts') WHERE name = 'name_source'`).Scan(&n)
+	return n > 0, err
 }
 
 // Close closes the database.
@@ -237,7 +270,7 @@ func boolInt(b bool) int {
 }
 
 const accountColumns = `account_id, provider, display_name, status, external_account_id, last_synced_at, last_error,
-  assistant_control, show_quota, quota_display, created_at, updated_at`
+  assistant_control, show_quota, quota_display, created_at, updated_at, name_source`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -247,13 +280,13 @@ func scanAccount(r scanner) (Account, error) {
 	var synced sql.NullInt64
 	var show int
 	err := r.Scan(&a.AccountID, &a.Provider, &a.DisplayName, &a.Status, &ext, &synced, &lastErr, &a.AssistantControl,
-		&show, &a.QuotaDisplay, &a.CreatedAt, &a.UpdatedAt)
+		&show, &a.QuotaDisplay, &a.CreatedAt, &a.UpdatedAt, &a.NameSource)
 	a.ExternalAccountID, a.LastError, a.LastSyncedAt, a.ShowQuota = ext.String, lastErr.String, synced.Int64, show != 0
 	return a, err
 }
 
 func (s *SQLite) ListAccounts(ctx context.Context) ([]Account, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+accountColumns+` FROM agent_accounts WHERE status <> 'removed'
+	rows, err := s.db.QueryContext(ctx, `SELECT `+s.selectAccount+` FROM agent_accounts WHERE status <> 'removed'
 		ORDER BY created_at, account_id`)
 	if err != nil {
 		return nil, err
@@ -271,7 +304,7 @@ func (s *SQLite) ListAccounts(ctx context.Context) ([]Account, error) {
 }
 
 func (s *SQLite) Account(ctx context.Context, id string) (Account, bool, error) {
-	a, err := scanAccount(s.db.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM agent_accounts
+	a, err := scanAccount(s.db.QueryRowContext(ctx, `SELECT `+s.selectAccount+` FROM agent_accounts
 		WHERE account_id = ? AND status <> 'removed'`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, false, nil
@@ -285,15 +318,29 @@ func putAccount(ctx context.Context, q querier, a Account) error {
 		control = "off"
 	}
 	_, err := q.ExecContext(ctx, `INSERT OR REPLACE INTO agent_accounts (`+accountColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, a.AccountID, a.Provider, a.DisplayName, a.Status,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, a.AccountID, a.Provider, a.DisplayName, a.Status,
 		nullString(a.ExternalAccountID), nullInt(a.LastSyncedAt), nullString(a.LastError), control,
-		boolInt(a.ShowQuota), a.QuotaDisplay, a.CreatedAt, a.UpdatedAt)
+		boolInt(a.ShowQuota), a.QuotaDisplay, a.CreatedAt, a.UpdatedAt, a.NameSource)
 	return err
 }
 
 func (s *SQLite) InsertAccount(ctx context.Context, a Account) error { return putAccount(ctx, s.db, a) }
 
+// UpdateAccountIf applies p only while the row still has m's display name and name source, in one statement; ok
+// says whether it did.
+func (s *SQLite) UpdateAccountIf(ctx context.Context, id string, m AccountMatch, p AccountPatch, now int64) (bool, error) {
+	err := s.updateAccount(ctx, id, p, now, " AND display_name = ? AND name_source = ?", m.DisplayName, m.NameSource)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func (s *SQLite) UpdateAccount(ctx context.Context, id string, p AccountPatch, now int64) error {
+	return s.updateAccount(ctx, id, p, now, "")
+}
+
+func (s *SQLite) updateAccount(ctx context.Context, id string, p AccountPatch, now int64, where string, whereArgs ...any) error {
 	set := []string{"updated_at = ?"}
 	args := []any{now}
 	add := func(col string, v any) {
@@ -305,6 +352,9 @@ func (s *SQLite) UpdateAccount(ctx context.Context, id string, p AccountPatch, n
 	}
 	if p.DisplayName != nil {
 		add("display_name", *p.DisplayName)
+	}
+	if p.NameSource != nil {
+		add("name_source", *p.NameSource)
 	}
 	if p.LastSyncedAt != nil {
 		add("last_synced_at", nullInt(*p.LastSyncedAt))
@@ -321,8 +371,8 @@ func (s *SQLite) UpdateAccount(ctx context.Context, id string, p AccountPatch, n
 	if p.QuotaDisplay != nil {
 		add("quota_display", *p.QuotaDisplay)
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE agent_accounts SET `+strings.Join(set, ", ")+` WHERE account_id = ?`,
-		append(args, id)...)
+	res, err := s.db.ExecContext(ctx, `UPDATE agent_accounts SET `+strings.Join(set, ", ")+` WHERE account_id = ?`+where,
+		append(append(args, id), whereArgs...)...)
 	if err != nil {
 		return err
 	}

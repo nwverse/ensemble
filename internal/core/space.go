@@ -1,16 +1,19 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf16"
 
+	"github.com/nwverse/personal-agent-club/internal/names"
 	"github.com/nwverse/personal-agent-club/internal/protocol"
 	"github.com/nwverse/personal-agent-club/internal/provider"
 	"github.com/nwverse/personal-agent-club/internal/store"
@@ -118,8 +121,9 @@ func (s *Space) Status(ctx context.Context) (protocol.StatusResult, error) {
 	}
 	out := protocol.StatusResult{Enabled: true, Providers: s.club.opts.Registry.List(), Accounts: []protocol.Account{}}
 	backends := s.assistantBackends(ctx)
+	titles := titlesOf(accounts)
 	for _, a := range accounts {
-		pa, err := s.accountViewWithBackends(ctx, a, backends)
+		pa, err := s.accountViewWithBackends(ctx, a, backends, titles)
 		if err != nil {
 			return protocol.StatusResult{}, err
 		}
@@ -132,17 +136,40 @@ func (s *Space) Status(ctx context.Context) (protocol.StatusResult, error) {
 }
 
 func (s *Space) accountView(ctx context.Context, a store.Account) (protocol.Account, error) {
-	return s.accountViewWithBackends(ctx, a, s.assistantBackends(ctx))
+	accounts, err := s.store.ListAccounts(ctx)
+	if err != nil {
+		return protocol.Account{}, err
+	}
+	if !slices.ContainsFunc(accounts, func(x store.Account) bool { return x.AccountID == a.AccountID }) {
+		accounts = append(accounts, a)
+	}
+	return s.accountViewWithBackends(ctx, a, s.assistantBackends(ctx), titlesOf(accounts))
 }
 
-func (s *Space) accountViewWithBackends(ctx context.Context, a store.Account, backends map[string]bool) (protocol.Account, error) {
+// accountTitles are each account's display names as Persona and the pages show them (names.Distinct), in Chinese
+// (names.Default) and English: the owner's own name as typed, else the provider's brand and the account's alias,
+// numbered where two would read the same.
+type accountTitles struct{ zh, en map[string]string }
+
+func titlesOf(accounts []store.Account) accountTitles {
+	in := make([]names.Account, 0, len(accounts))
+	for _, a := range accounts {
+		in = append(in, names.Account{ID: a.AccountID, Provider: a.Provider, Stored: a.DisplayName, Source: a.NameSource,
+			CreatedAt: a.CreatedAt})
+	}
+	return accountTitles{zh: names.Distinct(names.Default, in), en: names.Distinct("en", in)}
+}
+
+func (s *Space) accountViewWithBackends(ctx context.Context, a store.Account, backends map[string]bool, titles accountTitles) (protocol.Account, error) {
 	sessions, err := s.store.AccountSessions(ctx, a.AccountID)
 	if err != nil {
 		return protocol.Account{}, err
 	}
 	control, _ := ParseControl(a.AssistantControl)
-	return protocol.Account{AccountID: a.AccountID, Provider: a.Provider, DisplayName: cmpOr(a.DisplayName, a.Provider),
-		Status: a.Status, ExternalAccountID: a.ExternalAccountID, LastSyncedAt: a.LastSyncedAt, LastError: a.LastError,
+	return protocol.Account{AccountID: a.AccountID, Provider: a.Provider, DisplayName: cmp.Or(titles.zh[a.AccountID], names.Title(names.Default, a.Provider, a.DisplayName, a.NameSource)),
+		DisplayNameEn: cmp.Or(titles.en[a.AccountID], names.Title("en", a.Provider, a.DisplayName, a.NameSource)),
+		OwnerName:     ownerName(a),
+		Status:        a.Status, ExternalAccountID: a.ExternalAccountID, LastSyncedAt: a.LastSyncedAt, LastError: a.LastError,
 		SessionCount: len(sessions), AssistantControl: string(control), AssistantBackend: backends[a.AccountID],
 		ShowQuota: a.ShowQuota, QuotaDisplay: a.QuotaDisplay, Quota: s.quotaView(a, s.now())}, nil
 }
@@ -736,6 +763,80 @@ func checkCredential(cred string) error {
 	return nil
 }
 
+// pairingAliaser is an adapter that names an account better than Verify's own answer does, with requests Verify
+// leaves out (an import verifies with one request per account): Grok Bot's only bot.
+type pairingAliaser interface {
+	PairingAlias(ctx context.Context, credential string) string
+}
+
+// aliasOf is who a verified account is, without its brand: the adapter's pairing alias, else Verify's, else the
+// alias in Verify's older whole name; "" when that is only the brand's or site's own words.
+func aliasOf(ctx context.Context, prov string, adapter provider.Adapter, cred string, remote provider.RemoteAccount) string {
+	alias := remote.Alias
+	if alias == "" && remote.DisplayName != "" {
+		alias, _ = names.Split(prov, remote.DisplayName, names.SourceLegacy)
+	}
+	if n, ok := adapter.(pairingAliaser); ok {
+		alias = cmp.Or(strings.TrimSpace(n.PairingAlias(ctx, cred)), alias)
+	}
+	return names.Alias(prov, alias)
+}
+
+// ownerName is the account's name when the owner chose it (names.Split), else "".
+func ownerName(a store.Account) string {
+	if name, owner := names.Split(a.Provider, a.DisplayName, a.NameSource); owner {
+		return name
+	}
+	return ""
+}
+
+func nameSource(ownerName string) string {
+	if ownerName != "" {
+		return names.SourceOwner
+	}
+	return names.SourceAuto
+}
+
+// settleName works out, once, who named an account stored before club kept that (names.SourceLegacy), after a sync
+// that succeeded: the owner's name is kept exactly and marked theirs; a bare brand, raw id or tab title an early
+// version saved is replaced by the brand and the alias Verify reads now; a "<Brand> · x" is club's (and rewritten in
+// today's form) only while x is the alias Verify reports, else the owner's. A failed Verify leaves it for the next
+// sync.
+func (s *Space) settleName(ctx context.Context, id string) {
+	a, ok, err := s.store.Account(ctx, id)
+	if err != nil || !ok || a.NameSource != names.SourceLegacy || a.Status != protocol.AccountActive || a.LastError != "" {
+		return
+	}
+	var patch store.AccountPatch
+	if names.OwnerChose(a.Provider, a.DisplayName) {
+		owner := names.SourceOwner
+		patch.NameSource = &owner
+	} else {
+		adapter, ok := s.club.opts.Registry.Get(a.Provider)
+		cred, found, err := s.vault.Get(ctx, id)
+		if !ok || err != nil || !found {
+			return
+		}
+		remote, err := adapter.Verify(ctx, cred)
+		if err != nil {
+			return
+		}
+		alias := aliasOf(ctx, a.Provider, adapter, cred, remote)
+		if x, ok := names.LegacyAlias(a.Provider, a.DisplayName); ok && x != alias {
+			// "<Brand> · x" with an x the provider does not report: the owner edited it. Kept exactly.
+			owner := names.SourceOwner
+			patch.NameSource = &owner
+		} else {
+			stored, auto := names.Stored(a.Provider, alias), names.SourceAuto
+			patch.DisplayName, patch.NameSource = &stored, &auto
+		}
+	}
+	// Only onto the row as it was read: a rename (or another settle) while Verify ran wins.
+	if ok, err := s.store.UpdateAccountIf(ctx, id, store.AccountMatch{DisplayName: a.DisplayName, NameSource: names.SourceLegacy}, patch, s.now()); err == nil && ok {
+		s.notify(nil)
+	}
+}
+
 // AddAccount pairs an account: the provider checks the credential, which then goes into the vault and never comes
 // back out. The account starts with assistant control off and is synced once. The same remote account twice in a
 // space is a conflict.
@@ -760,6 +861,10 @@ func (s *Space) AddAccount(ctx context.Context, p protocol.AddAccountParams) (pr
 	if err != nil {
 		return protocol.Account{}, verifyError(err)
 	}
+	alias := ""
+	if name == "" {
+		alias = aliasOf(ctx, p.Provider, adapter, cred, remote)
+	}
 	existing, err := s.store.ListAccounts(ctx)
 	if err != nil {
 		return protocol.Account{}, err
@@ -775,8 +880,8 @@ func (s *Space) AddAccount(ctx context.Context, p protocol.AddAccountParams) (pr
 		return protocol.Account{}, err
 	}
 	now := s.now()
-	if err := s.store.InsertAccount(ctx, store.Account{AccountID: id, Provider: p.Provider, DisplayName: cmpOr(name, remote.DisplayName),
-		ExternalAccountID: remote.ExternalAccountID, Status: protocol.AccountActive,
+	if err := s.store.InsertAccount(ctx, store.Account{AccountID: id, Provider: p.Provider, DisplayName: cmpOr(name, names.Stored(p.Provider, alias)),
+		NameSource: nameSource(name), ExternalAccountID: remote.ExternalAccountID, Status: protocol.AccountActive,
 		AssistantControl: string(DefaultControl), CreatedAt: now, UpdatedAt: now}); err != nil {
 		_ = s.vault.Delete(ctx, id)
 		return protocol.Account{}, err

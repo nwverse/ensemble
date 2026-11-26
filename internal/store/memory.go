@@ -61,9 +61,24 @@ func (m *Memory) InsertAccount(_ context.Context, a Account) error {
 	return nil
 }
 
+// UpdateAccountIf applies p only while the row still has m's display name and name source.
+func (m *Memory) UpdateAccountIf(_ context.Context, id string, match AccountMatch, p AccountPatch, now int64) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.accounts[id]
+	if !ok || a.DisplayName != match.DisplayName || a.NameSource != match.NameSource {
+		return false, nil
+	}
+	return true, m.updateLocked(id, p, now)
+}
+
 func (m *Memory) UpdateAccount(_ context.Context, id string, p AccountPatch, now int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.updateLocked(id, p, now)
+}
+
+func (m *Memory) updateLocked(id string, p AccountPatch, now int64) error {
 	a, ok := m.accounts[id]
 	if !ok {
 		return ErrNotFound
@@ -73,6 +88,9 @@ func (m *Memory) UpdateAccount(_ context.Context, id string, p AccountPatch, now
 	}
 	if p.DisplayName != nil {
 		a.DisplayName = *p.DisplayName
+	}
+	if p.NameSource != nil {
+		a.NameSource = *p.NameSource
 	}
 	if p.LastSyncedAt != nil {
 		a.LastSyncedAt = *p.LastSyncedAt
