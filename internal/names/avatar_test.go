@@ -15,7 +15,6 @@ import (
 var productHosts = map[string][]string{
 	"claude_duet":  {"claude.ai"},                            // browser.SiteClaudeDuet: https://claude.ai/duet
 	"muse":         {"muse.ai"},                              // browser.SiteMuse: https://muse.ai/
-	"muse2api":     {"muse.ai"},                              // muse2api drives muse.ai's web chat
 	"cue":          {"manus.im"},                             // cue.Origin https://api.manus.ai, task_url https://manus.im/app/…
 	"groq":         {"groq.com"},                             // groq.Origin https://api.groq.com
 	"dots":         {"chatgpt.com"},                          // browser.SiteDots
@@ -75,13 +74,14 @@ func TestAvatarOrderPerService(t *testing.T) {
 
 // Grok Bot is its own product (its API is api2.cursor.sh, its sign-in cursor.com), not xAI's Grok: its icon is the
 // App Store artwork of its own app (co.anysphere.sand), and no icon ever resolves to grok.com or x.ai, nor to any
-// address with "grok" in it. With no own picture it shows that artwork, with its letters for when it fails.
+// address with "grok" in it. With no own picture it shows that artwork whole (the image server's "ib" variant, with a
+// margin the apps' circle cuts into, not the ghost), with its letters for when it fails.
 func TestGrokBotIsNotGrok(t *testing.T) {
 	for _, lang := range []string{"zh-Hans", "en"} {
 		got := Avatar(lang, "grok_bot", "")
 		u, err := url.Parse(got.Icon)
 		if err != nil || u.Scheme != "https" || u.Hostname() != "is1-ssl.mzstatic.com" ||
-			got.Ref != TileRef(lang, "grok_bot") || got.Text != "GB" {
+			!strings.HasSuffix(u.Path, "/180x180ib.png") || got.Ref != TileRef(lang, "grok_bot") || got.Text != "GB" {
 			t.Errorf("Grok Bot without a picture: %+v", got)
 		}
 	}
@@ -89,6 +89,20 @@ func TestGrokBotIsNotGrok(t *testing.T) {
 		h := strings.ToLower(icon)
 		if strings.Contains(h, "x.ai") || strings.Contains(h, "grok") || strings.Contains(h, "twitter") {
 			t.Errorf("%s: icon %s is xAI's", p, icon)
+		}
+	}
+}
+
+// The self-hosted Muse relay is not the Muse app: it has no product icon and shows its own letters on its own tile,
+// so it does not look like Muse (web) on the same page.
+func TestMuseRelayShowsItsLetters(t *testing.T) {
+	if Icon("muse2api") != "" {
+		t.Errorf("the Muse relay borrows an icon: %s", Icon("muse2api"))
+	}
+	for _, lang := range []string{"zh-Hans", "en"} {
+		relay, web := Avatar(lang, "muse2api", ""), Avatar(lang, "muse", "")
+		if relay.Icon != "" || relay.Ref == "" || relay.Ref == web.Ref || relay.Text == "" || relay.Text == web.Text {
+			t.Errorf("%s: relay %+v, web %+v", lang, relay, web)
 		}
 	}
 }

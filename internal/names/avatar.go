@@ -26,10 +26,11 @@ import (
 // Should one go away, every app draws the letters in its place. A product with no entry has no icon established and
 // shows its letters:
 //   - echo: the demo, no product.
+//   - muse2api: the owner's own relay, which drives muse.ai but is not the Muse app; it draws its letters, so it is
+//     not mistaken for Muse (web) next to it.
 var icons = map[string]string{
 	"claude_duet": "https://claude.ai/apple-touch-icon.png", // claude.ai/duet, the page the provider drives
 	"muse":        "https://muse.ai/favicon.ico",            // muse.ai, the site the provider drives
-	"muse2api":    "https://muse.ai/favicon.ico",            // the owner's relay drives muse.ai with their Muse accounts
 	"cue":         "https://manus.im/apple-icon.png",        // Manus: api.manus.ai, tasks at manus.im/app
 	"groq":        "https://groq.com/apple-touch-icon.png",  // Groq: api.groq.com
 	// Gemini (gemini.google.com/app): Google's product-branding path, named by product, not by release.
@@ -39,11 +40,12 @@ var icons = map[string]string{
 	// address is updated. Not openai.com's icon, which is the company's.
 	"dots": "https://chatgpt.com/cdn/assets/favicon-180x180.9e0103ce69.png",
 	// Grok Bot: the artwork of its own app in the App Store (bundle id co.anysphere.sand, seller X Corp.), as the
-	// iTunes lookup for that bundle id gives it (artworkUrl, at 180x180). Its sites share other products' icons
-	// (x.ai's for all of xAI, cursor.com's for Cursor), and xAI's Grok app (ai.x.GrokApp) is another product: neither
-	// is ever used. The address carries a content hash, so an app update may drop it: the url then fails and the apps
+	// iTunes lookup for that bundle id gives it (artworkUrl, at 180x180), in the image server's "ib" variant: the whole
+	// icon as a rounded square on a transparent margin, so the apps' circle shows all of it (the "bb" artwork fills the
+	// square, and the circle cut its ghost down to a white blob). Its sites share other products' icons (x.ai's for all
+	// of xAI, cursor.com's for Cursor), and xAI's Grok app (ai.x.GrokApp) is another product: neither is ever used. The address carries a content hash, so an app update may drop it: the url then fails and the apps
 	// draw the letters until this address is updated.
-	"grok_bot": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/e1/0f/61/e10f6152-c3a7-e782-d71d-5ca28ef4ecf5/app-0-0-1x_U007epad-0-0-0-1-0-0-0-85-220.png/180x180bb.png",
+	"grok_bot": "https://is1-ssl.mzstatic.com/image/thumb/Purple211/v4/e1/0f/61/e10f6152-c3a7-e782-d71d-5ca28ef4ecf5/app-0-0-1x_U007epad-0-0-0-1-0-0-0-85-220.png/180x180ib.png",
 }
 
 // Icon is the official icon of provider's product, "" when none is established.
