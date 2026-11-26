@@ -37,6 +37,9 @@ func call(ctx context.Context, club *core.Club, method string, params, out any) 
 // message (English, for developers) is only added, as a detail, when the error has no words of its own here. secret,
 // when given, is never repeated (a credential the user just typed).
 func reason(l lang, err error, secret string) string {
+	if p, ok := asProblem(err); ok {
+		return p.text
+	}
 	msg := err.Error()
 	if secret != "" && strings.Contains(msg, secret) {
 		msg = strings.ReplaceAll(msg, secret, "***")

@@ -92,6 +92,7 @@ const (
 	actGrokStop         = "grok_cancel"
 	actTakeover         = "takeover"
 	actWake             = "wake"
+	actRecheck          = "recheck"
 )
 
 // Field names on the pages.
@@ -416,35 +417,21 @@ func browserConnection(p string) bool {
 	return ok
 }
 
-// problemWords is what is wrong with an account and what to do, from its last error.
+// problemWords is what is wrong with an account and what to do, from its last error (problems.go says it), without
+// looking its computer up (the account page names it).
 func problemWords(l lang, acct protocol.Account) string {
-	switch acct.LastError {
-	case "":
+	if acct.LastError == "" {
 		if acct.Status == protocol.AccountError {
 			return l.t("出了问题：点开它，点「重新检查」。", "Something is wrong: open it and check again.")
 		}
 		return ""
-	case "AUTH_FAILED", "NOT_SIGNED_IN":
-		switch {
-		case acct.Provider == grokBot:
-			return l.t("登录失效了：点开它，点「重新登录」。", "Signed out: open it and sign in again.")
-		case browserConnection(acct.Provider):
-			return l.t("登录失效了：在那台电脑上 Persona 控制的浏览器里重新登录 ", "Signed out: sign in to ") + providerName(l, acct.Provider) +
-				l.t("，再回来点「重新检查」。", " again in the browser Persona controls on that computer, then check again.")
-		}
-		return l.t("密钥失效了：到对方网站复制一个新的密钥，把这个账号移除后重新添加。",
-			"The key no longer works: copy a new key from the service, then remove this account and add it again.")
-	case "RATE_LIMITED":
-		return l.t("对方暂时限制了访问次数，稍后会自动再试，不用处理。", "The service is limiting requests; it is retried on its own.")
-	case "NETWORK_ERROR", "BROWSER_UNAVAILABLE":
-		if browserConnection(acct.Provider) {
-			return l.t("连不上那台电脑：确认它开着、连着网，稍后会自动再试。", "The computer cannot be reached: check it is on and online; it is retried on its own.")
-		}
-		return l.t("连不上对方：稍后会自动再试。", "The service cannot be reached; it is retried on its own.")
-	case "UPSTREAM_ERROR", "UNAVAILABLE", "BAD_RESPONSE", "REQUEST_FAILED", "SYNC_FAILED":
-		return l.t("对方网站暂时出错，稍后会自动再试。", "The service had a problem; it is retried on its own.")
 	}
-	return l.t("上次同步没成功（错误代码 ", "The last sync failed (code ") + acct.LastError + l.t("），稍后会自动再试。", "); it is retried on its own.")
+	p, _ := problemOf(l, acct.LastError, basicPlace(acct))
+	if p.NeedsUser {
+		// The fix names the computer, which the account page looks up: the row only says where to find it.
+		return p.Short + l.t("：点开它看怎么处理。", ": open it to see what to do.")
+	}
+	return p.Short + l.t("：", ": ") + p.Do
 }
 
 // addSections are the ways to add an account, grouped by how one connects, each row saying in one line what it takes
@@ -542,8 +529,11 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 		{Type: "row", Title: l.t("对话", "Chats"), Value: fmt.Sprint(acct.SessionCount)},
 	}}
 	if words := problemWords(l, acct); words != "" {
+		if p, ok := problemOf(l, acct.LastError, placerFor(ctx, space, a.browser).of(ctx, acct, acct.LastError)); ok {
+			words = p.Text(l)
+		}
 		info.Items = append(info.Items, wire.Component{Type: "text", Text: words},
-			wire.Component{Type: "button", Title: l.t("重新检查", "Check again"), Action: &wire.Action{ID: actSync}})
+			wire.Component{Type: "button", Title: l.t("重新检查", "Check again"), Action: &wire.Action{ID: actRecheck}})
 	}
 	if acct.Provider == grokBot {
 		info.Items = append(info.Items, wire.Component{Type: "button", Title: l.t("重新登录", "Sign in again"),
@@ -930,6 +920,8 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 			return done(l.t("检查过了，已经恢复正常，最新的对话也拉下来了", "Checked: working again, and the latest chats are in"))
 		}
 		return done(l.t("已同步，最新的对话已经拉下来了", "Synced; the latest chats are in"))
+	case actRecheck:
+		return a.recheck(ctx, r, l, st)
 	case actPause, actResume:
 		paused := r.Action == actPause
 		if err := update(map[string]any{"paused": paused}); err != nil {
@@ -1015,7 +1007,7 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 		var acct protocol.Account
 		p := protocol.AddAccountParams{Provider: st.Provider, Credential: cred, DisplayName: name}
 		if err := call(ctx, a.club, protocol.MethodClubAccountsAdd, p, &acct); err != nil {
-			return failed(err, cred)
+			return failed(explain(l, err, place{Provider: st.Provider, Pairing: pairKey}), cred)
 		}
 		return &wire.ActionResult{Pop: true, Toast: l.t("已添加：", "Added: ") + accountTitle(l, acct)}, nil
 	case actBrowserPair:
@@ -1036,7 +1028,7 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 				l.t("：先在那个浏览器里登录，再回来点「检查登录并添加」", ": sign in in that browser first, then come back and try again"))
 		}
 		if err != nil {
-			return failed(err, "")
+			return failed(explain(l, err, a.pairPlace(ctx, st.Provider, r.Values[fieldMachine])), "")
 		}
 		return &wire.ActionResult{Pop: true, Toast: l.t("已添加：", "Added: ") + accountTitle(l, acct)}, nil
 	case actGrokStart:

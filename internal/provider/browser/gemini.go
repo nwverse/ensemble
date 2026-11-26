@@ -37,12 +37,27 @@ const (
 // geminiMaxTurns is the most turns one read asks for.
 const geminiMaxTurns = 20
 
+// geminiHumanCheckJS defines __humanCheck() inside the page: whether Google put its "unusual traffic" check in front
+// of Gemini (www.google.com/sorry/index, a reCAPTCHA in #captcha-form) instead of the app. That is neither signed out
+// nor a rate limit: only a person solving the check lets the browser through again. A signed-in Gemini page (it has
+// its token) is never taken for one, so a conversation that mentions "unusual traffic" is not.
+const geminiHumanCheckJS = `
+const __humanCheck = () => {
+  if (location.pathname.startsWith("/sorry")) return true;
+  const w = window.WIZ_global_data || {};
+  if (location.hostname === "gemini.google.com" && w.SNlM0e) return false;
+  if (document.querySelector('#captcha-form, form[action*="/sorry"], .g-recaptcha, iframe[src*="/recaptcha/"], iframe[title*="reCAPTCHA" i]')) return true;
+  const t = String((document.body && document.body.innerText) || "").slice(0, 4000);
+  return /unusual traffic|not a robot|异常流量|我不是机器人|不是自动程序/i.test(t);
+};
+`
+
 // geminiPrelude defines __rpc(id, args) inside the page: one batchexecute call with the page's token, answering the
-// RPC's decoded payload. It throws "auth" when the page is not signed in and "http <status>" on a failed request.
-const geminiPrelude = `
+// RPC's decoded payload. It throws "human check" when Google's human verification stands in front of Gemini, "auth"
+// when the page is not signed in and "http <status>" on a failed request.
+const geminiPrelude = geminiHumanCheckJS + `
 const __wiz = () => {
-  // Google's "unusual traffic" check (www.google.com/sorry) is a rate limit, not a signed-out page.
-  if (location.pathname.startsWith("/sorry")) throw new Error("http 429");
+  if (__humanCheck()) throw new Error("human check");
   const w = window.WIZ_global_data || {};
   if (location.hostname !== "gemini.google.com" || !w.SNlM0e) throw new Error("auth");
   return w;
@@ -55,6 +70,13 @@ const __rpc = async (id, args) => {
   const r = await fetch("/_/BardChatUi/data/batchexecute?" + qs, { method: "POST", body, credentials: "include",
     headers: { "content-type": "application/x-www-form-urlencoded;charset=UTF-8" } });
   if (r.status === 401 || r.status === 403) throw new Error("auth");
+  // An RPC Google answers with its unusual-traffic page (redirected to /sorry, or a 429 carrying it) is the human
+  // check too; a bare 429 is a rate limit.
+  if (/\/sorry\//.test(r.url || "")) throw new Error("human check");
+  if (r.status === 429) {
+    const body = await r.text().catch(() => "");
+    throw new Error(/\/sorry\/|unusual traffic|recaptcha/i.test(body) ? "human check" : "http 429");
+  }
   if (!r.ok) throw new Error("http " + r.status);
   const text = await r.text();
   for (const line of text.split("\n")) {
@@ -298,10 +320,13 @@ func (geminiSite) send(ctx context.Context, a *Adapter, credential string, sessi
 const ARGS0 = %s;
 await page.goto(%q);
 await page.waitForLoadState("domcontentloaded").catch(() => {});
-const signedIn = await page.evaluate(() => location.pathname.startsWith("/sorry") ? "limited" :
-  location.hostname === "gemini.google.com" && !!(window.WIZ_global_data && window.WIZ_global_data.SNlM0e));
-if (signedIn === "limited") {
-  return { error: "http 429" };
+const signedIn = await page.evaluate(() => {
+%s
+  return __humanCheck() ? "human check" :
+    location.hostname === "gemini.google.com" && !!(window.WIZ_global_data && window.WIZ_global_data.SNlM0e);
+});
+if (signedIn === "human check") {
+  return { error: "human check" };
 } else if (!signedIn) {
   return { error: "auth" };
 } else {
@@ -379,7 +404,7 @@ if (signedIn === "limited") {
     }
   }
 }
-`, args, geminiOrigin+"/app/"+id, geminiComposerSel, geminiSendSel)
+`, args, geminiOrigin+"/app/"+id, geminiHumanCheckJS, geminiComposerSel, geminiSendSel)
 	var r struct {
 		Error   string `json:"error"`
 		Sent    bool   `json:"sent"`
@@ -396,7 +421,7 @@ if (signedIn === "limited") {
 	switch r.Error {
 	case "auth", "no task":
 		return provider.SendResult{}, geminiError(r.Error)
-	case "http 429":
+	case "human check", "http 429":
 		// Refused before anything was typed: nothing went out.
 		return provider.SendResult{}, geminiError(r.Error)
 	case "not sent":

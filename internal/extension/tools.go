@@ -15,6 +15,7 @@ import (
 
 	"github.com/nwverse/personal-agent-club/internal/core"
 	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/personal-agent-club/internal/provider/browser"
 )
 
 // Connector is the id of the connector this extension contributes for the assistant's tools (design §6.4, first
@@ -45,10 +46,13 @@ const (
 	maxWait      = 90 * time.Second // the hub gives a connector call two minutes
 )
 
-type tools struct{ club *core.Club }
+type tools struct {
+	club    *core.Club
+	browser browser.Driver
+}
 
-func toolsHandler(club *core.Club) ext.Handler {
-	t := &tools{club: club}
+func toolsHandler(club *core.Club, drv browser.Driver) ext.Handler {
+	t := &tools{club: club, browser: drv}
 	return ext.Methods{
 		"status":           ext.Method(t.status),
 		"tools.list":       ext.Method(func(context.Context, wire.ConnectorParams) (wire.ConnectorTools, error) { return readTools, nil }),
@@ -245,12 +249,14 @@ type listedSession struct {
 }
 
 type listedAccount struct {
-	AccountID        string          `json:"account_id"`
-	Provider         string          `json:"provider"`
-	Name             string          `json:"name"`
-	Status           string          `json:"status"`
-	AssistantControl string          `json:"assistant_control"`
-	Sessions         []listedSession `json:"sessions"`
+	AccountID        string `json:"account_id"`
+	Provider         string `json:"provider"`
+	Name             string `json:"name"`
+	Status           string `json:"status"`
+	AssistantControl string `json:"assistant_control"`
+	// Problem is the account's last error in words, for the assistant to pass on to the user.
+	Problem  string          `json:"problem,omitempty"`
+	Sessions []listedSession `json:"sessions"`
 }
 
 func (t *tools) list(ctx context.Context, a listArgs) (wire.ConnectorCallResult, error) {
@@ -266,12 +272,16 @@ func (t *tools) list(ctx context.Context, a listArgs) (wire.ConnectorCallResult,
 	active, _ := space.AssistantSessionKeys(ctx)
 	canStart, canInterrupt := supported(protocol.MethodClubSessionsStart), supported(protocol.MethodClubSessionsInterrupt)
 	out := []listedAccount{}
+	places := newPlacer(space, t.browser)
 	for _, acct := range accts {
 		if a.Provider != "" && acct.Provider != a.Provider {
 			continue
 		}
 		la := listedAccount{AccountID: acct.AccountID, Provider: acct.Provider, Name: accountName(acct),
 			Status: acct.Status, AssistantControl: string(levels[acct.AccountID]), Sessions: []listedSession{}}
+		if p, ok := problemOf("zh", acct.LastError, places.of(ctx, acct, acct.LastError)); ok {
+			la.Problem = p.Text("zh")
+		}
 		nameHit := q == "" || strings.Contains(strings.ToLower(la.Name), q)
 		for _, s := range sessions.Sessions {
 			if active[s.SessionKey] {
@@ -293,6 +303,12 @@ func (t *tools) list(ctx context.Context, a listArgs) (wire.ConnectorCallResult,
 	}
 	b, _ := json.Marshal(map[string]any{"accounts": out})
 	text := string(b)
+	for _, la := range out {
+		if la.Problem != "" {
+			text += "\n有账号现在出了问题（见 problem）：用户问起或要用它时，把 problem 里的话原样转告用户，不要只报代码。"
+			break
+		}
+	}
 	switch {
 	case len(accts) == 0:
 		text = grantGuide(hidden) + "\n" + text
@@ -457,10 +473,12 @@ func exhausted(q *protocol.Quota) error {
 	if q == nil || q.State != protocol.QuotaExhausted {
 		return nil
 	}
+	// A rate limit (HTTP 429) is recorded here too: both are said, so the assistant does not tell the user the
+	// allowance is gone when the service only asked to slow down.
 	if q.ResetsAt != 0 {
-		return protocol.Conflict("这个账号的额度已用尽，" + time.UnixMilli(q.ResetsAt).UTC().Format(time.RFC3339) + " 恢复，现在不发送")
+		return protocol.Conflict("这个账号的额度已用尽，或刚被对方限流（请求太多），" + time.UnixMilli(q.ResetsAt).UTC().Format(time.RFC3339) + " 恢复，现在不发送")
 	}
-	return protocol.Conflict("这个账号的额度已用尽，现在不发送")
+	return protocol.Conflict("这个账号的额度已用尽，或刚被对方限流（请求太多），现在不发送，稍后再试")
 }
 
 func (t *tools) account(ctx context.Context, id string, op core.Operation) (protocol.Account, error) {
@@ -499,7 +517,7 @@ func (t *tools) do(ctx context.Context, p wire.ConnectorDoParams) (wire.Connecto
 		var res json.RawMessage
 		if err := call(ctx, t.club, protocol.MethodClubSessionsStart, map[string]any{"account_id": a.AccountID,
 			"text": a.Text, "title": a.Title, "client_id": clientID(p.RequestID)}, &res); err != nil {
-			return wire.ConnectorCallResult{}, err
+			return wire.ConnectorCallResult{}, t.explained(ctx, a.AccountID, err)
 		}
 		return wire.ConnectorCallResult{Text: "已新开会话：" + string(res)}, nil
 	case toolInterrupt:
@@ -546,12 +564,19 @@ func (t *tools) send(ctx context.Context, key, text, requestID, before string) (
 		words = "已发出。用 club_agent_read（可带 wait_seconds）看回答。"
 	case protocol.LocalUnconfirmed:
 		words = "可能已经送达，但没有得到确认：先用 club_agent_read 确认，再决定是否重发；不要直接重发。"
+		if msg.Local.Error != "" && providerCode(msg.Local.Error) {
+			acct, _ := space.Account(ctx, sess.AccountID)
+			if p, ok := problemOf("zh", msg.Local.Error, newPlacer(space, t.browser).of(ctx, acct, msg.Local.Error)); ok {
+				words += "没确认的原因：" + p.What
+			}
+		}
 	case protocol.LocalFailed:
 		words = "没有发出去"
 		if msg.Local.Error != "" {
-			words += "：" + msg.Local.Error
+			words += "：" + t.problemWords(ctx, space, sess.AccountID, msg.Local.Error)
+		} else {
+			words += "。"
 		}
-		words += "。"
 	default:
 		words = "已排队（" + status + "）。"
 	}
@@ -570,4 +595,30 @@ func clientID(requestID string) string {
 	b[8] = b[8]&0x3f | 0x80
 	h := hex.EncodeToString(b)
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
+// problemWords is a failed send's code in words, for the assistant to tell the user ("" codes are not passed in).
+func (t *tools) problemWords(ctx context.Context, space *core.Space, accountID, code string) string {
+	acct, err := space.Account(ctx, accountID)
+	if err != nil {
+		acct = protocol.Account{AccountID: accountID}
+	}
+	p, ok := problemOf("zh", code, newPlacer(space, t.browser).of(ctx, acct, code))
+	if !ok || !providerCode(code) {
+		return code + "。"
+	}
+	return p.Text("zh") + "（请把这段话转告用户。）"
+}
+
+// explained is a provider's refusal in words for the assistant, other errors as they are.
+func (t *tools) explained(ctx context.Context, accountID string, err error) error {
+	code := protocol.ReasonOf(err)
+	if !providerCode(code) {
+		return err
+	}
+	space, serr := t.club.Space(ctx, core.DefaultSpace)
+	if serr != nil {
+		return err
+	}
+	return protocol.Failure(code, t.problemWords(ctx, space, accountID, code))
 }

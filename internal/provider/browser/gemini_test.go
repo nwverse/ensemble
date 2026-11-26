@@ -84,6 +84,7 @@ func TestGeminiTasksVerifyRefusesSignedOut(t *testing.T) {
 		{map[string]any{"error": "auth"}, provider.CodeAuthFailed},
 		{map[string]any{"email": ""}, provider.CodeAuthFailed},
 		{map[string]any{"error": "http 429"}, provider.CodeRateLimited},
+		{map[string]any{"error": "human check"}, provider.CodeHumanCheck},
 	} {
 		a := New(SiteGeminiTasks, &fakeDriver{answer: func(RunRequest) (RunResult, error) { return hubOutput(t, tc.value), nil }})
 		if _, err := a.Verify(ctx, cred); provider.CodeOf(err) != tc.code {
@@ -111,7 +112,8 @@ func TestGeminiTasksSend(t *testing.T) {
 		{map[string]any{"sent": true, "clicked": true}, provider.Sent, "", ""},
 		{map[string]any{"sent": false, "clicked": true}, provider.Unconfirmed, "", ""},
 		{map[string]any{"error": "auth"}, "", "", provider.CodeAuthFailed},
-		// Google's unusual-traffic page before anything was typed: refused, nothing went out.
+		// A rate limit, or Google's human check, before anything was typed: refused, nothing went out.
+		{map[string]any{"error": "human check"}, "", "", provider.CodeHumanCheck},
 		{map[string]any{"error": "http 429"}, "", "", provider.CodeRateLimited},
 		// Still in the composer after the wait: it did not go, so it is refused and can be sent again.
 		{map[string]any{"error": "not sent", "clicked": true}, "", "", provider.CodeUpstreamError},

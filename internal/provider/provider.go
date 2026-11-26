@@ -272,7 +272,17 @@ const (
 	CodeNetworkError  = "NETWORK_ERROR"
 	CodeUpstreamError = "UPSTREAM_ERROR"
 	CodeRequestFailed = "REQUEST_FAILED"
+	// CodeHumanCheck: the site put a human verification (Google's "unusual traffic" page, a reCAPTCHA, Cloudflare's
+	// "Verify you are human") in front of a browser-driven agent. Unlike a rate limit it does not pass by waiting: a
+	// person has to solve it in that browser.
+	CodeHumanCheck = "HUMAN_CHECK_REQUIRED"
 )
+
+// MachineBound is a provider that runs on one of the owner's computers (a browser-driven one): the computer a
+// credential names, and the browser backend on it. Neither is a secret; "" when the credential names none.
+type MachineBound interface {
+	Machine(credential string) (machineID, backend string)
+}
 
 // Error is a provider's refusal or failure. Code is safe to show and log; it never carries a credential or a
 // message body.

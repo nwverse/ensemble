@@ -29,14 +29,26 @@ const dotsOrigin = "https://chatgpt.com"
 // dotsMaxPage is the most messages the room's messages endpoint answers in one read (a larger limit is a 422).
 const dotsMaxPage = 32
 
-// dotsPrelude defines api(path) inside the page: the session, then a fetch with its token. It throws "auth" when
-// signed out and "http <status>" on a failed request.
-const dotsPrelude = `
+// challengeJS defines __challenged() inside the page: whether Cloudflare's "Verify you are human" interstitial
+// stands in front of the site instead of its app. Only a person passing it lets the browser through. It is asked
+// only once the session did not answer (a signed-in page never is one), and it takes neither the
+// challenge-platform script Cloudflare also puts on working pages, nor a title or a text ("Just a moment" may be a
+// Dot's name), nor a page with the app's composer: only the interstitial's own form or Turnstile frame.
+const challengeJS = `
+const __challenged = () => {
+  if (document.querySelector('[data-role="composer"], #prompt-textarea')) return false;
+  return !!document.querySelector('#challenge-form, #challenge-stage, iframe[src*="challenges.cloudflare.com"]');
+};
+`
+
+// dotsPrelude defines api(path) inside the page: the session, then a fetch with its token. It throws "human check"
+// behind a human check, "auth" when signed out and "http <status>" on a failed request.
+const dotsPrelude = challengeJS + `
 const __session = async () => {
-  const r = await fetch("/api/auth/session", { credentials: "include" });
-  const s = r.ok ? await r.json().catch(() => ({})) : {};
-  if (!s || !s.user || !s.accessToken) throw new Error("auth");
-  return s;
+  const r = await fetch("/api/auth/session", { credentials: "include" }).catch(() => null);
+  const s = r && r.ok ? await r.json().catch(() => ({})) : {};
+  if (s && s.user && s.accessToken) return s;
+  throw new Error(__challenged() ? "human check" : "auth");
 };
 const __api = async (s, path, init) => {
   const headers = { Authorization: "Bearer " + s.accessToken, ...(init && init.headers) };
@@ -74,6 +86,10 @@ func dotsError(msg string) error {
 		return nil
 	case msg == "auth":
 		return &provider.Error{Code: provider.CodeAuthFailed}
+	case msg == "human check":
+		// The site's human verification (Google's unusual-traffic page, Cloudflare's check), not a rate limit: it
+		// does not pass by waiting, a person has to solve it in that browser.
+		return &provider.Error{Code: provider.CodeHumanCheck}
 	case msg == "http 404":
 		return &provider.Error{Code: provider.CodeNotFound, HTTPStatus: 404}
 	case msg == "http 429":
@@ -300,11 +316,15 @@ const ARGS0 = %s;
 await page.goto(%q);
 await page.waitForLoadState("domcontentloaded").catch(() => {});
 const signedIn = await page.evaluate(async () => {
-  const r = await fetch("/api/auth/session", { credentials: "include" });
-  const s = r.ok ? await r.json().catch(() => ({})) : {};
-  return !!(s && s.user);
+%s
+  const r = await fetch("/api/auth/session", { credentials: "include" }).catch(() => null);
+  const s = r && r.ok ? await r.json().catch(() => ({})) : {};
+  if (s && s.user) return true;
+  return __challenged() ? "human check" : false;
 });
-if (!signedIn) {
+if (signedIn === "human check") {
+  return { error: "human check" };
+} else if (!signedIn) {
   return { error: "auth" };
 } else {
   const startedAt = Date.now();
@@ -334,7 +354,7 @@ if (!signedIn) {
   }
   return found ? (found.error ? { clicked, error: found.error } : { sent: true, clicked, id: found.id }) : { sent: false, clicked };
 }
-`, args, dotsOrigin+"/dots/"+dot, dotsComposerSel, dotsSendSel, dotsPrelude, dotsRoomJS, dotsMessagesJS)
+`, args, dotsOrigin+"/dots/"+dot, challengeJS, dotsComposerSel, dotsSendSel, dotsPrelude, dotsRoomJS, dotsMessagesJS)
 	var r struct {
 		Error string `json:"error"`
 		Sent  bool   `json:"sent"`
@@ -347,7 +367,7 @@ if (!signedIn) {
 		}
 		return provider.SendResult{Status: provider.Unconfirmed, Error: provider.CodeOf(err)}, nil
 	}
-	if r.Error == "auth" {
+	if r.Error == "auth" || r.Error == "human check" {
 		return provider.SendResult{}, dotsError(r.Error)
 	}
 	if !r.Sent {
