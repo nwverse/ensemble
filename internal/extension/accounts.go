@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
-	"time"
 	"unicode/utf16"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -485,7 +484,7 @@ func (a *accounts) listView(ctx context.Context, r *ext.UIRequest, l lang) *wire
 		// second copy of the home
 		v.Title = l.t(accountsTitle, "Accounts")
 		about := wire.Section{Items: []wire.Component{{Type: "text", Text: accountsAbout(l)}}}
-		v.Sections = []wire.Section{about, pairedSection(r, l, at, status.Accounts, false)}
+		v.Sections = []wire.Section{about, pairedSection(r, l, a.clock(r), at, status.Accounts, false)}
 		return v
 	}
 	about := wire.Section{Items: []wire.Component{{Type: "text",
@@ -499,11 +498,11 @@ func (a *accounts) listView(ctx context.Context, r *ext.UIRequest, l lang) *wire
 	v.Sections = []wire.Section{about, state}
 	if len(status.Accounts) == 0 {
 		// before the first account the choices are on the home itself: no tap before seeing them
-		chooser := wire.Section{Title: l.t(addTitle, "Add an account"), Items: []wire.Component{{Type: "text", Text: chooseLine(l)}}}
+		chooser := wire.Section{Title: l.t(addTitle, "Add an account"), Items: []wire.Component{{Type: "text", Text: chooseLine(l, providerSet(status.Providers))}}}
 		v.Sections = append(append(v.Sections, chooser), a.addSections(r, l, at, status.Providers)...)
 		return v
 	}
-	v.Sections = append(v.Sections, pairedSection(r, l, at, status.Accounts, true))
+	v.Sections = append(v.Sections, pairedSection(r, l, a.clock(r), at, status.Accounts, true))
 	return v
 }
 
@@ -520,14 +519,15 @@ func (a *accounts) addView(ctx context.Context, r *ext.UIRequest, l lang) *wire.
 		v.Sections = []wire.Section{{Items: []wire.Component{{Type: "text", Text: reason(l, err, "")}}}}
 		return v
 	}
-	v.Sections = append([]wire.Section{{Items: []wire.Component{{Type: "text", Text: chooseLine(l)}}}},
+	v.Sections = append([]wire.Section{{Items: []wire.Component{{Type: "text", Text: chooseLine(l, providerSet(status.Providers))}}}},
 		a.addSections(r, l, ui(r), status.Providers)...)
 	return v
 }
 
 // chooseLine says above the ways to add an account which services go which way, so the choice needs no reading of
-// each way's explanation (the page each row opens explains it in full).
-func chooseLine(l lang) string {
+// each way's explanation (the page each row opens explains it in full). It names them from the lists addSections
+// draws its rows from, the relay last and as a choice only for those who run one, and the demo when it is there.
+func chooseLine(l lang, available map[string]bool) string {
 	var web []string
 	for _, s := range browserProviders {
 		web = append(web, providerName(l, s.Provider))
@@ -540,10 +540,25 @@ func chooseLine(l lang) string {
 		}
 		keys = append(keys, n)
 	}
-	return l.t("怎么选："+providerName(l, grokBot)+" 在你自己的浏览器里登录；"+strings.Join(web, "、")+" 借用电脑上已登录的网页；"+
-		strings.Join(keys, "、")+" 粘贴密钥。",
+	relay := providerName(l, muse2api.Name)
+	line := l.t("怎么选："+providerName(l, grokBot)+" 在你自己的浏览器里登录；"+strings.Join(web, "、")+" 借用电脑上已登录的网页；"+
+		strings.Join(keys, "、")+" 粘贴密钥；"+relay+" 只在你自己搭了 Muse 转接服务时才选",
 		"How to choose: "+providerName(l, grokBot)+" signs in in your own browser; "+strings.Join(web, ", ")+
-			" use a website signed in on a computer; "+strings.Join(keys, " and ")+" take a pasted key.")
+			" use a website signed in on a computer; "+strings.Join(keys, " and ")+" take a pasted key; "+relay+
+			" is only for those who run their own Muse relay")
+	if available[echo.Name] {
+		line += l.t("；想先试试就选"+providerName(l, echo.Name), "; to try it first, pick "+providerName(l, echo.Name))
+	}
+	return line + l.t("。", ".")
+}
+
+// providerSet is which of the providers can be added now.
+func providerSet(providers []protocol.Provider) map[string]bool {
+	available := map[string]bool{}
+	for _, p := range providers {
+		available[p.Provider] = p.Available
+	}
+	return available
 }
 
 // accountsAbout is the one line atop 账号, which otherwise reads like the top of the home: what this page is for, and
@@ -556,7 +571,7 @@ func accountsAbout(l lang) string {
 // pairedSection lists the accounts, each opening its page, and ends with the row to add another. compact is the
 // home's list: the accounts that need the user first, each in a few words; otherwise it is 账号's management list,
 // in the order the space keeps, each with its last sync and what can be done on its page.
-func pairedSection(r *ext.UIRequest, l lang, at string, accts []protocol.Account, compact bool) wire.Section {
+func pairedSection(r *ext.UIRequest, l lang, c clock, at string, accts []protocol.Account, compact bool) wire.Section {
 	paired := wire.Section{Title: l.t("已接入的账号", "Your accounts")}
 	if compact {
 		paired.Title = l.t("账号一览", "Your accounts at a glance")
@@ -564,7 +579,7 @@ func pairedSection(r *ext.UIRequest, l lang, at string, accts []protocol.Account
 		slices.SortStableFunc(accts, func(x, y protocol.Account) int { return attention(x) - attention(y) })
 	}
 	for _, acct := range accts {
-		line := accountLine(l, acct, r.Location())
+		line := accountLine(l, acct, c)
 		if compact {
 			line = compactLine(l, acct)
 		}
@@ -665,7 +680,7 @@ func avatarOf(r *ext.UIRequest, l lang, acct *protocol.Account, provider string)
 
 // accountLine is an account's row subtitle: the brand when the name does not carry it, the state in words and what
 // the Persona assistant may do with it.
-func accountLine(l lang, acct protocol.Account, loc *time.Location) string {
+func accountLine(l lang, acct protocol.Account, c clock) string {
 	var parts []string
 	if brand := providerName(l, acct.Provider); !strings.Contains(accountTitle(l, acct), brand) {
 		parts = append(parts, brand)
@@ -677,8 +692,10 @@ func accountLine(l lang, acct protocol.Account, loc *time.Location) string {
 		parts = append(parts, l.t("已暂停同步", "paused"))
 	case acct.LastError != "":
 		parts = append(parts, problemWords(l, acct))
+	case acct.LastSyncedAt <= 0:
+		parts = append(parts, l.t("还没同步过", "not synced yet"))
 	default:
-		parts = append(parts, l.t("上次同步 ", "synced ")+when(l, acct.LastSyncedAt, loc))
+		parts = append(parts, l.t("上次同步：", "synced ")+c.at(l, acct.LastSyncedAt))
 	}
 	parts = append(parts, controlWords(l, core.Control(acct.AssistantControl)))
 	if acct.AssistantBackend {
@@ -726,10 +743,7 @@ func problemWords(l lang, acct protocol.Account) string {
 // addSections are the ways to add an account, grouped by how one connects, each row saying in one line what it takes
 // and, when it cannot be added in this configuration, why and what to switch on.
 func (a *accounts) addSections(r *ext.UIRequest, l lang, at string, providers []protocol.Provider) []wire.Section {
-	available := map[string]bool{}
-	for _, p := range providers {
-		available[p.Provider] = p.Available
-	}
+	available := providerSet(providers)
 	row := func(p, subtitle string, st pageState) wire.Component {
 		return withAvatar(r, l, nil, p, wire.Component{Type: "row", Key: "pair-" + p, Icon: "plus", Title: providerName(l, p), Subtitle: subtitle,
 			Action: &wire.Action{ID: "open", Push: &wire.Push{UI: at, Title: l.t("添加 ", "Add ") + providerName(l, p), State: ext.EncodeState(st)}}})
@@ -836,7 +850,7 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 	}
 	info.Items = append(info.Items, []wire.Component{
 		{Type: "row", Title: l.t("现在", "Now"), Value: stateWords(l, acct), Badge: statusBadge(l, acct)},
-		{Type: "row", Title: l.t("上次同步", "Last synced"), Value: when(l, acct.LastSyncedAt, r.Location())},
+		{Type: "row", Title: l.t("上次同步", "Last synced"), Value: a.clock(r).lastSynced(l, acct.LastSyncedAt)},
 		{Type: "row", Title: l.t("对话", "Chats"), Value: fmt.Sprint(acct.SessionCount)},
 	}...)
 	if words := problemWords(l, acct); words != "" {
@@ -890,7 +904,7 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 			" Sign in again is only needed once Grok's sign-in stops working (the top of this page says so); the chats stay.")
 	}
 	sections = append(sections, syncing)
-	sections = append(sections, quotaDisplaySection(l, acct))
+	sections = append(sections, quotaDisplaySection(l, acct, a.clock(r)))
 	if takeoverSupported(acct.Provider) && a.hub != nil {
 		sec, pending := a.machineSection(ctx, l, acct)
 		sections = append(sections, sec)
@@ -976,7 +990,7 @@ func (a *accounts) mainAssistantSection(l lang, acct protocol.Account) wire.Sect
 	return sec
 }
 
-func quotaDisplaySection(l lang, acct protocol.Account) wire.Section {
+func quotaDisplaySection(l lang, acct protocol.Account, c clock) wire.Section {
 	if acct.Quota == nil {
 		// Nothing reported: nothing to choose from, so only the sentence.
 		return wire.Section{Title: l.t("额度", "Allowance"), Items: []wire.Component{{Type: "text", Style: "secondary",
@@ -1004,7 +1018,12 @@ func quotaDisplaySection(l lang, acct protocol.Account) wire.Section {
 	if acct.Quota.State == protocol.QuotaExhausted {
 		value = l.t("用完了", "Used up")
 		if acct.Quota.ResetsAt > 0 {
-			value += l.t("，", ", back at ") + time.UnixMilli(acct.Quota.ResetsAt).Format("01-02 15:04") + l.t(" 恢复", "")
+			back := c.at(l, acct.Quota.ResetsAt)
+			if c.relative(acct.Quota.ResetsAt) {
+				value += l.t("，"+back+"恢复", ", back "+back)
+			} else {
+				value += l.t("，"+back+" 恢复", ", back on "+back)
+			}
 		}
 	}
 	badgeText := l.t("剩余", "left")
@@ -1470,11 +1489,9 @@ func statusBadge(l lang, acct protocol.Account) *wire.Badge {
 	return &wire.Badge{Text: l.t("状态不明", "Unknown"), Tone: wire.ToneNeutral}
 }
 
-func when(l lang, ms int64, loc *time.Location) string {
-	if ms <= 0 {
-		return l.t("还没同步过", "never")
-	}
-	return time.UnixMilli(ms).In(loc).Format("2006-01-02 15:04")
+// clock is what r's page writes times against: the club's now, in the viewer's time zone.
+func (a *accounts) clock(r *ext.UIRequest) clock {
+	return clock{now: a.club.Now(), loc: r.Location()}
 }
 
 func httpsURL(s string) bool {

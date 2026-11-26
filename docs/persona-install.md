@@ -127,7 +127,8 @@ The home (**我的 AI 助手**) shows, top to bottom:
   assistant may use, and the one next step: connect the first account, fix a broken one (it opens that account), or
   let the assistant use them through **助手指挥**;
 - **已接入的账号** (your accounts): each with its service, its state in words and what the assistant may do with it;
-- the ways to add an account, grouped by how one connects:
+- the ways to add an account, under one line (**怎么选**) naming every way the page offers, drawn from the same lists
+  as the rows (the self-hosted Muse relay last, as a choice only for those who run one), grouped by how one connects:
   - **在浏览器里登录** (sign in in your browser): **Grok Bot**. Start the sign-in, approve on the page that opens in
     your browser, and the page checks the result every 30 seconds (or at once with *check now*).
   - **借用电脑上已登录的网页** (a website signed in on your computer): **Muse 网页版**, **Claude Duet**,
@@ -152,6 +153,10 @@ Bot account, *重新登录* / sign in again), then:
   only for when its sign-in stops working), which allowance the avatar shows (only a sentence while the service has
   reported none), and for Grok Bot and Muse an advanced part that connects the agent's own cloud computer to Persona;
 - removing it, keeping or deleting its chats.
+
+Times read the same on every page, in the viewer's time zone: within 7 days relative (*刚刚*, *5 分钟前*, *3 小时前*,
+*3 天前*; an allowance that comes back *3 小时后*), older as month, day and time (*11月14日 12:04*), with the year only
+when it is not this year's.
 
 Every change says what it changed (*重新检查* reads the account back and says whether it works now), and a refusal says what to do next, in words rather than error codes.
 

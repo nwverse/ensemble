@@ -165,7 +165,7 @@ func TestSignInAgainLeadsOnlyWhenTheAccountNeedsIt(t *testing.T) {
 // choice of which the avatar shows is there.
 func TestQuotaBlockWithNothingReportedIsOneSentence(t *testing.T) {
 	for _, l := range []lang{"zh-Hans", "en"} {
-		s := quotaDisplaySection(l, protocol.Account{})
+		s := quotaDisplaySection(l, protocol.Account{}, clock{now: time.Now()})
 		if len(s.Items) != 1 || s.Items[0].Type != "text" || s.Footer != "" ||
 			s.Items[0].Text != l.t("这个服务还没告诉我们额度用了多少。", "The service has not reported any allowance yet.") {
 			t.Errorf("%s, nothing reported: %+v", l, s)
@@ -173,7 +173,7 @@ func TestQuotaBlockWithNothingReportedIsOneSentence(t *testing.T) {
 		pct := 62
 		s = quotaDisplaySection(l, protocol.Account{ShowQuota: true, Quota: &protocol.Quota{State: protocol.QuotaOK, Percent: &pct,
 			Kind: protocol.QuotaKindRequests, Selected: "requests:day",
-			Buckets: []protocol.QuotaBucket{{ID: "requests:day", Kind: protocol.QuotaKindRequests, Window: "day", Percent: &pct}}}})
+			Buckets: []protocol.QuotaBucket{{ID: "requests:day", Kind: protocol.QuotaKindRequests, Window: "day", Percent: &pct}}}}, clock{now: time.Now()})
 		var choice *wire.Component
 		for i, c := range s.Items {
 			if c.Type == "segmented" && c.Name == fieldQuotaDisplay {
