@@ -97,6 +97,16 @@ type Site struct {
 	SendButtonSel  string // CSS selector for send button (Enter fallback when empty)
 	MessageLogSel  string // CSS selector for message container / rows
 	SignedOutHosts []string
+	// impl replaces the generic DOM scripts for a site that needs its own (Dots); nil for the generic ones.
+	impl siteImpl
+}
+
+// siteImpl is a site's own Verify, ListSessions, ListMessages and Send, run through the Adapter's driver.
+type siteImpl interface {
+	verify(ctx context.Context, a *Adapter, credential string) (provider.RemoteAccount, error)
+	listSessions(ctx context.Context, a *Adapter, credential string) ([]provider.RemoteSession, error)
+	listMessages(ctx context.Context, a *Adapter, credential string, session provider.SessionRef, opts provider.ListOptions) (provider.RemotePage, error)
+	send(ctx context.Context, a *Adapter, credential string, session provider.SessionRef, msg provider.Outgoing) (provider.SendResult, error)
 }
 
 // Built-in site presets.
@@ -134,16 +144,19 @@ var (
 		MessageLogSel:  `user-query, model-response, message-content`,
 		SignedOutHosts: []string{"accounts.google.com"},
 	}
+	// SiteDots is ChatGPT's Dot (chatgpt.com/dots/<id>): one session per Dot, read through the page's own
+	// backend-api and sent through its composer (dots.go).
 	SiteDots = Site{
 		Provider:       "dots",
 		Label:          "Dots",
 		AppURL:         "https://chatgpt.com/",
 		Slot:           "pac-dots",
 		SingleSession:  false,
-		ComposerSel:    `#prompt-textarea, textarea[name="prompt-textarea"]`,
-		SendButtonSel:  `button[data-testid="send-button"], button[aria-label="Send prompt"]`,
-		MessageLogSel:  `[data-message-author-role]`,
+		ComposerSel:    dotsComposerSel,
+		SendButtonSel:  dotsSendSel,
+		MessageLogSel:  `article[data-message-id]`,
 		SignedOutHosts: []string{"auth/login"},
+		impl:           dotsSite{},
 	}
 )
 
@@ -187,7 +200,7 @@ func (a *Adapter) run(ctx context.Context, rawCred, script string, out any) erro
 	if strings.TrimSpace(res.Error) != "" {
 		return &provider.Error{Code: provider.CodeUpstreamError, Retryable: true}
 	}
-	payload := extractJSONLine(res.Output)
+	payload := scriptValue(res.Output)
 	if payload == "" {
 		return &provider.Error{Code: provider.CodeUpstreamError, Retryable: true}
 	}
@@ -195,6 +208,33 @@ func (a *Adapter) run(ctx context.Context, rawCred, script string, out any) erro
 		return &provider.Error{Code: provider.CodeUpstreamError, Retryable: true}
 	}
 	return nil
+}
+
+// scriptValue is what a site script returned. Persona's browser.run (and LocalEgoDriver, which wraps scripts the
+// same way) answers {"value": <the script's return value>, "error", "url", "title", "console"}; a driver that only
+// relays what the script printed answers it as the last JSON line.
+func scriptValue(output string) string {
+	var hub struct {
+		Value   json.RawMessage `json:"value"`
+		Console string          `json:"console"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(output)), &hub) == nil {
+		if v := strings.TrimSpace(string(hub.Value)); strings.HasPrefix(v, "{") {
+			return v
+		}
+		if line := extractJSONLine(hub.Console); line != "" {
+			return line
+		}
+	}
+	return extractJSONLine(output)
+}
+
+func jsonArray(v []string) string {
+	if v == nil {
+		v = []string{}
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
 }
 
 // extractJSONLine finds the last JSON object line in driver stdout (ignoring notice/log lines).
@@ -210,15 +250,18 @@ func extractJSONLine(raw string) string {
 }
 
 func (a *Adapter) Verify(ctx context.Context, credential string) (provider.RemoteAccount, error) {
+	if a.site.impl != nil {
+		return a.site.impl.verify(ctx, a, credential)
+	}
 	script := fmt.Sprintf(`
 await page.goto(%q);
 await page.waitForLoadState("domcontentloaded").catch(() => {});
 await new Promise(r => setTimeout(r, 1500));
 const url = await page.url();
 const title = await page.title();
-const signedOut = /\/login\b|accounts\.google\.com/i.test(url);
-console.log(JSON.stringify({ url, title, signedOut }));
-`, a.site.AppURL)
+const signedOut = /\/login\b|accounts\.google\.com/i.test(url) || %s.some(h => url.includes(h));
+return { url, title, signedOut };
+`, a.site.AppURL, jsonArray(a.site.SignedOutHosts))
 	var r struct {
 		URL       string `json:"url"`
 		Title     string `json:"title"`
@@ -242,6 +285,9 @@ console.log(JSON.stringify({ url, title, signedOut }));
 }
 
 func (a *Adapter) ListSessions(ctx context.Context, credential string) ([]provider.RemoteSession, error) {
+	if a.site.impl != nil {
+		return a.site.impl.listSessions(ctx, a, credential)
+	}
 	if a.site.SingleSession {
 		return []provider.RemoteSession{{
 			ExternalID:     "main",
@@ -269,7 +315,7 @@ const items = await page.evaluate(() => {
   }
   return out;
 });
-console.log(JSON.stringify({ sessions: items }));
+return { sessions: items };
 `, a.site.AppURL)
 	var r struct {
 		Sessions []struct {
@@ -312,6 +358,9 @@ console.log(JSON.stringify({ sessions: items }));
 }
 
 func (a *Adapter) ListMessages(ctx context.Context, credential string, session provider.SessionRef, opts provider.ListOptions) (provider.RemotePage, error) {
+	if a.site.impl != nil {
+		return a.site.impl.listMessages(ctx, a, credential, session, opts)
+	}
 	targetURL := a.site.AppURL
 	if u := strings.TrimSpace(session.Ref["url"]); u != "" {
 		targetURL = u
@@ -337,7 +386,7 @@ const msgs = await page.evaluate(({ sel, limit }) => {
   }
   return out;
 }, { sel: %q, limit: %d });
-console.log(JSON.stringify({ messages: msgs }));
+return { messages: msgs };
 `, targetURL, a.site.MessageLogSel, limit)
 	var r struct {
 		Messages []struct {
@@ -370,6 +419,9 @@ console.log(JSON.stringify({ messages: msgs }));
 }
 
 func (a *Adapter) Send(ctx context.Context, credential string, session provider.SessionRef, msg provider.Outgoing, _ provider.SendContext) (provider.SendResult, error) {
+	if a.site.impl != nil {
+		return a.site.impl.send(ctx, a, credential, session, msg)
+	}
 	if strings.TrimSpace(msg.Text) == "" {
 		return provider.SendResult{}, errors.New("empty message")
 	}
@@ -389,7 +441,7 @@ const clicked = await page.click("loc=css:" + sendSel, { timeout: 2000 }).then((
 if (!clicked) {
   await page.press("loc=css:" + sel, "Enter");
 }
-console.log(JSON.stringify({ sent: true }));
+return { sent: true };
 `, targetURL, a.site.ComposerSel, msg.Text, a.site.SendButtonSel)
 	var r struct {
 		Sent bool `json:"sent"`
