@@ -12,8 +12,8 @@ import (
 	"net/http"
 	"unicode/utf8"
 
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/provider/web"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider/web"
 )
 
 // ConnectFrame is one Connect envelope: a flags byte, a big-endian length, then the JSON.

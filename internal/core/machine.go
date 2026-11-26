@@ -3,7 +3,7 @@ package core
 import (
 	"context"
 
-	"github.com/nwverse/personal-agent-club/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider"
 )
 
 // AccountMachine is the computer a browser-driven account runs on, and the browser backend there, so a page can

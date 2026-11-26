@@ -22,14 +22,14 @@ import (
 	"github.com/nwverse/persona/sdk/go/exttest"
 	"github.com/nwverse/persona/sdk/go/wire"
 
-	pac "github.com/nwverse/personal-agent-club"
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/datadir"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/provider/echo"
-	pacruntime "github.com/nwverse/personal-agent-club/internal/runtime"
-	"github.com/nwverse/personal-agent-club/internal/store"
+	pac "github.com/nwverse/ensemble"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/datadir"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider/echo"
+	pacruntime "github.com/nwverse/ensemble/internal/runtime"
+	"github.com/nwverse/ensemble/internal/store"
 )
 
 func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }

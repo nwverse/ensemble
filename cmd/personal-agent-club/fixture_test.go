@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/provider/cue"
-	"github.com/nwverse/personal-agent-club/internal/provider/echo"
-	"github.com/nwverse/personal-agent-club/internal/provider/grokbot"
-	"github.com/nwverse/personal-agent-club/internal/provider/groq"
-	"github.com/nwverse/personal-agent-club/internal/provider/providertest"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider/cue"
+	"github.com/nwverse/ensemble/internal/provider/echo"
+	"github.com/nwverse/ensemble/internal/provider/grokbot"
+	"github.com/nwverse/ensemble/internal/provider/groq"
+	"github.com/nwverse/ensemble/internal/provider/providertest"
 )
 
 // Synthetic credentials and the remote accounts the fake upstream says they belong to.

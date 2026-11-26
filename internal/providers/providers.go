@@ -9,13 +9,13 @@ import (
 	"os"
 	"strings"
 
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/provider/cue"
-	"github.com/nwverse/personal-agent-club/internal/provider/echo"
-	"github.com/nwverse/personal-agent-club/internal/provider/grokbot"
-	"github.com/nwverse/personal-agent-club/internal/provider/groq"
-	"github.com/nwverse/personal-agent-club/internal/provider/muse2api"
-	"github.com/nwverse/personal-agent-club/internal/provider/web"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider/cue"
+	"github.com/nwverse/ensemble/internal/provider/echo"
+	"github.com/nwverse/ensemble/internal/provider/grokbot"
+	"github.com/nwverse/ensemble/internal/provider/groq"
+	"github.com/nwverse/ensemble/internal/provider/muse2api"
+	"github.com/nwverse/ensemble/internal/provider/web"
 )
 
 // Environment variables Config reads.

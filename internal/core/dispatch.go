@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/ensemble/internal/protocol"
 )
 
 // Call answers one protocol call in a space: method is the full name (agentsrc.status, club.info, …), params its

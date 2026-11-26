@@ -4,7 +4,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/ensemble/internal/protocol"
 )
 
 // Known are the providers club knows by name, whether or not this build can reach them. A known provider without a

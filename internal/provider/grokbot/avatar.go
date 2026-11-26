@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"unicode/utf16"
 
-	"github.com/nwverse/personal-agent-club/internal/provider/web"
+	"github.com/nwverse/ensemble/internal/provider/web"
 )
 
 // The avatar algorithm is a port of grok-bot-sdk's avatar.mjs (MIT, RongleCat, algorithm grok-bot-0.70.2).

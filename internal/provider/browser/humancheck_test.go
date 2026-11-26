@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider"
 )
 
 // runPageJS runs prelude and then expr inside a stand-in page (location, document, window and fetch as page says)

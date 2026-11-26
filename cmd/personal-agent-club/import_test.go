@@ -14,9 +14,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nwverse/personal-agent-club/internal/datadir"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider/providertest"
+	"github.com/nwverse/ensemble/internal/datadir"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider/providertest"
 )
 
 // snapshot is every file under root: mode, size, modification time and contents' hash. A missing root is nil.

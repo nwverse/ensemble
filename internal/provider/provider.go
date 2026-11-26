@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/ensemble/internal/protocol"
 )
 
 // RemoteAccount is what Verify learns about the account a credential belongs to.
