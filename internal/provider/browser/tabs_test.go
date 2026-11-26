@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider"
 )
 
 // tabRun is what a node-side script did in a stand-in tab: its value and the page calls it made (goto <url>,
