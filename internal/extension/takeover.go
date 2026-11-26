@@ -151,7 +151,7 @@ func (a *accounts) machineSection(ctx context.Context, l lang, acct protocol.Acc
 		// What it does (runTakeover): the assistant is sent setup instructions in its chat and pairs the cloud computer
 		// it runs on as one of the hub's machines, which Persona can then work on like the owner's own.
 		Title: l.t("高级：让 Persona 也能用它的云端电脑", "Advanced: let Persona use its cloud computer too"),
-		Footer: l.t("这个助手自己有一台云端电脑；接上后它会出现在「机器」页，Persona 就能在上面运行程序、处理文件。想多一台一直开着的电脑给 Persona 干活时才需要。",
+		Footer: l.t("这个助手自己有一台云端电脑，接上后 Persona 也能在上面运行程序、处理文件（它会出现在「机器」页）；想多一台一直开着的电脑给 Persona 用时才需要。",
 			"This assistant has a cloud computer of its own; once linked it shows on the Machines page and Persona can run programs and handle files on it. Only worth it when you want one more always-on computer for Persona."),
 	}
 	if hub == nil {
