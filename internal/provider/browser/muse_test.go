@@ -70,7 +70,7 @@ func TestMuseSite(t *testing.T) {
 	send := d.gotReqs[len(d.gotReqs)-1].Script
 	for _, want := range []string{
 		`await page.goto("https://muse.ai/thread/` + museSideID + `")`,
-		`if (!ready) return { error: "not ready" };`,
+		`if (!ready) return { error: "not ready", unsent: true };`,
 		`await page.fill("loc=css:" + sel, "");`,
 		`if ((await draft()) !== ARGS.text) {`,
 		`const still = await __read();`,
@@ -130,9 +130,56 @@ func TestMuseSite(t *testing.T) {
 	if _, err := New(SiteMuse, gone).ListMessages(ctx, cred, side.SessionRef(), provider.ListOptions{}); provider.CodeOf(err) != provider.CodeNotFound {
 		t.Fatalf("ListMessages on a gone thread = %v, want NOT_FOUND", err)
 	}
+	gone = siteDriver(t, map[string]any{"const before = await __read();": map[string]any{"error": "no thread", "unsent": true}})
 	res, err = New(SiteMuse, gone).Send(ctx, cred, side.SessionRef(), provider.Outgoing{Text: "hi"}, provider.SendContext{})
-	if err != nil || res.Status == provider.Sent || res.Error != provider.CodeNotFound {
-		t.Fatalf("Send to a gone thread = %+v, err=%v", res, err)
+	if provider.CodeOf(err) != provider.CodeNotFound || !provider.IsRefusal(err) || res.Status == provider.Sent {
+		t.Fatalf("Send to a gone thread = %+v, err=%v, want a NOT_FOUND refusal", res, err)
+	}
+}
+
+// A send stopped before the click sent nothing: it is refused (the core records it failed), never unconfirmed. One
+// stopped after the click stays unconfirmed.
+func TestMuseSendOutcomes(t *testing.T) {
+	ctx := context.Background()
+	cred := EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})
+	ref := provider.SessionRef{ExternalID: museSideID}
+	for _, msg := range []string{"not ready", "no composer", "not sent"} {
+		d := siteDriver(t, map[string]any{"const before = await __read();": map[string]any{"error": msg, "unsent": true}})
+		res, err := New(SiteMuse, d).Send(ctx, cred, ref, provider.Outgoing{Text: "hi"}, provider.SendContext{})
+		if !provider.IsRefusal(err) || provider.CodeOf(err) != provider.CodeRequestFailed || res.Status == provider.Unconfirmed {
+			t.Fatalf("Send %q = %+v, err=%v, want a REQUEST_FAILED refusal", msg, res, err)
+		}
+	}
+	d := siteDriver(t, map[string]any{"const before = await __read();": map[string]any{"error": "not sent", "clicked": true}})
+	res, err := New(SiteMuse, d).Send(ctx, cred, ref, provider.Outgoing{Text: "hi"}, provider.SendContext{})
+	if err != nil || res.Status != provider.Unconfirmed {
+		t.Fatalf("Send not sent after the click = %+v, err=%v, want unconfirmed", res, err)
+	}
+	send := d.gotReqs[0].Script
+	// Every stop before the click is marked unsent; none after it is.
+	click := strings.Index(send, `page.click("loc=css:"`)
+	if click < 0 || strings.Count(send[:click], "unsent: true") != 5 || strings.Contains(send[click:], "unsent") {
+		t.Fatal("the send script does not mark exactly its stops before the click as unsent")
+	}
+	// A read-back counts only rows after the last one shown before the click.
+	if !strings.Contains(send, `msgs.slice(last + 1)`) || strings.Contains(send, `!seen.has(`) {
+		t.Fatal("the send reads back a message the page showed before, or one drawn above it")
+	}
+}
+
+// The row's thread id is read without leaving the row, and an id more than one row resolves to is nobody's.
+func TestMuseThreadRows(t *testing.T) {
+	for _, want := range []string{`if (sn && sn !== row && sn instanceof Element) break;`, `return n === 1;`} {
+		if !strings.Contains(museThreadJS, want) {
+			t.Fatalf("museThreadJS lacks %q", want)
+		}
+	}
+	d := siteDriver(t, map[string]any{"threads.push": map[string]any{"threads": []any{}}})
+	if _, err := New(SiteMuse, d).ListSessions(context.Background(), EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(d.gotReqs[0].Script, `count.get(t.id) !== 1`) {
+		t.Fatal("the session list keeps a thread id that more than one row resolves to")
 	}
 }
 

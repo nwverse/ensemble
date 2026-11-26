@@ -21,8 +21,9 @@ import (
 //   - The left panel lists the threads as [data-testid="hatch-thread-row"] rows: the main chat first, then the side
 //     chats with a title and a relative date. A row has no href; its thread id is in the analytics metadata React
 //     passes it (actionAnalyticsMetadata.thread_id, is_primary_thread). Rows are never clicked to learn an id: a
-//     click navigates in-page and shows the previous thread's rows under the new URL for a while. A row whose id
-//     cannot be read is left out of the list, not guessed.
+//     click navigates in-page and shows the previous thread's rows under the new URL for a while. The id is looked
+//     for only within the row's own React fibers (up to the first DOM element above it). A row whose id cannot be
+//     read, or whose id another row also resolves to, is left out of the list, not guessed.
 //   - A thread that no longer exists redirects to muse.ai/ and shows the main chat, so every read and send checks
 //     the page is on its thread (URL and highlighted row) and answers NOT_FOUND otherwise.
 // A signed-out visitor gets a landing page with no chat log.
@@ -57,12 +58,16 @@ const __museMessages = (limit) => {
 
 // museThreadJS defines, in page, __museRowThread(row): the {id, primary} of a thread row, from the analytics
 // metadata React passes it (null when none is found), and __museOn(thread): whether the page shows that thread
-// ("" for the main chat) — its URL and, for a side chat, the highlighted row.
+// ("" for the main chat) — its URL and, for a side chat, the highlighted row, whose id no other row has.
+// The fiber walk stays within the row: it stops at the first DOM element above the row, so an object with a
+// thread_id held by the panel or the app (the current thread, a route) is never read as the row's.
 const museThreadJS = `
 const __museRowThread = (row) => {
   const fk = Object.keys(row).find(k => k.startsWith("__reactFiber"));
   let f = fk ? row[fk] : null;
   for (let d = 0; f && d < 40; d++, f = f.return) {
+    const sn = f.stateNode;
+    if (sn && sn !== row && sn instanceof Element) break;
     const p = f.memoizedProps;
     if (!p || typeof p !== "object") continue;
     for (const v of Object.values(p)) {
@@ -78,7 +83,13 @@ const __museOn = (thread) => {
   if (location.pathname.toLowerCase() !== "/thread/" + thread) return false;
   const cur = document.querySelector('[data-testid="hatch-thread-row"][aria-current="page"]');
   const t = cur ? __museRowThread(cur) : null;
-  return !!t && t.id === thread;
+  if (!t || t.id !== thread) return false;
+  let n = 0;
+  for (const row of document.querySelectorAll('[data-testid="hatch-thread-row"]')) {
+    const r = __museRowThread(row);
+    if (r && r.id === thread) n++;
+  }
+  return n === 1;
 };
 `
 
@@ -146,12 +157,13 @@ return await page.evaluate((ARGS) => {
 %s
 %s
   if (!(%s)) return { error: "auth" };
-  const seen = new Set();
+  // An id that more than one row resolves to is not any one row's: every row with it is left out.
+  const rows = [...document.querySelectorAll('[data-testid="hatch-thread-row"]')].map(row => ({ row, t: __museRowThread(row) }));
+  const count = new Map();
+  for (const { t } of rows) if (t) count.set(t.id, (count.get(t.id) || 0) + 1);
   const threads = [];
-  for (const row of document.querySelectorAll('[data-testid="hatch-thread-row"]')) {
-    const t = __museRowThread(row);
-    if (!t || t.primary || seen.has(t.id)) continue;
-    seen.add(t.id);
+  for (const { row, t } of rows) {
+    if (!t || t.primary || count.get(t.id) !== 1) continue;
     const named = row.querySelector('span[title]');
     const title = __norm(named ? named.getAttribute('title') : String(row.innerText || '').split('\n')[0]);
     // The relative date ("5m", "周日", "11月8日") is the first other span with text.
@@ -242,10 +254,12 @@ return await page.evaluate((ARGS) => {
 }
 
 // museSendJS is the node-side body of a send. Nothing is typed until the page shows the thread with its messages
-// drawn. It notes the owner's messages already shown, empties the composer (Muse kept no draft when tried, but a
-// leftover one must not go out with the text), types, and clicks send only when the composer holds exactly the
-// text and the page is still on the thread. It is sent once a new owner message with the text reads back on the
-// thread; a text still in the composer afterwards was not sent and is cleared.
+// drawn. It notes the messages already shown, empties the composer (Muse kept no draft when tried, but a leftover
+// one must not go out with the text), types, and clicks send only when the composer holds exactly the text and the
+// page is still on the thread. Any stop before the click answers {error, unsent: true}: nothing went out. It is sent
+// once a new owner message with the text reads back on the thread after the last message the page showed before:
+// an older row drawn late (Muse may still be loading them) is above that and never counts. A text still in the
+// composer afterwards was not sent and is cleared.
 func museSendJS(wait time.Duration) string {
 	return fmt.Sprintf(`
 const __read = () => page.evaluate((ARGS) => {
@@ -259,12 +273,12 @@ const __read = () => page.evaluate((ARGS) => {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const ready = %s;
 const before = await __read();
-if (before.error) return { error: before.error };
-if (!ready) return { error: "not ready" };
-const seen = new Set(before.messages.filter(m => m.role === "user").map(m => m.id));
+if (before.error) return { error: before.error, unsent: true };
+if (!ready) return { error: "not ready", unsent: true };
+const shown = new Set(before.messages.map(m => m.id));
 const sel = %q;
 const visible = await page.waitForSelector("loc=css:" + sel, { state: "visible", timeout: 5000 }).then(() => true).catch(() => false);
-if (!visible) return { error: "no composer" };
+if (!visible) return { error: "no composer", unsent: true };
 const draft = () => page.evaluate((sel) => { const el = document.querySelector(sel); return el ? String(el.value || "") : null; }, sel);
 // Let a draft the page puts back show before emptying the composer.
 for (let i = 0, prev = null, same = 0; i < 8 && same < 2; i++) {
@@ -278,24 +292,32 @@ await page.fill("loc=css:" + sel, ARGS.text);
 await sleep(400);
 if ((await draft()) !== ARGS.text) {
   await page.fill("loc=css:" + sel, "").catch(() => {});
-  return { error: "not sent" };
+  return { error: "not sent", unsent: true };
 }
 const still = await __read();
 if (still.error) {
   await page.fill("loc=css:" + sel, "").catch(() => {});
-  return { error: still.error };
+  return { error: still.error, unsent: true };
 }
 const clicked = await page.click("loc=css:" + %q, { timeout: 3000 }).then(() => true).catch(() => false);
 if (!clicked) await page.press("loc=css:" + sel, "Enter");
 const norm = t => String(t || "").replace(/\s+/g, " ").trim();
 const want = norm(ARGS.text);
+// The new owner message with the text, among the rows after the last one the page showed before (none when none of
+// those rows is shown any more: then where the new rows start is not known).
+const fresh = (msgs) => {
+  let last = -1;
+  msgs.forEach((m, i) => { if (shown.has(m.id)) last = i; });
+  if (last < 0 && shown.size) return null;
+  return msgs.slice(last + 1).filter(m => m.role === "user" && norm(m.text) === want).pop() || null;
+};
 const deadline = Date.now() + %d;
 let hit = null;
 while (!hit && Date.now() < deadline) {
   await sleep(1000);
   const now = await __read();
   if (now.error) continue;
-  hit = now.messages.filter(m => m.role === "user" && !seen.has(m.id) && norm(m.text) === want).pop() || null;
+  hit = fresh(now.messages);
 }
 if (!hit) {
   if (norm(await draft().catch(() => "")) === want) {
@@ -307,9 +329,21 @@ if (!hit) {
 // Let the page settle so an optimistic id has been replaced by the stored one.
 await sleep(1500);
 const after = await __read();
-const settled = (after.messages || []).filter(m => m.role === "user" && !seen.has(m.id) && norm(m.text) === want).pop();
+const settled = after.error ? null : fresh(after.messages);
 return { sent: true, clicked, id: (settled || hit).id };
 `, sitePrelude, museMessagesJS, museThreadJS, museSignedInJS, museWaitJS(15000), museComposerSel, museSendSel, wait.Milliseconds())
+}
+
+// museUnsent is the refusal for a send stopped before the click: nothing was typed into a sent message, so it
+// failed (a clean resend is safe), never unconfirmed. A thread that is gone is NOT_FOUND; the rest are refusals
+// that a retry of the same send would not change.
+func museUnsent(msg string) error {
+	switch msg {
+	case "auth", "no thread":
+		return dotsError(msg)
+	default:
+		return &provider.Error{Code: provider.CodeRequestFailed}
+	}
 }
 
 func (museSite) send(ctx context.Context, a *Adapter, credential string, session provider.SessionRef, msg provider.Outgoing) (provider.SendResult, error) {
@@ -323,11 +357,15 @@ func (museSite) send(ctx context.Context, a *Adapter, credential string, session
 	}
 	script := siteScript(url, map[string]any{"thread": thread, "text": text}, museSendJS(18*time.Second))
 	var r struct {
-		Error string `json:"error"`
-		Sent  bool   `json:"sent"`
-		ID    string `json:"id"`
+		Error  string `json:"error"`
+		Unsent bool   `json:"unsent"`
+		Sent   bool   `json:"sent"`
+		ID     string `json:"id"`
 	}
 	err = a.run(ctx, credential, script, &r)
+	if err == nil && r.Unsent && r.Error != "" {
+		return provider.SendResult{}, museUnsent(r.Error)
+	}
 	return sendOutcome(err, r.Error, r.Sent, r.ID)
 }
 
