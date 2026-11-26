@@ -23,7 +23,7 @@
     "agent_sources": [
       {
         "id": "pac",
-        "name": "Ensemble",
+        "name": "Ensemble 的账号和对话",
         "providers": [
           "cue",
           "grok_bot",
@@ -54,7 +54,7 @@
     "connectors": [
       {
         "id": "club",
-        "name": "Ensemble",
+        "name": "让 Persona 助手使用 Ensemble",
         "capabilities": [
           "status",
           "tools",

@@ -168,3 +168,26 @@ func TestProductIsShownAsEnsemble(t *testing.T) {
 	}
 	renderAll(" (one account)")
 }
+
+// The hub lists every contribution by its name on the extension's settings page (and the connector under Settings ›
+// Connectors), so the agent source and the connector each say what they are, keep the product's name, and never read
+// alike. Their ids do not change.
+func TestContributionNamesSayWhatEachIs(t *testing.T) {
+	var m wire.Manifest
+	if err := json.Unmarshal(pac.Manifest, &m); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Contributes.AgentSources) != 1 || len(m.Contributes.Connectors) != 1 {
+		t.Fatalf("%+v", m.Contributes)
+	}
+	source, conn := m.Contributes.AgentSources[0], m.Contributes.Connectors[0]
+	if source.ID != Contribution || conn.ID != Connector {
+		t.Fatalf("ids changed: %q %q", source.ID, conn.ID)
+	}
+	if source.Name != productName+" 的账号和对话" || conn.Name != "让 Persona 助手使用 "+productName {
+		t.Fatalf("names: %q, %q", source.Name, conn.Name)
+	}
+	if source.Name == conn.Name || source.Name == m.Name || conn.Name == m.Name {
+		t.Fatalf("contributions read alike: %q %q %q", m.Name, source.Name, conn.Name)
+	}
+}
