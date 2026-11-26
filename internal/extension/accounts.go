@@ -423,7 +423,8 @@ func (a *accounts) listView(ctx context.Context, r *ext.UIRequest, l lang) *wire
 	if at == AccountsUI {
 		// the settings page's 账号: the accounts and the ways to add one, not a second copy of the home
 		v.Title = l.t(accountsTitle, "Accounts")
-		v.Sections = append([]wire.Section{pairedSection(l, at, status.Accounts, r.Location())},
+		about := wire.Section{Items: []wire.Component{{Type: "text", Text: accountsAbout(l)}}}
+		v.Sections = append([]wire.Section{about, pairedSection(l, at, status.Accounts, r.Location())},
 			a.addSections(l, at, status.Providers)...)
 		return v
 	}
@@ -438,6 +439,13 @@ func (a *accounts) listView(ctx context.Context, r *ext.UIRequest, l lang) *wire
 	v.Sections = append([]wire.Section{about, state, pairedSection(l, at, status.Accounts, r.Location())},
 		a.addSections(l, at, status.Providers)...)
 	return v
+}
+
+// accountsAbout is the one line atop 账号, which otherwise reads like the top of the home: what this page is for, and
+// that the overview with what needs the user is the home.
+func accountsAbout(l lang) string {
+	return l.t("这里列出你接入的全部账号：点开一个可以管理它，也可以在下面再添加一个。要看总体情况和哪些账号要你处理，请打开导航里的「"+homeTitle+"」（导航放不下时在「更多」里）。",
+		"Every account you connected: open one to manage it, or add another below. For the overview and what needs you, open "+homeTitle+" (My AI assistants) in the navigation (under More when it does not fit).")
 }
 
 // pairedSection lists the accounts, each opening its page.
@@ -630,16 +638,23 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 		info.Items = append(info.Items, wire.Component{Type: "text", Text: words},
 			wire.Component{Type: "button", Title: l.t("重新检查", "Check again"), Action: &wire.Action{ID: actRecheck}})
 	}
+	// 重新登录 (only Grok Bot signs in again from here: club.logins.grok_bot.*) leads the page only while the account
+	// needs it; otherwise it waits under 同步, saying when it is for.
+	signInAgain, troubled := wire.Component{}, acct.Status == protocol.AccountError || acct.LastError != ""
 	if acct.Provider == grokBot {
-		info.Items = append(info.Items, wire.Component{Type: "button", Title: l.t("重新登录", "Sign in again"),
+		signInAgain = wire.Component{Type: "button", Title: l.t("重新登录", "Sign in again"),
 			Action: &wire.Action{ID: "open", Push: &wire.Push{UI: at, Title: providerName(l, grokBot),
-				State: ext.EncodeState(pageState{Page: pageGrok, Account: acct.AccountID})}}})
+				State: ext.EncodeState(pageState{Page: pageGrok, Account: acct.AccountID})}}}
+		if troubled {
+			info.Items = append(info.Items, signInAgain)
+		}
 	}
 
 	// Only a name the owner chose is prefilled: a composed title ("Grok Bot (2)", a brand in another language) is
-	// the placeholder, so 「改名」 pressed unchanged does not freeze it as theirs.
+	// the placeholder, so 「改名」 pressed unchanged does not freeze it as theirs. The field's label names the block,
+	// which has no title of its own to say 名字 twice.
 	name := acct.OwnerName
-	rename := wire.Section{Title: l.t("名字", "Name"),
+	rename := wire.Section{
 		Footer: l.t("给它起个好认的名字，比如「工作用 Claude」。只在 Persona 里显示，不会改对方网站上的名字。",
 			"A name you will recognize, like \"Work Claude\". Shown only in Persona; the service's own name is not changed."),
 		Items: []wire.Component{
@@ -655,12 +670,18 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 	if acct.Status == protocol.AccountPaused {
 		pause = wire.Component{Type: "button", Title: l.t("恢复同步", "Resume"), Action: &wire.Action{ID: actResume}}
 	}
-	sections = append(sections, wire.Section{Title: l.t("同步", "Syncing"),
+	syncing := wire.Section{Title: l.t("同步", "Syncing"),
 		Footer: l.t("平时每隔几分钟会自动拉取它的新对话。", "New chats are fetched on their own every few minutes."),
 		Items: []wire.Component{
 			{Type: "button", Title: l.t("立即同步", "Sync now"), Action: &wire.Action{ID: actSync}},
 			pause,
-		}})
+		}}
+	if signInAgain.Type != "" && !troubled {
+		syncing.Items = append(syncing.Items, signInAgain)
+		syncing.Footer += l.t("「重新登录」只在 Grok 的登录失效时才需要（这页顶上会提示），重新同意一次就好，以前的对话都还在。",
+			" Sign in again is only needed once Grok's sign-in stops working (the top of this page says so); the chats stay.")
+	}
+	sections = append(sections, syncing)
 	sections = append(sections, quotaDisplaySection(l, acct))
 	if takeoverSupported(acct.Provider) && a.hub != nil {
 		sec, pending := a.machineSection(ctx, l, acct)
@@ -748,6 +769,11 @@ func (a *accounts) mainAssistantSection(l lang, acct protocol.Account) wire.Sect
 }
 
 func quotaDisplaySection(l lang, acct protocol.Account) wire.Section {
+	if acct.Quota == nil {
+		// Nothing reported: nothing to choose from, so only the sentence.
+		return wire.Section{Title: l.t("额度", "Allowance"), Items: []wire.Component{{Type: "text", Style: "secondary",
+			Text: l.t("这个服务还没告诉我们额度用了多少。", "The service has not reported any allowance yet.")}}}
+	}
 	val := acct.QuotaDisplay
 	if val == "" {
 		if !acct.ShowQuota {
@@ -761,35 +787,30 @@ func quotaDisplaySection(l lang, acct protocol.Account) wire.Section {
 	}
 	seen := map[string]bool{protocol.QuotaDisplayAuto: true, protocol.QuotaDisplayOff: true}
 	var items []wire.Component
-	if acct.Quota == nil {
-		items = append(items, wire.Component{Type: "text", Style: "secondary",
-			Text: l.t("这个服务还没告诉我们额度用了多少。", "The service has not reported any allowance yet.")})
-	} else {
-		value := quotaWords(l, acct.Quota.Kind, "", acct.Quota.Percent)
-		for _, b := range acct.Quota.Buckets {
-			if b.ID == acct.Quota.Selected {
-				value = quotaWords(l, b.Kind, b.Window, b.Percent)
-			}
+	value := quotaWords(l, acct.Quota.Kind, "", acct.Quota.Percent)
+	for _, b := range acct.Quota.Buckets {
+		if b.ID == acct.Quota.Selected {
+			value = quotaWords(l, b.Kind, b.Window, b.Percent)
 		}
-		if acct.Quota.State == protocol.QuotaExhausted {
-			value = l.t("用完了", "Used up")
-			if acct.Quota.ResetsAt > 0 {
-				value += l.t("，", ", back at ") + time.UnixMilli(acct.Quota.ResetsAt).Format("01-02 15:04") + l.t(" 恢复", "")
-			}
+	}
+	if acct.Quota.State == protocol.QuotaExhausted {
+		value = l.t("用完了", "Used up")
+		if acct.Quota.ResetsAt > 0 {
+			value += l.t("，", ", back at ") + time.UnixMilli(acct.Quota.ResetsAt).Format("01-02 15:04") + l.t(" 恢复", "")
 		}
-		badgeText := l.t("剩余", "left")
-		if acct.Quota.Percent != nil {
-			badgeText = fmt.Sprintf("%d%%", *acct.Quota.Percent)
+	}
+	badgeText := l.t("剩余", "left")
+	if acct.Quota.Percent != nil {
+		badgeText = fmt.Sprintf("%d%%", *acct.Quota.Percent)
+	}
+	items = append(items, wire.Component{Type: "row", Title: l.t("现在还剩", "Left now"), Value: value,
+		Badge: &wire.Badge{Text: badgeText, Tone: quotaBadgeTone(acct.Quota.Tone)}})
+	for _, b := range acct.Quota.Buckets {
+		if b.ID == "" || seen[b.ID] {
+			continue
 		}
-		items = append(items, wire.Component{Type: "row", Title: l.t("现在还剩", "Left now"), Value: value,
-			Badge: &wire.Badge{Text: badgeText, Tone: quotaBadgeTone(acct.Quota.Tone)}})
-		for _, b := range acct.Quota.Buckets {
-			if b.ID == "" || seen[b.ID] {
-				continue
-			}
-			seen[b.ID] = true
-			choices = append(choices, wire.Choice{Value: b.ID, Title: quotaWords(l, b.Kind, b.Window, b.Percent)})
-		}
+		seen[b.ID] = true
+		choices = append(choices, wire.Choice{Value: b.ID, Title: quotaWords(l, b.Kind, b.Window, b.Percent)})
 	}
 	if !seen[val] {
 		choices = append(choices, wire.Choice{Value: val, Title: l.t("之前选的那项", "The one chosen before")})

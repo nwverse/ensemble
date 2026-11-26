@@ -153,8 +153,11 @@ func TestSettingsLinksOpenDifferentViews(t *testing.T) {
 		if sectionIndex(list, "现在的状态") >= 0 || strings.Contains(text(list), "接进 Persona") || strings.Contains(text(list), "下一步") {
 			t.Errorf("%s: 账号 repeats the home's introduction or state: %s", when, text(list))
 		}
-		if sectionIndex(home, "现在的状态") < 0 || sectionIndex(list, "已接入的账号") != 0 || sectionIndex(list, "添加账号") < 0 {
+		if sectionIndex(home, "现在的状态") < 0 || sectionIndex(list, "已接入的账号") != 1 || sectionIndex(list, "添加账号") < 0 {
 			t.Errorf("%s: home has no state, or 账号 does not start with the accounts and offer to add one: %s", when, text(list))
+		}
+		if top := list.Sections[0]; top.Title != "" || len(top.Items) != 1 || top.Items[0].Text != accountsAbout("zh-Hans") {
+			t.Errorf("%s: 账号 does not say first what it is for: %+v", when, top)
 		}
 	}
 	check("no account")
@@ -162,7 +165,7 @@ func TestSettingsLinksOpenDifferentViews(t *testing.T) {
 	check("one account")
 
 	list := renderUI(t, h, AccountsUI, wire.PlacementPluginPage, pageState{})
-	row := list.Sections[0].Items[0]
+	row := list.Sections[1].Items[0]
 	if row.Title != "演示一号" || row.Action == nil || row.Action.Push == nil || row.Action.Push.UI != AccountsUI {
 		t.Fatalf("账号 does not list the account opening in itself: %+v", row)
 	}
