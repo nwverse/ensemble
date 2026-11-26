@@ -211,6 +211,9 @@ type Account struct {
 	ShowQuota         bool   `json:"showQuota,omitempty"`
 	QuotaDisplay      string `json:"quotaDisplay,omitempty"`
 	Quota             *Quota `json:"quota,omitempty"`
+	// AvatarURL is the account's own picture, when its service gave one (club's own addition; core.ownAvatar): an
+	// https image or a small image data URL, as a session's avatarUrl is.
+	AvatarURL string `json:"avatarUrl,omitempty"`
 }
 
 // Session kinds.
