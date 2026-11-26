@@ -44,6 +44,18 @@ func (r tabRun) called(prefix string) bool {
 // The scripts' waits take at most 5 ms. Skipped where there is no Node.
 func runTabScript(t *testing.T, script, href, state string, fetch map[string]string) tabRun {
 	t.Helper()
+	return runTabScriptIn(t, script, href, state, fetch, tabStub{})
+}
+
+// tabStub is how the stand-in tab misbehaves: its first EvalFails evaluates throw (its context is being replaced),
+// and with LoadsOnWait a document still loading finishes when waited for.
+type tabStub struct {
+	EvalFails   int  `json:"evalFails"`
+	LoadsOnWait bool `json:"loadsOnWait"`
+}
+
+func runTabScriptIn(t *testing.T, script, href, state string, fetch map[string]string, stub tabStub) tabRun {
+	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("no node")
@@ -51,7 +63,7 @@ func runTabScript(t *testing.T, script, href, state string, fetch map[string]str
 	if state == "" {
 		state = "complete"
 	}
-	env, _ := json.Marshal(map[string]any{"href": href, "state": state, "fetch": fetch})
+	env, _ := json.Marshal(map[string]any{"href": href, "state": state, "fetch": fetch, "stub": stub})
 	src := `
 const P = ` + string(env) + `;
 const calls = [];
@@ -69,10 +81,10 @@ globalThis.fetch = async (path) => {
 };
 const page = {
   goto: async u => { calls.push("goto " + u); href = u; state = "complete"; },
-  waitForLoadState: async () => {},
+  waitForLoadState: async () => { if (P.stub.loadsOnWait) state = "complete"; },
   waitForSelector: async () => {},
   waitForFunction: async () => {},
-  evaluate: async (fn, arg) => fn(arg),
+  evaluate: async (fn, arg) => { if (P.stub.evalFails > 0) { P.stub.evalFails--; throw new Error("Execution context was destroyed"); } return fn(arg); },
   url: async () => href,
   title: async () => "",
   fill: async () => { calls.push("fill"); },
@@ -380,5 +392,59 @@ func TestTabsAreCountedPerComputer(t *testing.T) {
 	}
 	if l, _ := tb.begin(ctx, "a", true); !l.recycle {
 		t.Fatal("a not recycled on its second read")
+	}
+}
+
+// A read that finds its tab mid-navigation (another run's, such as a Gemini send opening its task) does not navigate
+// it away: a loading document is waited for, and a page that cannot be looked into is judged by its address.
+func TestReadsDoNotNavigateAwayFromAPageBeingLoaded(t *testing.T) {
+	cred := EncodeCredential(Credential{MachineID: "mac", Backend: "ego"})
+	d := &scriptDriver{answer: func(string) (RunResult, error) { return RunResult{Output: `{}`}, nil }}
+	New(SiteGeminiTasks, d).Verify(context.Background(), cred)
+	verify := d.scripts[0]
+	wiz := map[string]string{}
+	for _, tc := range []struct {
+		name, href, state string
+		stub              tabStub
+		want              string
+	}{
+		{"loading, then loaded", "https://gemini.google.com/app/8857", "loading", tabStub{LoadsOnWait: true}, ""},
+		{"evaluate fails, on Gemini", "https://gemini.google.com/app/8857", "complete", tabStub{EvalFails: 2}, ""},
+		{"evaluate fails once, then looks", "https://gemini.google.com/app/8857", "complete", tabStub{EvalFails: 1}, ""},
+		{"evaluate fails, elsewhere", "about:blank", "complete", tabStub{EvalFails: 2}, "https://gemini.google.com/app"},
+		{"loading elsewhere", "https://accounts.google.com/", "loading", tabStub{LoadsOnWait: true}, "https://gemini.google.com/app"},
+		{"never finishes loading", "https://gemini.google.com/app", "loading", tabStub{}, "https://gemini.google.com/app"},
+	} {
+		g := runTabScriptIn(t, verify, tc.href, tc.state, wiz, tc.stub).gotos()
+		if (tc.want == "" && len(g) != 0) || (tc.want != "" && (len(g) != 1 || g[0] != tc.want)) {
+			t.Errorf("%s: gotos = %v, want %q", tc.name, g, tc.want)
+		}
+	}
+}
+
+// The reload flag and the recycling wrapper together: the read reloads, answers, then closes the tab.
+func TestReloadAndRecycleTogether(t *testing.T) {
+	script := recycleScript(reloadScript(dotsReadScripts(t)["verify"]))
+	r := runTabScript(t, script, "https://chatgpt.com/", "complete", dotsFetch)
+	if g := r.gotos(); len(g) != 1 || !r.called(`finish {"keep":[]}`) || !strings.Contains(string(r.Value), `"tabRecycled":true`) {
+		t.Fatalf("reload + recycle: %+v", r)
+	}
+}
+
+// A send waiting for a read closing the tab gives up with its context.
+func TestWaitingSendHonoursItsContext(t *testing.T) {
+	tb := newTabs(TabRecycle{Runs: 1})
+	closing, _ := tb.begin(context.Background(), "k", true)
+	if !closing.recycle {
+		t.Fatal("not closing")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := tb.begin(ctx, "k", false); err == nil {
+		t.Fatal("a send waited past its context")
+	}
+	tb.end(closing, false, true)
+	if l, err := tb.begin(context.Background(), "k", false); err != nil || l.recycle {
+		t.Fatalf("after the close: %+v, %v", l, err)
 	}
 }

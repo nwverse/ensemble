@@ -40,10 +40,23 @@ await page.waitForLoadState("domcontentloaded").catch(() => {});
 `, u)
 	}
 	s, _ := json.Marshal(stay)
+	// A page that cannot be looked into or is still loading may be another run's navigation in this tab (a Gemini
+	// send opening its task): it is waited for, and then its address alone decides, as before, rather than being
+	// navigated away from.
 	return fmt.Sprintf(`
-const __at = (typeof __pacReload !== "undefined" && __pacReload) ? null :
-  await page.evaluate(() => ({ href: String(location.href), state: String(document.readyState) })).catch(() => null);
-if (!__at || __at.state === "loading" || !new RegExp(%s).test(__at.href)) {
+const __stay = new RegExp(%s);
+const __look = () => page.evaluate(() => ({ href: String(location.href), state: String(document.readyState) })).catch(() => null);
+let __here = false;
+if (!(typeof __pacReload !== "undefined" && __pacReload)) {
+  let at = await __look();
+  if (!at || at.state === "loading") {
+    await page.waitForLoadState("domcontentloaded").catch(() => {});
+    at = await __look();
+  }
+  __here = at ? at.state !== "loading" && __stay.test(at.href) :
+    __stay.test(String(await Promise.resolve().then(() => page.url()).catch(() => "")));
+}
+if (!__here) {
   await page.goto(%s);
   await page.waitForLoadState("domcontentloaded").catch(() => {});
 }
