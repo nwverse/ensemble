@@ -12,7 +12,7 @@ import (
 
 func TestGeminiTasksReadsThroughTheHubFormat(t *testing.T) {
 	ctx := context.Background()
-	cred := EncodeCredential(Credential{MachineID: "mm-1", Backend: "ego"})
+	cred := EncodeCredential(Credential{MachineID: "mac-1", Backend: "ego"})
 	fd := &fakeDriver{name: "ego", answer: func(req RunRequest) (RunResult, error) {
 		switch {
 		case strings.Contains(req.Script, `"checkRunning":true`):
@@ -76,7 +76,7 @@ func TestGeminiTasksReadsThroughTheHubFormat(t *testing.T) {
 
 func TestGeminiTasksVerifyRefusesSignedOut(t *testing.T) {
 	ctx := context.Background()
-	cred := EncodeCredential(Credential{MachineID: "mm-1"})
+	cred := EncodeCredential(Credential{MachineID: "mac-1"})
 	for _, tc := range []struct {
 		value any
 		code  string
@@ -101,7 +101,7 @@ func TestGeminiTasksVerifyRefusesSignedOut(t *testing.T) {
 
 func TestGeminiTasksSend(t *testing.T) {
 	ctx := context.Background()
-	cred := EncodeCredential(Credential{MachineID: "mm-1"})
+	cred := EncodeCredential(Credential{MachineID: "mac-1"})
 	ref := provider.SessionRef{ExternalID: "8857"}
 	for _, tc := range []struct {
 		value  any
@@ -145,7 +145,7 @@ func TestGeminiTasksRunsInItsOwnSlot(t *testing.T) {
 	d := &fakeDriver{name: "ego", answer: func(RunRequest) (RunResult, error) {
 		return RunResult{Backend: "ego", Output: `{"value":{"tasks":[{"id":"g1234","title":"Trip plan","status":"ready"}]}}`}, nil
 	}}
-	ss, err := New(SiteGeminiTasks, d).ListSessions(context.Background(), EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"}))
+	ss, err := New(SiteGeminiTasks, d).ListSessions(context.Background(), EncodeCredential(Credential{MachineID: "mac-2", Backend: "ego"}))
 	if err != nil || len(ss) != 1 || ss[0].ExternalID != "g1234" || d.gotReqs[0].Slot != "pac-gemini" {
 		t.Fatalf("ListSessions = %+v, %v (slot %q)", ss, err, d.gotReqs[0].Slot)
 	}

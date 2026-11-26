@@ -129,7 +129,7 @@ func TestDotsPageTellsCloudflareCheckApart(t *testing.T) {
 // The scripts' "human check" is its own code at pairing, sync and send, never a rate limit; a real 429 still is.
 func TestHumanCheckIsItsOwnCode(t *testing.T) {
 	ctx := context.Background()
-	cred := EncodeCredential(Credential{MachineID: "mm-1", Backend: "ego"})
+	cred := EncodeCredential(Credential{MachineID: "mac-1", Backend: "ego"})
 	answer := func(v any) *fakeDriver {
 		return &fakeDriver{answer: func(RunRequest) (RunResult, error) { return hubOutput(t, v), nil }}
 	}
@@ -159,7 +159,7 @@ func TestHumanCheckIsItsOwnCode(t *testing.T) {
 			t.Errorf("%s send: %+v, %v", site.Provider, res, err)
 		}
 	}
-	if id, backend := New(SiteGeminiTasks, nil).Machine(cred); id != "mm-1" || backend != "ego" {
+	if id, backend := New(SiteGeminiTasks, nil).Machine(cred); id != "mac-1" || backend != "ego" {
 		t.Errorf("machine = %q %q", id, backend)
 	}
 }

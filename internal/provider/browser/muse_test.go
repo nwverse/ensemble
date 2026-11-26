@@ -16,7 +16,7 @@ const museSideID = "146dc3a5-0099-4c72-be90-8b1c033752db"
 
 func TestMuseSite(t *testing.T) {
 	ctx := context.Background()
-	cred := EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})
+	cred := EncodeCredential(Credential{MachineID: "mac-2", Backend: "ego"})
 	d := siteDriver(t, map[string]any{
 		"signedIn, title": map[string]any{"signedIn": true, "title": "Chat — Wren"},
 		"threads.push": map[string]any{"threads": []map[string]any{
@@ -29,7 +29,7 @@ func TestMuseSite(t *testing.T) {
 	})
 	a := New(SiteMuse, d)
 	acct, err := a.Verify(ctx, cred)
-	if err != nil || acct.ExternalAccountID != "muse:mm-2" || acct.Alias != "Wren" {
+	if err != nil || acct.ExternalAccountID != "muse:mac-2" || acct.Alias != "Wren" {
 		t.Fatalf("Verify = %+v, err=%v", acct, err)
 	}
 	sessions, err := a.ListSessions(ctx, cred)
@@ -143,7 +143,7 @@ func TestMuseSite(t *testing.T) {
 // stopped after the click stays unconfirmed.
 func TestMuseSendOutcomes(t *testing.T) {
 	ctx := context.Background()
-	cred := EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})
+	cred := EncodeCredential(Credential{MachineID: "mac-2", Backend: "ego"})
 	ref := provider.SessionRef{ExternalID: museSideID}
 	for _, msg := range []string{"not ready", "no composer", "not sent"} {
 		d := siteDriver(t, map[string]any{"const before = await __read();": map[string]any{"error": msg, "unsent": true}})
@@ -177,7 +177,7 @@ func TestMuseThreadRows(t *testing.T) {
 		}
 	}
 	d := siteDriver(t, map[string]any{"threads.push": map[string]any{"threads": []any{}}})
-	if _, err := New(SiteMuse, d).ListSessions(context.Background(), EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})); err != nil {
+	if _, err := New(SiteMuse, d).ListSessions(context.Background(), EncodeCredential(Credential{MachineID: "mac-2", Backend: "ego"})); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(d.gotReqs[0].Script, `count.get(t.id) !== 1`) {
@@ -223,7 +223,7 @@ func TestMuseActivityMs(t *testing.T) {
 // when another chat is deleted, falls past the list's cap, gets a title or loses one, the rest keep theirs. A titled
 // chat keeps the panel's title, and no title holds a fragment of an id.
 func TestMuseUntitledSideChats(t *testing.T) {
-	cred := EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})
+	cred := EncodeCredential(Credential{MachineID: "mac-2", Backend: "ego"})
 	ids := make([]string, museMaxThreads+1)
 	for i := range ids {
 		ids[i] = fmt.Sprintf("%08x-0000-4000-8000-%012x", 0xa0000000+i, i)
@@ -317,7 +317,7 @@ func TestMusePageTellsHumanCheckApart(t *testing.T) {
 	for name, script := range map[string]string{"list": "threads.push", "messages": "__museMessages(ARGS.limit), 40000", "send": "const before = await __read();"} {
 		d := siteDriver(t, map[string]any{"threads.push": map[string]any{"threads": []any{}}, "__museMessages(ARGS.limit), 40000": map[string]any{}, "const before = await __read();": map[string]any{"error": "unsent", "unsent": true}, "signedIn, title": map[string]any{"signedIn": true}})
 		a := New(SiteMuse, d)
-		cred := EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})
+		cred := EncodeCredential(Credential{MachineID: "mac-2", Backend: "ego"})
 		switch name {
 		case "list":
 			_, _ = a.ListSessions(context.Background(), cred)
@@ -337,7 +337,7 @@ func TestMusePageTellsHumanCheckApart(t *testing.T) {
 // at pairing, sync and send, through the same mapper as Dots and Gemini; a send it stopped sent nothing.
 func TestMuseHumanCheckIsItsOwnCode(t *testing.T) {
 	ctx := context.Background()
-	cred := EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})
+	cred := EncodeCredential(Credential{MachineID: "mac-2", Backend: "ego"})
 	for _, tc := range []struct{ msg, code string }{{"human check", provider.CodeHumanCheck}, {"auth", provider.CodeAuthFailed}} {
 		d := siteDriver(t, map[string]any{
 			"signedIn, title":                map[string]any{"signedIn": false, "challenged": tc.msg == "human check"},
