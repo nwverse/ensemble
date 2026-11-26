@@ -277,10 +277,25 @@ func TestAddPageSaysHowToChooseInOneLine(t *testing.T) {
 		if len(above.Items) != 1 || above.Items[0].Type != "text" || !strings.HasPrefix(above.Items[0].Text, "怎么选：") {
 			t.Fatalf("no one line above the ways: %+v", above)
 		}
-		for _, p := range append([]string{grokBot, "muse", "claude_duet", "gemini_tasks", "dots"}, keyProviders...) {
-			if !strings.Contains(above.Items[0].Text, providerName("zh-Hans", p)) {
-				t.Errorf("the line does not name %s: %q", p, above.Items[0].Text)
+		// every way the page offers is named in the line, so the two cannot drift apart again
+		rows := 0
+		for _, s := range v.Sections[i:] {
+			for _, c := range s.Items {
+				if strings.HasPrefix(c.Key, "pair-") {
+					rows++
+					if !strings.Contains(above.Items[0].Text, c.Title) {
+						t.Errorf("the line does not name %q (group %q): %q", c.Title, s.Title, above.Items[0].Text)
+					}
+				}
 			}
+		}
+		if rows < 8 {
+			t.Errorf("only %d ways to add one: %s", rows, text(v))
+		}
+		// the relay is named last among the keys, as a choice only for those who run one
+		if line := above.Items[0].Text; !strings.Contains(line, "粘贴密钥；"+providerName("zh-Hans", "muse2api")+" 只在你自己搭了 Muse 转接服务时才选") ||
+			strings.Count(line, "。") != 1 || !strings.HasSuffix(line, "。") {
+			t.Errorf("the relay is not set apart in one sentence: %q", line)
 		}
 		for _, s := range v.Sections[i:] {
 			if strings.Count(s.Footer, "。") > 1 || len([]rune(s.Footer)) > 50 {
