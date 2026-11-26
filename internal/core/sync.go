@@ -3,6 +3,7 @@ package core
 import (
 	"cmp"
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"time"
@@ -122,12 +123,15 @@ func (s *Space) runSync(ctx context.Context, id, only string, refreshed bool) er
 		}
 		sessions := before
 		activity := map[string]int64{}
+		var liveRemote map[string]bool
 		if only == "" {
 			remote, err := adapter.ListSessions(ctx, cred)
 			if err != nil {
 				return err
 			}
+			liveRemote = make(map[string]bool, len(remote))
 			for _, r := range remote {
+				liveRemote[r.ExternalID] = true
 				if r.LastActivityMs > 0 {
 					activity[r.ExternalID] = r.LastActivityMs
 				}
@@ -150,16 +154,36 @@ func (s *Space) runSync(ctx context.Context, id, only string, refreshed bool) er
 				}
 			}
 		} else {
-			if due, err = s.sessionsDue(ctx, acct, before, sessions); err != nil {
+			pollSessions := make([]store.Session, 0, len(sessions))
+			for _, x := range sessions {
+				if liveRemote[x.ExternalID] {
+					pollSessions = append(pollSessions, x)
+				}
+			}
+			if due, err = s.sessionsDue(ctx, acct, before, pollSessions); err != nil {
 				return storeError{err}
 			}
 		}
+		succeeded := 0
+		var firstSessionErr error
 		for _, x := range due {
 			page, err := adapter.ListMessages(ctx, cred, provider.SessionRef{ExternalID: x.ExternalID, Ref: x.Ref},
 				provider.ListOptions{Limit: messagePage})
 			if err != nil {
-				return err
+				if only != "" || !isSessionIsolatedError(err) {
+					return err
+				}
+				s.mu.Lock()
+				s.fetchedAt[x.SessionKey] = s.now()
+				s.mu.Unlock()
+				s.log().Warn("session sync skipped", "space", s.name, "account", id, "provider", acct.Provider,
+					"session", x.SessionKey, "code", provider.CodeOf(err), "http_status", providerHTTPStatus(err))
+				if firstSessionErr == nil {
+					firstSessionErr = err
+				}
+				continue
 			}
+			succeeded++
 			if !s.syncable(ctx, id) {
 				return nil
 			}
@@ -173,6 +197,9 @@ func (s *Space) runSync(ctx context.Context, id, only string, refreshed bool) er
 			if n > 0 {
 				touched = append(touched, x.SessionKey)
 			}
+		}
+		if firstSessionErr != nil && succeeded == 0 && len(due) > 0 {
+			return firstSessionErr
 		}
 		if !s.syncable(ctx, id) {
 			return nil
@@ -200,9 +227,9 @@ func (s *Space) runSync(ctx context.Context, id, only string, refreshed bool) er
 			}
 		}
 		if acct.Status == protocol.AccountError {
-			s.log().Debug("sync failed", "space", s.name, "account", id, "provider", acct.Provider, "code", code)
+			s.log().Debug("sync failed", "space", s.name, "account", id, "provider", acct.Provider, "code", code, "http_status", providerHTTPStatus(perr))
 		} else {
-			s.log().Warn("sync failed", "space", s.name, "account", id, "provider", acct.Provider, "code", code)
+			s.log().Warn("sync failed", "space", s.name, "account", id, "provider", acct.Provider, "code", code, "http_status", providerHTTPStatus(perr))
 		}
 		if !s.syncable(ctx, id) {
 			return nil
@@ -231,6 +258,27 @@ func (s *Space) runSync(ctx context.Context, id, only string, refreshed bool) er
 type storeError struct{ err error }
 
 func (e storeError) Error() string { return e.err.Error() }
+
+func providerHTTPStatus(err error) int {
+	var pe *provider.Error
+	if errors.As(err, &pe) {
+		return pe.HTTPStatus
+	}
+	return 0
+}
+
+func isSessionIsolatedError(err error) bool {
+	var pe *provider.Error
+	if errors.As(err, &pe) && pe.Retryable {
+		return false
+	}
+	switch provider.CodeOf(err) {
+	case provider.CodeAuthFailed, provider.CodeRateLimited, provider.CodeNetworkError, provider.CodeUpstreamError:
+		return false
+	default:
+		return true
+	}
+}
 
 func sessionRows(acct store.Account, remote []provider.RemoteSession) []store.Session {
 	rows := make([]store.Session, len(remote))

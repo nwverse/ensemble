@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -214,7 +215,13 @@ func (a *Adapter) ListSessions(ctx context.Context, credential string) ([]provid
 		}
 		listed, err := a.data(ctx, credential, "ListGrokBotAgentSessions", map[string]any{"agentId": id})
 		if err != nil {
-			return nil, err
+			var pe *provider.Error
+			if errors.As(err, &pe) && pe.Code == provider.CodeRequestFailed &&
+				(pe.HTTPStatus == http.StatusNotFound || pe.HTTPStatus == http.StatusBadRequest) {
+				listed = nil
+			} else {
+				return nil, err
+			}
 		}
 		mainID := id + "/" + viewer
 		seen := map[string]bool{}
@@ -260,7 +267,7 @@ func (a *Adapter) ListMessages(ctx context.Context, credential string, s provide
 	if err != nil {
 		return provider.RemotePage{}, err
 	}
-	if !web.IsArray(body["entries"]) {
+	if raw, ok := body["entries"]; ok && raw != nil && !web.IsArray(raw) {
 		return provider.RemotePage{}, &provider.Error{Code: provider.CodeRequestFailed}
 	}
 	var msgs []provider.RemoteMessage

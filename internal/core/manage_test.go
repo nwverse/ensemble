@@ -26,6 +26,7 @@ type scripted struct {
 	sessions []provider.RemoteSession
 	listErr  func(cred string) error
 	messages map[string][]provider.RemoteMessage
+	msgErr   func(extID string) error
 	listed   []string
 	send     func(cred string, msg provider.Outgoing) (provider.SendResult, error)
 	sends    []string
@@ -67,6 +68,11 @@ func (p *scripted) ListMessages(_ context.Context, _ string, ref provider.Sessio
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.listed = append(p.listed, ref.ExternalID)
+	if p.msgErr != nil {
+		if err := p.msgErr(ref.ExternalID); err != nil {
+			return provider.RemotePage{}, err
+		}
+	}
 	return provider.RemotePage{Messages: append([]provider.RemoteMessage(nil), p.messages[ref.ExternalID]...)}, nil
 }
 func (p *scripted) Send(_ context.Context, cred string, _ provider.SessionRef, msg provider.Outgoing, _ provider.SendContext) (provider.SendResult, error) {
@@ -1134,5 +1140,100 @@ func TestAssistantBackendAndSessionStartInterrupt(t *testing.T) {
 	_, err = ePlain.club.Call(ctx, DefaultSpace, protocol.MethodClubSessionsInterrupt, json.RawMessage(`{"session_key":"`+SessionKey("grok_bot", aPlain.AccountID, "bot/")+`"}`))
 	if protocol.CodeOf(err) != protocol.CodeUnsupported || reason(err) != protocol.ReasonProviderUnavailable {
 		t.Fatalf("unsupported interrupt: %v", err)
+	}
+}
+
+func TestSyncSkipsDeletedRemoteSessionsAndIsolatesSingleSessionFailure(t *testing.T) {
+	e := newEnv(t, "grok_bot")
+	ctx := context.Background()
+	e.p.sessions = []provider.RemoteSession{
+		{ExternalID: "s1", Title: "one", CanSend: true, LastActivityMs: e.nowMs()},
+		{ExternalID: "s2", Title: "two", CanSend: true, LastActivityMs: e.nowMs()},
+	}
+	e.p.messages["s1"] = []provider.RemoteMessage{{ExternalID: "m1", Role: "assistant", Blocks: []protocol.Block{protocol.TextBlock("hi1")}, CreateTimeMs: e.nowMs()}}
+	e.p.messages["s2"] = []provider.RemoteMessage{{ExternalID: "m2", Role: "assistant", Blocks: []protocol.Block{protocol.TextBlock("hi2")}, CreateTimeMs: e.nowMs()}}
+	a := e.pair(t, "fixture-credential-1")
+	firstSynced, _ := e.space.Account(ctx, a.AccountID)
+
+	// 1. Deleted remote session s2 stays in local store, is not polled, and sync succeeds cleanly.
+	e.p.listed = nil
+	e.p.sessions = []provider.RemoteSession{{ExternalID: "s1", Title: "one", CanSend: true, LastActivityMs: e.nowMs() + 1000}}
+	e.advance(time.Minute)
+	if err := e.space.SyncAccount(ctx, a.AccountID); err != nil {
+		t.Fatalf("sync with deleted remote session: %v", err)
+	}
+	if len(e.p.listed) != 1 || e.p.listed[0] != "s1" {
+		t.Fatalf("expected only live s1 polled, got %v", e.p.listed)
+	}
+	if localSessions, err := e.space.store.AccountSessions(ctx, a.AccountID); err != nil || len(localSessions) != 2 {
+		t.Fatalf("expected both s1 and local historical s2 preserved, got len=%d err=%v", len(localSessions), err)
+	}
+	got, _ := e.space.Account(ctx, a.AccountID)
+	if got.LastError != "" || got.LastSyncedAt <= firstSynced.LastSyncedAt {
+		t.Fatalf("expected clean sync after skipping deleted remote session, got %+v (prev=%d)", got, firstSynced.LastSyncedAt)
+	}
+	prevSynced := got.LastSyncedAt
+
+	// 2. Single live session s1 failing with REQUEST_FAILED (404) must not stop s2 or prevent LastSyncedAt from advancing.
+	e.p.sessions = []provider.RemoteSession{
+		{ExternalID: "s1", Title: "one", CanSend: true, LastActivityMs: e.nowMs() + 2000},
+		{ExternalID: "s2", Title: "two", CanSend: true, LastActivityMs: e.nowMs() + 2000},
+	}
+	e.p.messages["s2"] = append(e.p.messages["s2"], provider.RemoteMessage{ExternalID: "m2b", Role: "assistant", Blocks: []protocol.Block{protocol.TextBlock("hi2b")}, CreateTimeMs: e.nowMs() + 2000})
+	e.p.msgErr = func(extID string) error {
+		if extID == "s1" {
+			return &provider.Error{Code: provider.CodeRequestFailed, HTTPStatus: 404}
+		}
+		return nil
+	}
+	e.advance(time.Minute)
+	if err := e.space.SyncAccount(ctx, a.AccountID); err != nil {
+		t.Fatalf("sync with single-session failure: %v", err)
+	}
+	got, _ = e.space.Account(ctx, a.AccountID)
+	if got.LastError != "" || got.LastSyncedAt <= prevSynced {
+		t.Fatalf("expected s2 success to clear error and advance LastSyncedAt, got %+v (prev=%d)", got, prevSynced)
+	}
+	page, err := e.space.Messages(ctx, protocol.MessagesParams{SessionKey: SessionKey("grok_bot", a.AccountID, "s2")})
+	if err != nil || len(page.Messages) != 2 {
+		t.Fatalf("expected s2 to have 2 synced messages, got %d err=%v", len(page.Messages), err)
+	}
+
+	// 3. When all due sessions fail with REQUEST_FAILED, account LastError must record REQUEST_FAILED.
+	e.p.msgErr = func(string) error {
+		return &provider.Error{Code: provider.CodeRequestFailed, HTTPStatus: 404}
+	}
+	e.advance(time.Minute)
+	_ = e.space.SyncAccount(ctx, a.AccountID)
+	got, _ = e.space.Account(ctx, a.AccountID)
+	if got.LastError != provider.CodeRequestFailed {
+		t.Fatalf("expected REQUEST_FAILED when all due sessions fail, got %+v", got)
+	}
+
+	// 4. Non-isolated errors (RATE_LIMITED, AUTH_FAILED) must not be swallowed even when only s1 fails.
+	e.p.msgErr = func(extID string) error {
+		if extID == "s1" {
+			return &provider.Error{Code: provider.CodeRateLimited, HTTPStatus: 429, Retryable: true}
+		}
+		return nil
+	}
+	e.advance(time.Minute)
+	_ = e.space.SyncAccount(ctx, a.AccountID)
+	got, _ = e.space.Account(ctx, a.AccountID)
+	if got.LastError != provider.CodeRateLimited {
+		t.Fatalf("expected RATE_LIMITED to propagate immediately, got %+v", got)
+	}
+
+	e.p.msgErr = func(extID string) error {
+		if extID == "s1" {
+			return &provider.Error{Code: provider.CodeAuthFailed, HTTPStatus: 401}
+		}
+		return nil
+	}
+	e.advance(time.Minute)
+	_ = e.space.SyncAccount(ctx, a.AccountID)
+	got, _ = e.space.Account(ctx, a.AccountID)
+	if got.LastError != provider.CodeAuthFailed || got.Status != protocol.AccountError {
+		t.Fatalf("expected AUTH_FAILED + AccountError to propagate immediately, got %+v", got)
 	}
 }
