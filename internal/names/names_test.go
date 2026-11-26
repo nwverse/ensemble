@@ -71,7 +71,7 @@ func TestLegacyRowsReadOnlyExactGeneratedFormsAsClubs(t *testing.T) {
 		{"claude_duet", "Claude Duet - Claude", "Claude Duet", "Claude Duet"}, // a tab title saved before 0.5
 		{"claude_duet", "Claude Duet · Claude", "Claude Duet", "Claude Duet"},
 		{"claude_duet", "claude_duet", "Claude Duet", "Claude Duet"},
-		{"gemini_tasks", "Gemini Tasks · ada@example.com", "Gemini · ada@example.com", "Gemini · ada@example.com"},
+		{"gemini_tasks", "Gemini Tasks · ada@example.com", "Gemini · ada", "Gemini · ada"}, // an e-mail shows before its @
 		{"gemini_tasks", "gemini_tasks", "Gemini", "Gemini"},
 		{"gemini_tasks", "Google Gemini", "Gemini", "Gemini"},
 		{"grok_bot", "Grok Bot", "Grok Bot", "Grok Bot"},
@@ -223,6 +223,74 @@ func TestLegacyAliasIsOfferedOnlyWhereClubWroteThatShape(t *testing.T) {
 	} {
 		if x, ok := LegacyAlias(c.provider, c.stored); x != c.x || ok != c.ok {
 			t.Errorf("LegacyAlias(%s, %q) = %q %v", c.provider, c.stored, x, ok)
+		}
+	}
+}
+
+// An e-mail alias (Grok Bot's, and Gemini's or ChatGPT Dots' fallback) is titled by the part before @; the stored name
+// keeps the whole e-mail, which Email gives back for the account's page. An owner's name is never shortened.
+func TestEmailAliasesAreTitledBeforeTheirAt(t *testing.T) {
+	for _, c := range []struct {
+		provider, stored, source, zh, en, email string
+	}{
+		// paired now: Stored keeps the whole e-mail
+		{"grok_bot", Stored("grok_bot", "someone@example.com"), SourceAuto, "Grok Bot · someone", "Grok Bot · someone", "someone@example.com"},
+		{"gemini_tasks", Stored("gemini_tasks", "ada@example.com"), SourceAuto, "Gemini · ada", "Gemini · ada", "ada@example.com"},
+		{"dots", Stored("dots", "ada.lovelace@example.com"), SourceAuto, "ChatGPT Dots · ada.lovelace", "ChatGPT Dots · ada.lovelace", "ada.lovelace@example.com"},
+		// stored by 0.6.1, read as it is, without re-pairing
+		{"grok_bot", "Grok Bot · someone@example.com", SourceAuto, "Grok Bot · someone", "Grok Bot · someone", "someone@example.com"},
+		{"muse", "Muse (web) · glint@example.com", SourceAuto, "Muse（网页版） · glint", "Muse (web) · glint", "glint@example.com"},
+		// a legacy Gemini row club wrote
+		{"gemini_tasks", "Gemini Tasks · ada@example.com", SourceLegacy, "Gemini · ada", "Gemini · ada", "ada@example.com"},
+		// the owner's: as typed, even when it is an e-mail or reads like club's
+		{"grok_bot", "someone@example.com", SourceOwner, "someone@example.com", "someone@example.com", ""},
+		{"grok_bot", "Grok Bot · someone@example.com", SourceOwner, "Grok Bot · someone@example.com", "Grok Bot · someone@example.com", ""},
+		{"gemini_tasks", "ada@example.com", SourceLegacy, "ada@example.com", "ada@example.com", ""}, // not a shape club wrote
+		{"grok_bot", "Grok Bot · someone@example.com", SourceLegacy, "Grok Bot · someone@example.com", "Grok Bot · someone@example.com", ""},
+		// not e-mails, or a part before @ that is only the brand's words: as they are
+		{"grok_bot", "Grok Bot · Grok 秘书", SourceAuto, "Grok Bot · Grok 秘书", "Grok Bot · Grok 秘书", ""},
+		{"grok_bot", "Grok Bot · ada@localhost", SourceAuto, "Grok Bot · ada@localhost", "Grok Bot · ada@localhost", ""},
+		{"grok_bot", "Grok Bot · @example.com", SourceAuto, "Grok Bot · @example.com", "Grok Bot · @example.com", ""},
+		{"gemini_tasks", "Gemini · gemini@example.com", SourceAuto, "Gemini · gemini@example.com", "Gemini · gemini@example.com", ""},
+	} {
+		if got := Title("zh", c.provider, c.stored, c.source); got != c.zh {
+			t.Errorf("Title(zh, %s, %q, %q) = %q, want %q", c.provider, c.stored, c.source, got, c.zh)
+		}
+		if got := Title("en", c.provider, c.stored, c.source); got != c.en {
+			t.Errorf("Title(en, %s, %q, %q) = %q, want %q", c.provider, c.stored, c.source, got, c.en)
+		}
+		if got := Email(c.provider, c.stored, c.source); got != c.email {
+			t.Errorf("Email(%s, %q, %q) = %q, want %q", c.provider, c.stored, c.source, got, c.email)
+		}
+		// shortening is for titles only: a name club stored is never read as the owner's
+		if _, owner := Split(c.provider, c.stored, c.source); owner && (c.source == SourceAuto || c.email != "") {
+			t.Errorf("Split(%s, %q, %q) reads it as the owner's", c.provider, c.stored, c.source)
+		}
+	}
+	// The stored alias stays the whole e-mail, so a legacy row's settle still compares it with what Verify reports.
+	if x, ok := LegacyAlias("gemini_tasks", "Gemini Tasks · ada@example.com"); !ok || x != "ada@example.com" {
+		t.Fatal(x, ok)
+	}
+}
+
+// Two accounts whose e-mails share the part before @ are numbered like any two composed titles that read alike, and
+// never take an owner's title.
+func TestEmailAliasesSharingTheirLocalPartAreNumbered(t *testing.T) {
+	for _, l := range []string{"zh", "en"} {
+		got := Distinct(l, []Account{
+			{ID: "a", Provider: "grok_bot", Stored: "Grok Bot · ada@example.com", Source: SourceAuto, CreatedAt: 1},
+			{ID: "b", Provider: "grok_bot", Stored: "Grok Bot · ada@example.org", Source: SourceAuto, CreatedAt: 2},
+			{ID: "c", Provider: "grok_bot", Stored: "Grok Bot · bob@example.com", Source: SourceAuto, CreatedAt: 3},
+			{ID: "d", Provider: "gemini_tasks", Stored: "Gemini · ada@example.com", Source: SourceAuto, CreatedAt: 4},
+			{ID: "e", Provider: "gemini_tasks", Stored: "Gemini · bob", Source: SourceOwner, CreatedAt: 5},
+			{ID: "f", Provider: "gemini_tasks", Stored: "Gemini · bob@example.com", Source: SourceAuto, CreatedAt: 6},
+		})
+		want := map[string]string{"a": "Grok Bot · ada (1)", "b": "Grok Bot · ada (2)", "c": "Grok Bot · bob",
+			"d": "Gemini · ada", "e": "Gemini · bob", "f": "Gemini · bob (1)"}
+		for id, w := range want {
+			if got[id] != w {
+				t.Errorf("%s %s: %q, want %q", l, id, got[id], w)
+			}
 		}
 	}
 }

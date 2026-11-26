@@ -608,10 +608,16 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 	// What it is and how it is doing, with the fix when it needs one.
 	info := wire.Section{Items: []wire.Component{
 		{Type: "row", Title: l.t("服务", "Service"), Value: providerName(l, acct.Provider)},
+	}}
+	if acct.Email != "" {
+		// The name above shows only the part before @.
+		info.Items = append(info.Items, wire.Component{Type: "row", Title: l.t("邮箱", "Email"), Value: acct.Email})
+	}
+	info.Items = append(info.Items, []wire.Component{
 		{Type: "row", Title: l.t("现在", "Now"), Value: stateWords(l, acct), Badge: statusBadge(l, acct)},
 		{Type: "row", Title: l.t("上次同步", "Last synced"), Value: when(l, acct.LastSyncedAt, r.Location())},
 		{Type: "row", Title: l.t("对话", "Chats"), Value: fmt.Sprint(acct.SessionCount)},
-	}}
+	}...)
 	if words := problemWords(l, acct); words != "" {
 		if p, ok := problemOf(l, acct.LastError, placerFor(ctx, space, a.browser).of(ctx, acct, acct.LastError)); ok {
 			words = p.Text(l)
