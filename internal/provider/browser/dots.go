@@ -94,7 +94,7 @@ func dotsError(msg string) error {
 		return &provider.Error{Code: provider.CodeNotFound, HTTPStatus: 404}
 	case msg == "http 429":
 		return &provider.Error{Code: provider.CodeRateLimited, HTTPStatus: 429, Retryable: true}
-	case msg == "no dot":
+	case msg == "no dot", msg == "no thread":
 		return &provider.Error{Code: provider.CodeNotFound}
 	case strings.HasPrefix(msg, "http "):
 		return &provider.Error{Code: provider.CodeUpstreamError, Retryable: true}
