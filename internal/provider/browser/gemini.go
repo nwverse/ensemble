@@ -285,10 +285,12 @@ func (geminiSite) send(ctx context.Context, a *Adapter, credential string, sessi
 	if id == "" || id == "main" {
 		return provider.SendResult{}, &provider.Error{Code: provider.CodeNotFound}
 	}
-	args, _ := json.Marshal(map[string]any{"task": id, "turns": 3, "text": text, "allowEmpty": true})
-	// Typed into the task's own conversation and sent, then read back: sent only once a turn of the user's with this
-	// text, made after the send started, is in the conversation. Each read is its own short evaluate, so a slow
-	// page never runs one evaluate into the driver's limit.
+	args, _ := json.Marshal(map[string]any{"text": text})
+	// Typed into the task's own conversation once it is on the page (typed earlier, the text stays a draft that is
+	// never sent), into a composer cleared of any draft Gemini kept for the conversation, then sent: sent once the
+	// page shows a new turn of the user's with this text. Each look is its own short evaluate, and the whole send
+	// stays well inside the driver's limit. Still in the composer after the wait, it did not go: the draft is cleared
+	// and the send refused, so it can be sent again.
 	script := fmt.Sprintf(`
 const ARGS0 = %s;
 await page.goto(%q);
@@ -300,34 +302,49 @@ if (signedIn === "limited") {
 } else if (!signedIn) {
   return { error: "auth" };
 } else {
-  const startedAt = Date.now();
   const sel = %q;
-  await page.waitForSelector("loc=css:" + sel, { state: "visible", timeout: 20000 });
-  await page.click("loc=css:" + sel);
-  await page.keyboard.insertText(ARGS0.text);
-  await new Promise(r => setTimeout(r, 500));
-  const clicked = await page.click("loc=css:" + %q, { timeout: 3000 }).then(() => true).catch(() => false);
-  if (!clicked) await page.press("loc=css:" + sel, "Enter");
-  let found = null;
-  for (let i = 0; i < 20 && !found; i++) {
-    await new Promise(r => setTimeout(r, 1500));
-    found = await page.evaluate(async (ARGS) => {
-%s
-      try {
-%s
-        const norm = t => String(t || "").replace(/\s+/g, " ").trim();
-        const want = norm(ARGS.text);
-        const hit = messages.filter(m => m.owner && norm(m.text) === want && m.at >= ARGS.since - 60000).pop();
-        return hit ? { id: hit.id } : null;
-      } catch (e) {
-        return { error: String((e && e.message) || e) };
-      }
-    }, { ...ARGS0, since: startedAt });
-    if (found && found.error) break;
+  const norm = t => String(t || "").replace(/\s+/g, " ").trim();
+  const look = () => page.evaluate((sel) => ({
+    turns: document.querySelectorAll("user-query").length,
+    last: (([...document.querySelectorAll("user-query .query-text, user-query")].pop() || {}).innerText) || "",
+    draft: ((document.querySelector(sel) || {}).innerText) || "",
+  }), sel);
+  await page.waitForSelector("loc=css:" + sel, { state: "visible", timeout: 15000 });
+  let before = await look();
+  for (let i = 0; i < 15 && before.turns === 0; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    before = await look();
   }
-  return found ? (found.error ? { clicked, error: found.error } : { sent: true, clicked, id: found.id }) : { sent: false, clicked };
+  if (before.turns === 0) {
+    return { error: "no task" };
+  } else {
+    await page.click("loc=css:" + sel);
+    await page.keyboard.press("ControlOrMeta+A");
+    await page.keyboard.press("Backspace");
+    await page.keyboard.insertText(ARGS0.text);
+    await new Promise(r => setTimeout(r, 500));
+    const clicked = await page.click("loc=css:" + %q, { timeout: 3000 }).then(() => true).catch(() => false);
+    if (!clicked) await page.press("loc=css:" + sel, "Enter");
+    const want = norm(ARGS0.text);
+    let now = before;
+    for (let i = 0; i < 15; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      now = await look();
+      if (now.turns > before.turns && norm(now.last).includes(want)) break;
+    }
+    if (now.turns > before.turns && norm(now.last).includes(want)) {
+      return { sent: true, clicked };
+    } else if (norm(now.draft).includes(want)) {
+      await page.click("loc=css:" + sel).catch(() => {});
+      await page.keyboard.press("ControlOrMeta+A").catch(() => {});
+      await page.keyboard.press("Backspace").catch(() => {});
+      return { clicked, error: "not sent" };
+    } else {
+      return { sent: false, clicked };
+    }
+  }
 }
-`, args, geminiOrigin+"/app/"+id, geminiComposerSel, geminiSendSel, geminiPrelude, geminiTurnsJS)
+`, args, geminiOrigin+"/app/"+id, geminiComposerSel, geminiSendSel)
 	var r struct {
 		Error   string `json:"error"`
 		Sent    bool   `json:"sent"`
@@ -341,9 +358,15 @@ if (signedIn === "limited") {
 		}
 		return provider.SendResult{Status: provider.Unconfirmed, Error: provider.CodeOf(err)}, nil
 	}
-	if r.Error == "auth" || (r.Error == "http 429" && !r.Clicked) {
+	switch r.Error {
+	case "auth", "no task":
+		return provider.SendResult{}, geminiError(r.Error)
+	case "http 429":
 		// Refused before anything was typed: nothing went out.
 		return provider.SendResult{}, geminiError(r.Error)
+	case "not sent":
+		// Still in the composer after the wait, and cleared from it: it did not go, and can be sent again.
+		return provider.SendResult{}, &provider.Error{Code: provider.CodeUpstreamError, Retryable: true}
 	}
 	if !r.Sent {
 		code := provider.CodeUpstreamError

@@ -105,11 +105,14 @@ func TestGeminiTasksSend(t *testing.T) {
 		id     string
 		code   string
 	}{
-		{map[string]any{"sent": true, "id": "r_9:u"}, provider.Sent, "r_9:u", ""},
+		{map[string]any{"sent": true, "clicked": true}, provider.Sent, "", ""},
 		{map[string]any{"sent": false, "clicked": true}, provider.Unconfirmed, "", ""},
 		{map[string]any{"error": "auth"}, "", "", provider.CodeAuthFailed},
 		// Google's unusual-traffic page before anything was typed: refused, nothing went out.
 		{map[string]any{"error": "http 429"}, "", "", provider.CodeRateLimited},
+		// Still in the composer after the wait: it did not go, so it is refused and can be sent again.
+		{map[string]any{"error": "not sent", "clicked": true}, "", "", provider.CodeUpstreamError},
+		{map[string]any{"error": "no task"}, "", "", provider.CodeNotFound},
 	} {
 		fd := &fakeDriver{answer: func(RunRequest) (RunResult, error) { return hubOutput(t, tc.value), nil }}
 		res, err := New(SiteGeminiTasks, fd).Send(ctx, cred, ref, provider.Outgoing{Text: `hi "there"`}, provider.SendContext{})
@@ -122,8 +125,9 @@ func TestGeminiTasksSend(t *testing.T) {
 		if err != nil || res.Status != tc.status || res.ExternalID != tc.id {
 			t.Errorf("%v: %+v, %v", tc.value, res, err)
 		}
-		if sc := fd.gotReqs[0].Script; !strings.Contains(sc, `https://gemini.google.com/app/8857`) || !strings.Contains(sc, `"text":"hi \"there\""`) {
-			t.Errorf("script does not target the task with the text")
+		if sc := fd.gotReqs[0].Script; !strings.Contains(sc, `https://gemini.google.com/app/8857`) || !strings.Contains(sc, `"text":"hi \"there\""`) ||
+			!strings.Contains(sc, `ControlOrMeta+A`) {
+			t.Errorf("script does not clear the draft and type the text into the task")
 		}
 	}
 	fd := &fakeDriver{answer: func(RunRequest) (RunResult, error) { return RunResult{Error: "timeout"}, nil }}
