@@ -384,7 +384,7 @@ func TestCheckAgainSaysWhetherItIsFixed(t *testing.T) {
 	club := core.New(core.Options{Registry: provider.NewRegistry(f), FollowUps: []time.Duration{}})
 	h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), nil)
 	res := act(t, h, pageState{Page: pagePair, Provider: "groq"}, actPair, map[string]string{fieldCredential: "gsk_fixture_0000001"})
-	if !res.Pop {
+	if !pairedDone(res) {
 		t.Fatalf("pair: %+v", res)
 	}
 	space, _ := club.Space(context.Background(), core.DefaultSpace)

@@ -178,6 +178,8 @@ func (a *accounts) view(ctx context.Context, r *ext.UIRequest, st pageState) *wi
 		v = a.grokView(ctx, l, &st)
 	case st.Page == pageBrowserPair:
 		v = a.browserPairView(ctx, l, st)
+	case st.Page == pageDone:
+		v = a.doneView(ctx, l, st)
 	default:
 		v = a.listView(ctx, r, l)
 	}
@@ -601,17 +603,32 @@ func stateWords(l lang, acct protocol.Account) string {
 // assistantSection is 助手指挥: how far the Persona assistant may use the account. The name is the one the assistant's
 // guide (tools.go) sends the user to.
 func assistantSection(l lang, acct protocol.Account, control core.Control) wire.Section {
+	return wire.Section{Title: l.t("助手指挥：Persona 助手能不能用这个账号", "Assistant control: may the Persona assistant use this account"),
+		Footer: l.t("关闭：Persona 助手完全看不到它（新账号默认这样）。只读：Persona 助手能读它的对话，帮你总结、提醒。可代发：还能替你给它发消息，每次发之前都先在手机上问你。",
+			"Off: the Persona assistant does not see it (new accounts start so). Read: it can read the chats to sum up and remind you. Confirm: it can also write for you, asking on your phone before each message."),
+		Items: []wire.Component{{Type: "segmented", Name: fieldControl, Choices: controlChoices(l, control), Value: string(control),
+			Action: &wire.Action{ID: actControl}}}}
+}
+
+// controlChoices are the 助手指挥 levels to choose from; the automatic one only for an account that already has it.
+func controlChoices(l lang, control core.Control) []wire.Choice {
 	choices := []wire.Choice{{Value: string(core.ControlOff), Title: l.t("关闭", "Off")},
 		{Value: string(core.ControlRead), Title: l.t("只读", "Read")},
 		{Value: string(core.ControlConfirm), Title: l.t("可代发（逐次确认）", "Confirm")}}
 	if control == core.ControlAuto {
 		choices = append(choices, wire.Choice{Value: string(core.ControlAuto), Title: l.t("可代发（自动档）", "Auto")})
 	}
-	return wire.Section{Title: l.t("助手指挥：Persona 助手能不能用这个账号", "Assistant control: may the Persona assistant use this account"),
-		Footer: l.t("关闭：Persona 助手完全看不到它（新账号默认这样）。只读：Persona 助手能读它的对话，帮你总结、提醒。可代发：还能替你给它发消息，每次发之前都先在手机上问你。",
-			"Off: the Persona assistant does not see it (new accounts start so). Read: it can read the chats to sum up and remind you. Confirm: it can also write for you, asking on your phone before each message."),
-		Items: []wire.Component{{Type: "segmented", Name: fieldControl, Choices: choices, Value: string(control),
-			Action: &wire.Action{ID: actControl}}}}
+	return choices
+}
+
+// controlChoiceTitle is a level's name as the choices have it.
+func controlChoiceTitle(l lang, control core.Control) string {
+	for _, c := range controlChoices(l, control) {
+		if c.Value == string(control) {
+			return c.Title
+		}
+	}
+	return l.t("关闭", "Off")
 }
 
 // mainAssistantSection is 主助手: the account itself answering as the main assistant. With the bridge switched off in
@@ -854,12 +871,17 @@ func (a *accounts) grokView(ctx context.Context, l lang, st *pageState) *wire.Vi
 		if res.Account != nil {
 			name = accountTitle(l, *res.Account)
 		}
+		if again == "" && res.Account != nil {
+			// A new account: the done step, which asks about the assistant (and offers no second sign-in).
+			*st = pageState{Page: pageDone, Account: res.Account.AccountID}
+			return a.doneView(ctx, l, *st)
+		}
 		note := l.t("已登录并配对：", "Signed in and paired: ")
 		if again != "" {
 			note = l.t("已重新登录：", "Signed in again: ")
 		}
 		*st = pageState{Page: pageGrok, Account: again, Note: note + name, NoteTone: wire.TonePositive}
-		v.Sections = []wire.Section{{Items: []wire.Component{start}}}
+		v.Sections = []wire.Section{{Items: []wire.Component{{Type: "button", Title: l.t("好了", "Done"), Action: &wire.Action{ID: actFinish}}}}}
 		return v
 	}
 	v.Sections = []wire.Section{{Items: a.grokPending(l, *st)}}
@@ -1009,7 +1031,7 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 		if err := call(ctx, a.club, protocol.MethodClubAccountsAdd, p, &acct); err != nil {
 			return failed(explain(l, err, place{Provider: st.Provider, Pairing: pairKey}), cred)
 		}
-		return &wire.ActionResult{Pop: true, Toast: l.t("已添加：", "Added: ") + accountTitle(l, acct)}, nil
+		return a.added(ctx, r, acct), nil
 	case actBrowserPair:
 		if !a.available(st.Provider) {
 			return refuse(l.t("这类账号还没打开：先到 ", "Not switched on: first switch on ") + settingsPath(l) +
@@ -1030,7 +1052,11 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 		if err != nil {
 			return failed(explain(l, err, a.pairPlace(ctx, st.Provider, r.Values[fieldMachine])), "")
 		}
-		return &wire.ActionResult{Pop: true, Toast: l.t("已添加：", "Added: ") + accountTitle(l, acct)}, nil
+		return a.added(ctx, r, acct), nil
+	case actFinish:
+		return a.finish(ctx, l, st), nil
+	case actOpenAccount:
+		return &wire.ActionResult{View: a.view(ctx, r, pageState{Page: pageAccount, Account: st.Account})}, nil
 	case actGrokStart:
 		var res protocol.GrokBotLoginStart
 		err := call(ctx, a.club, protocol.MethodClubLoginsGrokBotStart, protocol.GrokBotLoginStartParams{AccountID: st.Account}, &res)
