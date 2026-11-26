@@ -35,7 +35,7 @@ const svgShape = "data:image/svg+xml;base64,PHN2Zy8+"
 
 // What Persona is handed follows names.Avatar: an account's own picture is the one its main conversations share
 // (agentsrc.status avatarUrl, club's addition), and each conversation's avatarUrl is its own picture, else the
-// product's official icon, else nothing (Persona draws the title's first letter). Grok Bot never gets an icon of
+// product's official icon, else nothing (Persona draws the title's first letter). Grok Bot gets its own app's artwork, never an icon of
 // xAI's Grok, and a refused own picture is dropped.
 func TestAvatarsHandedToPersona(t *testing.T) {
 	cases := []struct {
@@ -45,9 +45,9 @@ func TestAvatarsHandedToPersona(t *testing.T) {
 	}{
 		{"grok_bot", []string{"https://images.example.com/bot_alpha.png"}, "https://images.example.com/bot_alpha.png", "https://images.example.com/bot_alpha.png"},
 		{"grok_bot", []string{svgShape}, svgShape, svgShape},
-		{"grok_bot", nil, "", ""},
+		{"grok_bot", nil, "", names.Icon("grok_bot")},
 		{"grok_bot", []string{"https://images.example.com/a.png", "https://images.example.com/b.png"}, "", "https://images.example.com/a.png"},
-		{"grok_bot", []string{"http://images.example.com/plain.png"}, "", ""},
+		{"grok_bot", []string{"http://images.example.com/plain.png"}, "", names.Icon("grok_bot")},
 		{"claude_duet", nil, "", "https://claude.ai/apple-touch-icon.png"},
 		{"cue", nil, "", "https://manus.im/apple-icon.png"},
 		{"groq", nil, "", "https://groq.com/apple-touch-icon.png"},
@@ -87,7 +87,7 @@ func TestAvatarsHandedToPersona(t *testing.T) {
 		}
 		club.Close()
 	}
-	if names.Icon("grok_bot") != "" {
-		t.Errorf("Grok Bot has an icon: %s", names.Icon("grok_bot"))
+	if icon := names.Icon("grok_bot"); !strings.HasPrefix(icon, "https://is1-ssl.mzstatic.com/") {
+		t.Errorf("Grok Bot's icon is not its own app's artwork: %s", icon)
 	}
 }

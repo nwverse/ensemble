@@ -20,6 +20,7 @@ var productHosts = map[string][]string{
 	"groq":         {"groq.com"},                             // groq.Origin https://api.groq.com
 	"dots":         {"chatgpt.com"},                          // browser.SiteDots
 	"gemini_tasks": {"gemini.google.com", "www.gstatic.com"}, // browser.SiteGeminiTasks; Google's product branding
+	"grok_bot":     {"is1-ssl.mzstatic.com"},                 // the App Store artwork of its own app, co.anysphere.sand
 }
 
 // Every service's avatar is, in order: its own picture when it has one (https, or an image data URL), else its
@@ -72,12 +73,15 @@ func TestAvatarOrderPerService(t *testing.T) {
 	}
 }
 
-// Grok Bot is its own product (its API is api2.cursor.sh, its sign-in cursor.com), not xAI's Grok: it never resolves
-// to an icon of grok.com or x.ai, nor to any address with "grok" in it, and with no own picture it shows its letters.
+// Grok Bot is its own product (its API is api2.cursor.sh, its sign-in cursor.com), not xAI's Grok: its icon is the
+// App Store artwork of its own app (co.anysphere.sand), and no icon ever resolves to grok.com or x.ai, nor to any
+// address with "grok" in it. With no own picture it shows that artwork, with its letters for when it fails.
 func TestGrokBotIsNotGrok(t *testing.T) {
 	for _, lang := range []string{"zh-Hans", "en"} {
 		got := Avatar(lang, "grok_bot", "")
-		if got.Icon != "" || got.Ref != TileRef(lang, "grok_bot") || got.Text != "GB" {
+		u, err := url.Parse(got.Icon)
+		if err != nil || u.Scheme != "https" || u.Hostname() != "is1-ssl.mzstatic.com" ||
+			got.Ref != TileRef(lang, "grok_bot") || got.Text != "GB" {
 			t.Errorf("Grok Bot without a picture: %+v", got)
 		}
 	}
