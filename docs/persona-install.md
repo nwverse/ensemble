@@ -60,9 +60,12 @@ The command first shows what the extension contributes and asks for, then asks t
 question). It contributes:
 
 - the agent source `pac` (its sessions appear on the Agents page as `pac:<sessionKey>`);
-- the home page **我的 AI 助手** ("My AI assistants"): an entry in the main navigation (icon `robot`), a card on
-  Overview (on the phones, above the list in Settings › Extensions) and the link **账号** ("Accounts") in
-  **Settings › Extensions › Ensemble**. All three open the same home;
+- the home page **我的 AI 助手** ("My AI assistants"): an entry in the navigation (icon `robot`) and a card on
+  Overview (on the phones, above the list in Settings › Extensions) that opens it. The web's sidebar lists only the
+  first few extension pages (three) and puts the rest under **更多** ("More"), so with other extensions installed the
+  entry may be there; the card always opens it;
+- the link **账号** ("Accounts") in **Settings › Extensions › Ensemble**: the same accounts and ways to add one,
+  without the home's introduction and state;
 - the connector `club`, which carries the assistant's `club_agent_*` tools;
 
 and asks for network access to `api.manus.ai` (Cue), `api2.cursor.sh` (Grok Bot) and `api.groq.com` (Groq), and to the
@@ -103,6 +106,11 @@ personad extension config personal-agent-club browser_providers=false
 The extension's pages are written for someone who has never read this guide; their copy is Chinese (English for an
 English-language app) and avoids the program's own terms. The manifest itself (name, description, settings) is
 written in Chinese, since the hub shows a manifest's own language and the package carries no translations.
+
+The Overview card (**我的 AI 助手**) shows where things stand at a glance, without scrolling: how many accounts are
+connected, how many need you (naming the first), how many the Persona assistant may use, and the one next step
+(connect the first account, fix the broken one, let the assistant use them, or, when nothing needs you, where the
+chats are). With no account it says so and offers to connect the first one. Tapping it opens the home.
 
 The home (**我的 AI 助手**) shows, top to bottom:
 

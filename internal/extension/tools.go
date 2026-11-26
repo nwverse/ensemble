@@ -119,10 +119,10 @@ func (t *tools) accounts(ctx context.Context) (*core.Space, []protocol.Account, 
 // grantGuide tells the assistant how the user hands it the accounts it cannot see.
 func grantGuide(hidden []string) string {
 	if len(hidden) == 0 {
-		return "用户还没有配对任何个人 Agent：请用户在 设置 › 扩展 › " + productName + " › 账号 里配对。"
+		return "用户还没有配对任何个人 Agent：请用户打开" + homeWhere + "，在「添加账号」里配对。"
 	}
 	return "用户配对了 " + strings.Join(hidden, "、") + "，但没有把它们交给你：每个账号的“助手指挥”默认关闭。" +
-		"请用户在 设置 › 扩展 › " + productName + " › 账号 › 选中账号 › 助手指挥 里设为“只读”（要你代发消息则设为“逐次确认”）。" +
+		"请用户打开" + homeWhere + "，点开那个账号，在“助手指挥”里设为“只读”（要你代发消息则设为“逐次确认”）。" +
 		"在用户打开之前，你看不到这些账号的会话和消息，不要猜它们的内容。"
 }
 
@@ -133,7 +133,7 @@ func (t *tools) status(ctx context.Context, _ wire.ConnectorParams) (wire.Connec
 	}
 	if len(accts) == 0 && len(hidden) == 0 {
 		return wire.ConnectorStatus{State: wire.ConnectorStateNotConfigured,
-			Guide: []string{"在 设置 › 扩展 › " + productName + " › 账号 里配对账号", "把要交给助手的账号的“助手指挥”设为只读或逐次确认"}}, nil
+			Guide: []string{"打开" + homeWhere + "，在「添加账号」里配对账号", "把要交给助手的账号的“助手指挥”设为只读或逐次确认"}}, nil
 	}
 	// Paired but none handed over is still ok: the hub offers a connector's tools only while it is, and the assistant
 	// has to be able to call club_agents_list to learn why it sees nothing and say so, not guess from elsewhere.

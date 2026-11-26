@@ -157,24 +157,22 @@ func TestManifestPagesAndSettingsAreChinese(t *testing.T) {
 func TestHomeSaysWhatWhereAndNext(t *testing.T) {
 	club := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
 	h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{"demo_echo":true}`))
-	for _, ui := range []string{HomeUI, AccountsUI} {
-		v := renderUI(t, h, ui, wire.PlacementNavPage, pageState{})
-		noJargon(t, ui+" (empty)", v)
-		for _, want := range []string{"接进 Persona", "现在的状态", "还没有接入任何账号", "下一步", "连接你的第一个账号",
-			"添加账号：借用电脑上已登录的网页", "借用电脑上的浏览器」是指"} {
-			if !strings.Contains(text(v), want) {
-				t.Errorf("%s (empty) lacks %q: %s", ui, want, text(v))
-			}
+	v := renderUI(t, h, HomeUI, wire.PlacementNavPage, pageState{})
+	noJargon(t, "home (empty)", v)
+	for _, want := range []string{"接进 Persona", "现在的状态", "还没有接入任何账号", "下一步", "连接你的第一个账号",
+		"添加账号：借用电脑上已登录的网页", "借用电脑上的浏览器」是指"} {
+		if !strings.Contains(text(v), want) {
+			t.Errorf("home (empty) lacks %q: %s", want, text(v))
 		}
 	}
 	card := renderUI(t, h, HomeCardUI, wire.PlacementOverviewCard, pageState{})
-	if !strings.Contains(text(card), "还没有接入任何账号") || !strings.Contains(text(card), "下一步：连接你的第一个账号") {
+	if !strings.Contains(text(card), "还没有接入任何账号") || !strings.Contains(text(card), "连接你的第一个账号") {
 		t.Errorf("card: %s", text(card))
 	}
 
 	// paired, but nothing handed to the assistant: the next step is 助手指挥, and it opens the account
 	act(t, h, pageState{Page: pagePair, Provider: echo.Name}, actPair, map[string]string{fieldCredential: demoCredential, fieldName: "演示一号"})
-	v := renderUI(t, h, HomeUI, wire.PlacementNavPage, pageState{})
+	v = renderUI(t, h, HomeUI, wire.PlacementNavPage, pageState{})
 	noJargon(t, "home (one account)", v)
 	for _, want := range []string{"已接入 1 个账号", "一个都用不了", "让 Persona 助手能帮你看这些账号", "助手指挥", "演示一号",
 		"Persona 助手：不能用"} {

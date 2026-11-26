@@ -134,8 +134,8 @@ Provider requests never follow a redirect, so a credential header never goes to 
 ### As a Persona extension
 
 `persona-extension.json` is the manifest: extension id `personal-agent-club`, the agent source `pac` (providers Cue,
-Grok Bot, Groq and muse2api), the Accounts page (`ui` `accounts`) and the connector `club` with the assistant's `club_agent_*`
-tools, `activation_events: on_startup`, and network access to the three providers' API hosts and the muse2api address the user writes
+Grok Bot, Groq and muse2api), the home (`ui` `home`, a navigation entry, and its Overview card `home-card`), the Accounts
+page (`ui` `accounts`) and the connector `club` with the assistant's `club_agent_*` tools, `activation_events: on_startup`, and network access to the three providers' API hosts and the muse2api address the user writes
 (`config:muse2api_url:http`) only. `make package`
 builds `dist/personal-agent-club-<version>.tar.gz` (manifest and the four programs), `scripts/persona-test.sh` holds
 it to the hub's own checks, and [docs/persona-install.md](docs/persona-install.md) installs it on a hub. The

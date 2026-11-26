@@ -111,7 +111,7 @@ func text(v *wire.View) string {
 func TestAccountsPage(t *testing.T) {
 	h, club := start(t)
 	v := render(t, h, pageState{})
-	if !strings.Contains(text(v), "还没有接入任何账号") || !strings.Contains(text(v), "连接你的第一个账号") || !strings.Contains(text(v), "演示账号") {
+	if !strings.Contains(text(v), "还没有接入任何账号") || !strings.Contains(text(v), "从下面选一个你常用的服务添加") || !strings.Contains(text(v), "演示账号") {
 		t.Fatalf("empty list: %s", text(v))
 	}
 

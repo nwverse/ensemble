@@ -25,14 +25,16 @@ import (
 // people to Settings › Extensions › <name>; a rename of the product is this one line and the manifest's.
 const productName = "Ensemble"
 
-// The extension's pages (contributes.ui). They all draw the same home, the page a first-time user lands on: what this
-// is, where it stands, the one thing to do next, then the accounts and the ways to add one; an account's own page
-// and the pairing pages open from there.
+// The extension's pages (contributes.ui). The home is the page a first-time user lands on: what this is, where it
+// stands, the one thing to do next, then the accounts and the ways to add one; an account's own page and the pairing
+// pages open from there.
 //
-//   - HomeUI is the entry in the main navigation (nav_page).
-//   - HomeCardUI is the card on Overview, and in Settings › Extensions on the phones (overview_card): the state and
-//     the next step in two lines, opening HomeUI.
-//   - AccountsUI is Settings › Extensions › <name> › 账号 (plugin_page), which the assistant's guide points at.
+//   - HomeUI is the home, an entry in the navigation (nav_page). The web's sidebar lists only a few extension pages
+//     and puts the rest under 更多, so copy that sends people there says so (homeWhere).
+//   - HomeCardUI is the card on Overview, and in Settings › Extensions on the phones (overview_card): the counts, the
+//     account that needs the user first and the one next step, opening HomeUI.
+//   - AccountsUI is Settings › Extensions › <name> › 账号 (plugin_page), which the assistant's guide points at: the
+//     same accounts and ways to add one, titled 账号, without the home's introduction and state.
 //
 // They list the paired accounts and pair, pause, resume, sync, rename and unpair them through the core's club.*
 // methods, the same ones the serve shell's admin token reaches.
@@ -62,6 +64,14 @@ const (
 
 // homeTitle is the home's title, as the manifest's navigation entry has it (one language there too).
 const homeTitle = "我的 AI 助手"
+
+// accountsTitle is the settings page's link to the accounts, as the manifest has it.
+const accountsTitle = "账号"
+
+// homeWhere is where the home is, for the assistant to tell people (its words are Chinese): true on every app, where
+// the navigation may keep it under 更多 and the phones show the card in Settings › Extensions.
+const homeWhere = "「" + homeTitle + "」页（在导航里，导航放不下时收在「更多」里；也可以点概览页上的「" + homeTitle +
+	"」卡片，或者走 设置 › 扩展 › " + productName + " › " + accountsTitle + "）"
 
 // browserName is the browser Persona drives on a computer (browser.run): the one a browser account must be signed
 // in to. Pairing runs in a task space of its own inside it, with that browser's sign-ins.
@@ -299,7 +309,9 @@ func openAccount(l lang, at string, acct protocol.Account) *wire.Action {
 		State: ext.EncodeState(pageState{Page: pageAccount, Account: acct.AccountID})}}
 }
 
-// cardView is the home in two lines, for Overview.
+// cardView is the home at a glance, for Overview: how many accounts there are, how many need the user (naming the
+// first), how many the Persona assistant may use, and the one next step. A card has room for a few lines only
+// (exttest.CheckView: 2 sections, 12 components), so it is one section: the counts, then the step.
 func (a *accounts) cardView(ctx context.Context, l lang) *wire.View {
 	v := &wire.View{Title: l.t(homeTitle, homeTitle+" (My AI assistants)"), RefreshAfter: 300}
 	accts, err := a.accounts(ctx)
@@ -308,12 +320,68 @@ func (a *accounts) cardView(ctx context.Context, l lang) *wire.View {
 		return v
 	}
 	o := overviewOf(accts)
-	items := []wire.Component{{Type: "text", Text: o.stateLine(l)}}
-	if step, ok := o.nextStep(l, HomeUI); ok {
-		items = append(items, wire.Component{Type: "text", Style: "secondary", Text: l.t("下一步：", "Next: ") + step.Title})
+	var items []wire.Component
+	if len(o.accounts) == 0 {
+		items = append(items, wire.Component{Type: "text", Text: l.t(
+			"还没有接入任何账号。接好后，你在 Grok、Muse、Claude 等 AI 服务上的对话会出现在 Persona 的「Agents」页。",
+			"No accounts yet. Once you connect one, your chats at AI services such as Grok, Muse and Claude show on Persona's Agents page.")})
+	} else {
+		items = append(items, wire.Component{Type: "stat_grid", Key: "counts", Stats: o.cardStats(l)})
 	}
-	v.Sections = []wire.Section{{Items: items}}
+	v.Sections = []wire.Section{{Items: append(items, o.cardStep(l))}}
 	return v
+}
+
+// cardStats are the card's counts: connected, needing the user (the first one named), usable by the assistant.
+func (o overview) cardStats(l lang) []wire.Stat {
+	connected := wire.Stat{Label: l.t("已接入", "Connected"), Value: l.t(fmt.Sprintf("%d 个", len(o.accounts)),
+		fmt.Sprint(len(o.accounts)))}
+	if o.paused > 0 {
+		connected.Detail = l.t(fmt.Sprintf("%d 个已暂停", o.paused), fmt.Sprintf("%d paused", o.paused))
+	}
+	need := wire.Stat{Label: l.t("要你处理", "Need you"), Value: l.t(fmt.Sprintf("%d 个", len(o.broken)),
+		fmt.Sprint(len(o.broken))), Tone: wire.TonePositive, Detail: l.t("都没问题", "none")}
+	if n := len(o.broken); n > 0 {
+		need.Tone = wire.ToneCaution
+		need.Detail = l.t("「", "") + accountTitle(l, o.broken[0]) + l.t("」", "")
+		if n > 1 {
+			need.Detail += l.t(" 等", " and more")
+		}
+	}
+	usable := o.read + o.send
+	assistant := wire.Stat{Label: l.t("Persona 助手能用", "Assistant may use"), Value: l.t(fmt.Sprintf("%d 个", usable),
+		fmt.Sprint(usable)), Detail: l.t("还没交给它", "none handed over yet")}
+	switch {
+	case usable > 0 && o.send > 0:
+		assistant.Detail = l.t(fmt.Sprintf("%d 个可代发", o.send), fmt.Sprintf("%d may send", o.send))
+	case usable > 0:
+		assistant.Detail = l.t("只读", "read only")
+	}
+	return []wire.Stat{connected, need, assistant}
+}
+
+// cardStep is the card's one next step, as a row: the home's next step in words that fit a card, or, when nothing
+// needs doing, where the chats are.
+func (o overview) cardStep(l lang) wire.Component {
+	openHome := &wire.Action{ID: "open", Push: &wire.Push{UI: HomeUI, Title: l.t(homeTitle, homeTitle+" (My AI assistants)")}}
+	step, ok := o.nextStep(l, HomeUI)
+	switch {
+	case !ok:
+		return wire.Component{Type: "row", Key: "next", Icon: "check",
+			Title: l.t("没有要你处理的事", "Nothing needs you"),
+			Subtitle: l.t("对话在「Agents」页。要添加或修改账号，点这里。",
+				"The chats are on the Agents page. Tap here to add or change an account."),
+			Action: openHome}
+	case len(o.accounts) == 0:
+		step.Key = "next"
+		step.Subtitle = l.t("点这里，在「添加账号」里选你常用的服务，照提示做，一两分钟就好。",
+			"Tap here, pick the service you use under Add an account and follow the steps; it takes a minute or two.")
+		step.Action = openHome
+	case len(o.broken) == 0: // none handed to the assistant
+		step.Subtitle = l.t("新账号默认不让它碰。点这里打开一个账号，在「助手指挥」里选「只读」或「可代发」。",
+			"New accounts are off limits to it. Tap to open one and set Assistant control to Read or Confirm.")
+	}
+	return step
 }
 
 func (a *accounts) account(ctx context.Context, id string) (protocol.Account, error) {
@@ -350,6 +418,13 @@ func (a *accounts) listView(ctx context.Context, r *ext.UIRequest, l lang) *wire
 		return v
 	}
 	o := overviewOf(status.Accounts)
+	if at == AccountsUI {
+		// the settings page's 账号: the accounts and the ways to add one, not a second copy of the home
+		v.Title = l.t(accountsTitle, "Accounts")
+		v.Sections = append([]wire.Section{pairedSection(l, at, status.Accounts, r.Location())},
+			a.addSections(l, at, status.Providers)...)
+		return v
+	}
 	about := wire.Section{Items: []wire.Component{{Type: "text",
 		Text: l.t("这里把你在 Grok、Muse、Claude、Gemini、ChatGPT 等 AI 服务上的账号接进 Persona。接好后，它们的对话会出现在 Persona 的「Agents」页，你在 Persona 里就能看、能直接给它们发消息。你还可以允许 Persona 助手替你读这些对话、替你发消息，每次发之前都会先在手机上问你。",
 			"This brings your accounts at AI services such as Grok, Muse, Claude, Gemini and ChatGPT into Persona. Their chats then show on Persona's Agents page, where you read them and write to them. You can also let the Persona assistant read them and write for you, asking you on your phone before each message.")}}}
@@ -358,11 +433,18 @@ func (a *accounts) listView(ctx context.Context, r *ext.UIRequest, l lang) *wire
 	if step, ok := o.nextStep(l, at); ok {
 		state.Items = append(state.Items, wire.Component{Type: "text", Style: "secondary", Text: l.t("下一步", "Next")}, step)
 	}
+	v.Sections = append([]wire.Section{about, state, pairedSection(l, at, status.Accounts, r.Location())},
+		a.addSections(l, at, status.Providers)...)
+	return v
+}
+
+// pairedSection lists the accounts, each opening its page.
+func pairedSection(l lang, at string, accts []protocol.Account, loc *time.Location) wire.Section {
 	paired := wire.Section{Title: l.t("已接入的账号", "Your accounts")}
-	for _, acct := range status.Accounts {
+	for _, acct := range accts {
 		name := accountTitle(l, acct)
 		paired.Items = append(paired.Items, wire.Component{Type: "row", Key: "acct-" + acct.AccountID, Icon: "person",
-			Title: name, Subtitle: accountLine(l, acct, r.Location()), Badge: statusBadge(l, acct),
+			Title: name, Subtitle: accountLine(l, acct, loc), Badge: statusBadge(l, acct),
 			Action: openAccount(l, at, acct)})
 	}
 	if len(paired.Items) == 0 {
@@ -372,8 +454,7 @@ func (a *accounts) listView(ctx context.Context, r *ext.UIRequest, l lang) *wire
 		paired.Footer = l.t("点开一个账号可以改名、决定 Persona 助手能不能用它（助手指挥）、设为主助手，或者暂停、移除。",
 			"Open an account to rename it, choose what the Persona assistant may do with it (Assistant control), make it the main assistant, pause or remove it.")
 	}
-	v.Sections = append([]wire.Section{about, state, paired}, a.addSections(l, at, status.Providers)...)
-	return v
+	return paired
 }
 
 // accountLine is an account's row subtitle: the brand when the name does not carry it, the state in words and what
