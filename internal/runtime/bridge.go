@@ -22,7 +22,7 @@ import (
 
 const (
 	defaultRuntimeID   = "personal-agent-club"
-	defaultRuntimeName = "Personal Agent Club"
+	defaultRuntimeName = "Ensemble"
 	defaultPoll        = 2 * time.Second
 	maxPoll            = 10 * time.Second
 	defaultDebounce    = 1500 * time.Millisecond
