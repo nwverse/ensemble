@@ -805,7 +805,7 @@ func TestMuse2APIPairsWithTheConfiguredServer(t *testing.T) {
 
 	// without an address: listed, and the badge says what it waits for
 	h, _ := start(t)
-	if v := render(t, h, pageState{}); !strings.Contains(text(v), "Muse（自建转接）") || !strings.Contains(text(v), "里填「自建 Muse 转接服务的地址」") {
+	if v := render(t, h, pageState{}); !strings.Contains(text(v), "Muse 自建转接") || !strings.Contains(text(v), "里填「自建 Muse 转接服务的地址」") {
 		t.Fatalf("list without an address: %s", text(v))
 	}
 
@@ -820,7 +820,7 @@ func TestMuse2APIPairsWithTheConfiguredServer(t *testing.T) {
 		t.Fatalf("a wrong key was paired: %+v", res)
 	}
 	res := act(t, h, st, actPair, map[string]string{fieldCredential: key})
-	if !pairedDone(res) || !strings.Contains(res.Toast, "Muse（自建转接）") || strings.Contains(res.Toast, key) {
+	if !pairedDone(res) || !strings.Contains(res.Toast, "Muse 自建转接") || strings.Contains(res.Toast, key) {
 		t.Fatalf("pair: %+v", res)
 	}
 	space, _ := club.Space(context.Background(), core.DefaultSpace)

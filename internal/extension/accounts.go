@@ -881,8 +881,9 @@ func (a *accounts) pairView(l lang, st pageState) *wire.View {
 		why := l.t("这个版本没有带上 ", "This version does not include ") + name + l.t("。", ".")
 		if st.Provider == muse2api.Name {
 			why = l.t("这一项只给自己搭了 Muse 转接服务的人用。先到 ", "This is only for your own Muse relay. First write its address in ") +
-				settingsPath(l) + l.t(" 里填「"+settingMuse2API+"」，保存后再回来。普通的 Muse 账号请用「借用电脑上已登录的网页」那一组里的 Muse（网页版）。",
-				" → \""+settingMuse2API+"\" and save. For an ordinary Muse account use Muse (web) instead.")
+				settingsPath(l) + l.t(" 里填「"+settingMuse2API+"」，保存后再回来。普通的 Muse 账号请用「借用电脑上已登录的网页」那一组里的 ",
+				" → \""+settingMuse2API+"\" and save. For an ordinary Muse account use ") + providerName(l, providerMuse) +
+				l.t("。", " instead.")
 		}
 		return unavailableView(l, title, why)
 	}

@@ -18,7 +18,7 @@ func TestMuseSite(t *testing.T) {
 	ctx := context.Background()
 	cred := EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})
 	d := siteDriver(t, map[string]any{
-		"signedIn, title": map[string]any{"signedIn": true, "title": "Chat — Glint"},
+		"signedIn, title": map[string]any{"signedIn": true, "title": "Chat — Wren"},
 		"threads.push": map[string]any{"threads": []map[string]any{
 			{"id": museSideID, "title": "联系商家打电话", "when": "周日"},
 			{"id": "664F4567-E43B-497D-A2D4-AA827E02A801", "title": "", "when": "11月8日"},
@@ -29,7 +29,7 @@ func TestMuseSite(t *testing.T) {
 	})
 	a := New(SiteMuse, d)
 	acct, err := a.Verify(ctx, cred)
-	if err != nil || acct.ExternalAccountID != "muse:mm-2" || acct.Alias != "Glint" {
+	if err != nil || acct.ExternalAccountID != "muse:mm-2" || acct.Alias != "Wren" {
 		t.Fatalf("Verify = %+v, err=%v", acct, err)
 	}
 	sessions, err := a.ListSessions(ctx, cred)

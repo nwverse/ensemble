@@ -78,14 +78,14 @@
       "browser_providers": {
         "type": "boolean",
         "title": "用电脑上的浏览器连接网页版助手",
-        "description": "打开后可以添加 Muse（网页版）、Claude Duet、Gemini、ChatGPT Dots：借用一台已连上 Persona 的电脑（比如家里的 Mac）上 Persona 能控制的浏览器（ego lite）里已经登录好的网页来收发消息，密码和登录信息不会离开那台电脑。默认打开；不想让 Persona 借用电脑浏览器时关掉。",
+        "description": "打开后可以添加 Muse 网页版、Claude Duet、Gemini、ChatGPT Dots：借用一台已连上 Persona 的电脑（比如家里的 Mac）上 Persona 能控制的浏览器（ego lite）里已经登录好的网页来收发消息，密码和登录信息不会离开那台电脑。默认打开；不想让 Persona 借用电脑浏览器时关掉。",
         "default": true
       },
       "muse2api_url": {
         "type": "string",
         "format": "uri",
         "title": "自建 Muse 转接服务的地址（不懂就留空）",
-        "description": "只有你自己搭了 muse2api 转接服务（github.com/czg86389-hub/muse2api）才需要填，例如 http://192.168.1.5:18610；服务就装在 Persona 这台电脑上时填 http://host.persona.internal:端口。填好后，「添加账号」里的「Muse（自建转接）」就能用了。普通的 Muse 账号不用填这里。"
+        "description": "只有你自己搭了 muse2api 转接服务（github.com/czg86389-hub/muse2api）才需要填，例如 http://192.168.1.5:18610；服务就装在 Persona 这台电脑上时填 http://host.persona.internal:端口。填好后，「添加账号」里的「Muse 自建转接」就能用了。普通的 Muse 账号不用填这里。"
       },
       "muse2api_model": {
         "type": "string",

@@ -43,14 +43,14 @@ func (n namedGrok) PairingAlias(_ context.Context, cred string) string {
 
 // What each provider's Verify reports as the alias, as its adapter reads it (see the provider tests).
 var verifiedAlias = map[string]string{
-	"grok_bot": "bot:Grok 秘书", "muse": "Glint", "claude_duet": "Ada", "gemini_tasks": "Ada", "dots": "Ada",
+	"grok_bot": "bot:Grok 秘书", "muse": "Wren", "claude_duet": "Ada", "gemini_tasks": "Ada", "dots": "Ada",
 	"cue": "小助手", "groq": "", "muse2api": "", "echo": "",
 }
 
 // What versions before this one stored for an account of each provider: Muse, Claude Duet, Gemini and Dots rows from
 // before 0.5 hold the tab's title.
 var legacyStored = map[string]string{
-	"grok_bot": "Grok Bot", "muse": "Muse · Glint", "claude_duet": "Claude Duet - Claude", "gemini_tasks": "gemini_tasks",
+	"grok_bot": "Grok Bot", "muse": "Muse · Wren", "claude_duet": "Claude Duet - Claude", "gemini_tasks": "gemini_tasks",
 	"dots": "Dots · Ada", "cue": "Cue · 小助手", "groq": "Groq", "muse2api": "Muse (muse2api)", "echo": "Echo",
 }
 
@@ -224,10 +224,10 @@ func TestPairingNamesGrokBotAfterItsSoleBot(t *testing.T) {
 func TestLegacyAccountNamesRenderAndSettleOnSync(t *testing.T) {
 	before := map[string][]string{
 		"grok_bot":     {"Grok Bot (1)", "Grok Bot (2)"},
-		"muse":         {"Muse（网页版） · Glint (1)", "Muse（网页版） · Glint (2)"},
+		"muse":         {"Muse 网页版 · Wren (1)", "Muse 网页版 · Wren (2)"},
 		"claude_duet":  {"Claude Duet"},
 		"gemini_tasks": {"Gemini"},
-		"muse2api":     {"Muse（自建转接）"},
+		"muse2api":     {"Muse 自建转接"},
 		"echo":         {"演示账号"},
 		"cue":          {"Cue · 小助手"},
 	}
@@ -308,7 +308,7 @@ func TestAWholeVerifiedNameIsReadForItsAlias(t *testing.T) {
 	club := New(Options{Registry: provider.NewRegistry(wholeName{named{fake: newFake(), id: "muse"}}), FollowUps: []time.Duration{}})
 	t.Cleanup(club.Close)
 	s, _ := club.Space(ctx, DefaultSpace)
-	for i, verified := range []string{"Muse · Glint", "Muse", "Muse · Muse"} {
+	for i, verified := range []string{"Muse · Wren", "Muse", "Muse · Muse"} {
 		if _, err := s.AddAccount(ctx, protocol.AddAccountParams{Provider: "muse", Credential: fmt.Sprintf("%s|account-%d", verified, i)}); err != nil {
 			t.Fatal(err)
 		}
@@ -319,7 +319,7 @@ func TestAWholeVerifiedNameIsReadForItsAlias(t *testing.T) {
 		got = append(got, a.DisplayNameEn)
 	}
 	slices.Sort(got)
-	if strings.Join(got, ", ") != "Muse (web) (1), Muse (web) (2), Muse (web) · Glint" {
+	if strings.Join(got, ", ") != "Muse (web) (1), Muse (web) (2), Muse (web) · Wren" {
 		t.Fatal(got)
 	}
 }
@@ -386,10 +386,10 @@ func TestLegacyBrandDotXIsKeptUnlessItIsTheVerifiedAlias(t *testing.T) {
 		{"a000000000001", "grok_bot", "Grok Bot · Work", "bot:Grok 秘书|account-1", "Grok Bot · Work", names.SourceOwner, "Grok Bot · Work"},
 		{"a000000000002", "groq", "Groq · fast", "|account-2", "Groq · fast", names.SourceOwner, "Groq · fast"},
 		{"a000000000003", "echo", "Echo · test", "|account-3", "Echo · test", names.SourceOwner, "Echo · test"},
-		// x differs from the alias Verify reports now ("Shengtao"): the owner edited it
-		{"a000000000004", "claude_duet", "Claude Duet · Shengtao 工作", "Shengtao|account-4", "Claude Duet · Shengtao 工作", names.SourceOwner, "Claude Duet · Shengtao 工作"},
+		// x differs from the alias Verify reports now ("Rowan"): the owner edited it
+		{"a000000000004", "claude_duet", "Claude Duet · Rowan 工作", "Rowan|account-4", "Claude Duet · Rowan 工作", names.SourceOwner, "Claude Duet · Rowan 工作"},
 		// x is the verified alias: club's own, rewritten in today's form
-		{"a000000000005", "claude_duet", "Claude Duet · Shengtao", "Shengtao|account-5", "Claude Duet · Shengtao", names.SourceAuto, "Claude Duet · Shengtao"},
+		{"a000000000005", "claude_duet", "Claude Duet · Rowan", "Rowan|account-5", "Claude Duet · Rowan", names.SourceAuto, "Claude Duet · Rowan"},
 		{"a000000000006", "dots", "Dots · Ada", "Ada|account-6", "ChatGPT Dots · Ada", names.SourceAuto, "ChatGPT Dots · Ada"},
 		{"a000000000007", "cue", "Cue · 小助手 Pro", "小助手|account-7", "Cue · 小助手 Pro", names.SourceOwner, "Cue · 小助手 Pro"},
 		// the page-title rule is unchanged
@@ -480,4 +480,56 @@ func TestEmailAliasesAreShownBeforeTheirAt(t *testing.T) {
 		_ = s.SyncAccount(ctx, id)
 	}
 	check("after sync")
+}
+
+// Rows 0.6.1 and 0.6.2 stored under the bracketed Muse labels ("Muse（网页版） · x", "Muse（自建转接）"), by club or
+// from before club kept who named a row, read with today's labels without pairing again, before and after a sync; an
+// owner's name in that shape is kept as typed.
+func TestBracketedMuseLabelsStoredBeforeReadWithTodaysLabels(t *testing.T) {
+	ctx := context.Background()
+	s := namingSpace(t)
+	rows := []struct {
+		id, provider, stored, source, cred, zh, en string
+		owner                                      bool
+	}{
+		{"a000000000001", "muse", "Muse（网页版） · Wren", names.SourceAuto, "Wren|account-1", "Muse 网页版 · Wren", "Muse (web) · Wren", false},
+		{"a000000000002", "muse", "Muse（网页版） · Kit", names.SourceLegacy, "Kit|account-2", "Muse 网页版 · Kit", "Muse (web) · Kit", false},
+		{"a000000000003", "muse2api", "Muse（自建转接）", names.SourceAuto, "|account-3", "Muse 自建转接 (1)", "Muse (own relay) (1)", false},
+		{"a000000000004", "muse2api", "Muse（自建转接）", names.SourceLegacy, "|account-4", "Muse 自建转接 (2)", "Muse (own relay) (2)", false}, // two read alike: numbered
+		{"a000000000005", "muse", "Muse（网页版） · 工作", names.SourceOwner, "Wren|account-5", "Muse（网页版） · 工作", "Muse（网页版） · 工作", true},
+	}
+	for i, r := range rows {
+		if err := s.store.InsertAccount(ctx, store.Account{AccountID: r.id, Provider: r.provider, DisplayName: r.stored, NameSource: r.source,
+			Status: protocol.AccountActive, AssistantControl: string(DefaultControl), CreatedAt: int64(i + 1)}); err != nil {
+			t.Fatal(err)
+		}
+		_ = s.vault.Put(ctx, r.id, r.cred)
+	}
+	check := func(when string) {
+		t.Helper()
+		st, err := s.Status(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		shown := map[string]protocol.Account{}
+		for _, a := range st.Accounts {
+			shown[a.AccountID] = a
+		}
+		for _, r := range rows {
+			a := shown[r.id]
+			zh, en := r.zh, r.en
+			if a.DisplayName != zh || a.DisplayNameEn != en || (a.OwnerName != "") != r.owner {
+				t.Errorf("%s %s %q (%s): shown %q / %q, owner %q; want %q / %q", when, r.provider, r.stored, r.source,
+					a.DisplayName, a.DisplayNameEn, a.OwnerName, zh, en)
+			}
+		}
+	}
+	check("before sync")
+	for _, r := range rows {
+		_ = s.SyncAccount(ctx, r.id)
+	}
+	check("after sync")
+	if a, _, _ := s.store.Account(ctx, "a000000000005"); a.DisplayName != "Muse（网页版） · 工作" || a.NameSource != names.SourceOwner {
+		t.Fatalf("the owner's name changed: %+v", a)
+	}
 }

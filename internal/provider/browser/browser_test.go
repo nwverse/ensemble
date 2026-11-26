@@ -112,7 +112,7 @@ func TestClaudeDuetSite(t *testing.T) {
 	ctx := context.Background()
 	cred := EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})
 	d := siteDriver(t, map[string]any{
-		"/api/account": map[string]any{"uuid": "acct-1", "name": "Shengtao"},
+		"/api/account": map[string]any{"uuid": "acct-1", "name": "Rowan"},
 		"channels: chans": map[string]any{"channels": []map[string]any{
 			{"id": "chan_old", "title": "old", "last": "2026-11-20T00:00:00Z"},
 			{"id": "chan_new", "title": "new", "last": "2026-11-25T00:00:00Z"},
@@ -125,7 +125,7 @@ func TestClaudeDuetSite(t *testing.T) {
 	})
 	a := New(SiteClaudeDuet, d)
 	acct, err := a.Verify(ctx, cred)
-	if err != nil || acct.ExternalAccountID != "claude_duet:mm-2" || acct.Alias != "Shengtao" {
+	if err != nil || acct.ExternalAccountID != "claude_duet:mm-2" || acct.Alias != "Rowan" {
 		t.Fatalf("Verify = %+v, err=%v", acct, err)
 	}
 	sessions, err := a.ListSessions(ctx, cred)

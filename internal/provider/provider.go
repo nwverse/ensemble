@@ -18,7 +18,7 @@ type RemoteAccount struct {
 	// Alias is who the account is at the provider, without the provider's brand: a person's name or email, a bot's
 	// or agent's name; "" when the provider says nothing better than its brand. Club adds the brand (names.Stored).
 	Alias string
-	// DisplayName is the older, whole name ("Muse · Glint"), for an adapter outside this repository that still
+	// DisplayName is the older, whole name ("Muse · Wren"), for an adapter outside this repository that still
 	// reports one; club reads its alias out of it (names.Split) when Alias is empty. Adapters here set Alias.
 	DisplayName string
 	// Quota is what the answer said about the account's allowance, when it says (as SendResult.Quota).
