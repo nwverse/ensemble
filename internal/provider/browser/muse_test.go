@@ -2,6 +2,9 @@ package browser
 
 import (
 	"context"
+	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +46,7 @@ func TestMuseSite(t *testing.T) {
 		side.Ref["url"] != "https://muse.ai/thread/"+museSideID || !side.CanSend || side.LastActivityMs <= 0 {
 		t.Fatalf("side session = %+v", side)
 	}
-	if s := sessions[2]; s.ExternalID != "664f4567-e43b-497d-a2d4-aa827e02a801" || s.Title != "侧聊 1" {
+	if s := sessions[2]; s.ExternalID != "664f4567-e43b-497d-a2d4-aa827e02a801" || s.Title != museSideNames([]string{s.ExternalID})[s.ExternalID] || !museSideTitleRe.MatchString(s.Title) {
 		t.Fatalf("untitled side session = %+v", s)
 	}
 	if sc := d.gotReqs[1].Script; !strings.Contains(sc, "thread_id") || strings.Contains(sc, "page.click") {
@@ -217,59 +220,105 @@ func TestMuseActivityMs(t *testing.T) {
 	}
 }
 
-// A side chat the panel gives no title is numbered 侧聊 1, 侧聊 2, … from the bottom of the panel, never named by a
-// fragment of its id, and stays keyed by its thread id; a titled one keeps the panel's title.
+var museSideTitleRe = regexp.MustCompile(`^旁聊 · [a-z]{8,}$`)
+
+// A side chat the panel gives no title is named after its own id, never after where it sits in the panel: when
+// another chat is deleted, falls past the list's cap or gets a title, the rest keep their names. No name reads like
+// an id fragment and no two are equal; a titled chat keeps the panel's title.
 func TestMuseUntitledSideChats(t *testing.T) {
-	ids := []string{
-		"aaaaaaaa-0000-4000-8000-000000000001", // top of the panel: the most recent
-		"bbbbbbbb-0000-4000-8000-000000000002",
-		"cccccccc-0000-4000-8000-000000000003",
-		"dddddddd-0000-4000-8000-000000000004", // bottom: the oldest listed
+	cred := EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})
+	ids := make([]string, museMaxThreads+1)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%08x-0000-4000-8000-%012x", 0xa0000000+i, i)
 	}
-	list := func(threads []map[string]any) []provider.RemoteSession {
+	// list is the sessions for the panel's rows, the most recent first; titled says which ids have a title.
+	list := func(rows []string, titled map[string]string) map[string]string {
 		t.Helper()
+		threads := []map[string]any{}
+		for _, id := range rows {
+			threads = append(threads, map[string]any{"id": id, "title": titled[id], "when": "周日"})
+		}
 		d := siteDriver(t, map[string]any{"threads.push": map[string]any{"threads": threads}})
-		s, err := New(SiteMuse, d).ListSessions(context.Background(), EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"}))
+		got, err := New(SiteMuse, d).ListSessions(context.Background(), cred)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return s
+		titles := map[string]string{}
+		seen := map[string]string{}
+		for _, s := range got[1:] {
+			titles[s.ExternalID] = s.Title
+			if other, ok := seen[s.Title]; ok {
+				t.Errorf("%s and %s are both titled %q", other, s.ExternalID, s.Title)
+			}
+			seen[s.Title] = s.ExternalID
+			if _, ok := titled[s.ExternalID]; ok {
+				continue
+			}
+			if !museSideTitleRe.MatchString(s.Title) {
+				t.Errorf("%s titled %q", s.ExternalID, s.Title)
+			}
+			for i := 0; i+4 <= len(s.ExternalID); i++ {
+				if strings.Contains(s.Title, s.ExternalID[i:i+4]) {
+					t.Errorf("%s titled %q, a fragment of its id", s.ExternalID, s.Title)
+					break
+				}
+			}
+		}
+		return titles
 	}
-	got := list([]map[string]any{
-		{"id": ids[0], "title": "", "when": "5m"},
-		{"id": ids[1], "title": "周末计划", "when": "周日"},
-		{"id": ids[2], "title": " ", "when": "11月8日"},
-		{"id": strings.ToUpper(ids[3]), "title": "", "when": "2025年9月29日"},
-	})
-	titles := map[string]string{}
-	for _, s := range got {
-		titles[s.ExternalID] = s.Title
-		if strings.Contains(s.Title, s.ExternalID[:min(8, len(s.ExternalID))]) && s.ExternalID != "main" {
-			t.Errorf("%s is titled with its id: %q", s.ExternalID, s.Title)
+	// The panel lists museMaxThreads chats, one of them titled.
+	before := list(ids[:museMaxThreads], map[string]string{ids[3]: "周末计划"})
+	if len(before) != museMaxThreads || before[ids[3]] != "周末计划" {
+		t.Fatalf("first list = %v", before)
+	}
+	keep := func(step string, after map[string]string, changed ...string) {
+		t.Helper()
+		for id, title := range after {
+			if slices.Contains(changed, id) {
+				continue
+			}
+			if was, ok := before[id]; ok && was != title {
+				t.Errorf("%s: %s went from %q to %q", step, id, was, title)
+			}
 		}
 	}
-	for id, title := range map[string]string{"main": "Muse", ids[0]: "侧聊 3", ids[1]: "周末计划", ids[2]: "侧聊 2", ids[3]: "侧聊 1"} {
-		if titles[id] != title {
-			t.Errorf("%s titled %q, want %q (all: %v)", id, titles[id], title, titles)
-		}
+	// One deleted (gone from the panel).
+	rows := slices.Delete(slices.Clone(ids[:museMaxThreads]), 5, 6)
+	keep("delete", list(rows, map[string]string{ids[3]: "周末计划"}))
+	// A new chat at the top pushes the oldest past the cap.
+	rows = ids[len(ids)-1:]
+	rows = append(rows, ids[:museMaxThreads-1]...)
+	after := list(rows, map[string]string{ids[3]: "周末计划"})
+	if _, ok := after[ids[museMaxThreads-1]]; ok {
+		t.Fatal("the oldest chat is still listed past the cap")
 	}
-	// A new untitled chat at the top takes the next number; the others keep theirs.
-	got = list([]map[string]any{
-		{"id": "eeeeeeee-0000-4000-8000-000000000005", "title": "", "when": "刚刚"},
-		{"id": ids[0], "title": "", "when": "5m"},
-		{"id": ids[1], "title": "周末计划", "when": "周日"},
-		{"id": ids[2], "title": "", "when": "11月8日"},
-		{"id": ids[3], "title": "", "when": "2025年9月29日"},
-	})
-	for _, s := range got {
-		titles[s.ExternalID] = s.Title
+	keep("past the cap", after)
+	// One untitled chat gets a title; the titled one loses its title.
+	after = list(ids[:museMaxThreads], map[string]string{ids[7]: "新标题"})
+	if after[ids[7]] != "新标题" || !museSideTitleRe.MatchString(after[ids[3]]) {
+		t.Fatalf("titled/untitled = %q / %q", after[ids[7]], after[ids[3]])
 	}
-	for id, title := range map[string]string{"eeeeeeee-0000-4000-8000-000000000005": "侧聊 4", ids[0]: "侧聊 3", ids[2]: "侧聊 2", ids[3]: "侧聊 1"} {
-		if titles[id] != title {
-			t.Errorf("after a new chat, %s titled %q, want %q", id, titles[id], title)
-		}
+	keep("titled", after, ids[7], ids[3])
+	// The same chat is named the same whatever else is listed, and in any order.
+	if a, b := museSideNames([]string{ids[0], ids[1]}), museSideNames([]string{ids[1]}); a[ids[1]] != b[ids[1]] || a[ids[0]] == a[ids[1]] {
+		t.Fatalf("names = %v / %v", a, b)
 	}
 }
+
+// Two chats whose four-syllable words agree are both named longer, each from its own hash, so they differ; listed
+// apart, each has the short name.
+func TestMuseSideNamesTellClashesApart(t *testing.T) {
+	const a, b = "00000416-0000-4000-8000-000000000416", "00001279-0000-4000-8000-000000001279"
+	if x, y := museSideNames([]string{a})[a], museSideNames([]string{b})[b]; x != y || x != "旁聊 · lenonavu" {
+		t.Fatalf("alone: %q, %q (the fixture no longer clashes)", x, y)
+	}
+	both := museSideNames([]string{b, a, ids0})
+	if both[a] != "旁聊 · lenonavuso" || both[b] != "旁聊 · lenonavuko" || both[ids0] != museSideNames([]string{ids0})[ids0] {
+		t.Fatalf("together: %v", both)
+	}
+}
+
+const ids0 = "a0000000-0000-4000-8000-000000000000"
 
 // Cloudflare's "Verify you are human" in front of muse.ai is "human check", a signed-out landing page "auth", and a
 // signed-in page with its chat log neither, as the page scripts see them.
