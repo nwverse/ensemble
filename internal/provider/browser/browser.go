@@ -117,7 +117,7 @@ var (
 		Label:          "Muse",
 		AppURL:         "https://muse.ai/",
 		Slot:           "pac-muse",
-		SingleSession:  true,
+		SingleSession:  false,
 		ComposerSel:    museComposerSel,
 		SendButtonSel:  museSendSel,
 		MessageLogSel:  `[data-message-item][data-message-id]`,

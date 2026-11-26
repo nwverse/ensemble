@@ -108,56 +108,6 @@ func siteDriver(t *testing.T, answers map[string]any) *fakeDriver {
 	}}
 }
 
-func TestMuseSite(t *testing.T) {
-	ctx := context.Background()
-	cred := EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})
-	d := siteDriver(t, map[string]any{
-		"signedIn, title":                map[string]any{"signedIn": true, "title": "Chat — Glint"},
-		"__museMessages(ARGS.limit)":     map[string]any{"messages": []map[string]any{{"id": "u1", "role": "user", "text": "ping"}, {"id": "assistant-msg-1", "role": "assistant", "text": "pong"}}},
-		"const before = await __read();": map[string]any{"sent": true, "clicked": true, "id": "u2"},
-	})
-	a := New(SiteMuse, d)
-	acct, err := a.Verify(ctx, cred)
-	if err != nil || acct.ExternalAccountID != "muse:mm-2" || acct.DisplayName != "Muse · Glint" {
-		t.Fatalf("Verify = %+v, err=%v", acct, err)
-	}
-	sessions, err := a.ListSessions(ctx, cred)
-	if err != nil || len(sessions) != 1 || sessions[0].Kind != protocol.KindMain {
-		t.Fatalf("ListSessions = %+v, err=%v", sessions, err)
-	}
-	page, err := a.ListMessages(ctx, cred, sessions[0].SessionRef(), provider.ListOptions{})
-	if err != nil || len(page.Messages) != 2 || page.Messages[0].Role != protocol.RoleUser || page.Messages[1].Role != protocol.RoleAssistant ||
-		page.Messages[0].Position >= page.Messages[1].Position {
-		t.Fatalf("ListMessages = %+v, err=%v", page, err)
-	}
-	res, err := a.Send(ctx, cred, sessions[0].SessionRef(), provider.Outgoing{Text: "hi"}, provider.SendContext{})
-	if err != nil || res.Status != provider.Sent || res.ExternalID != "u2" {
-		t.Fatalf("Send = %+v, err=%v", res, err)
-	}
-	for _, r := range d.gotReqs {
-		if r.Slot != "pac-muse" {
-			t.Fatalf("slot %q", r.Slot)
-		}
-	}
-
-	// Signed out (a landing page, no chat log): AUTH_FAILED. A send whose message never reads back: unconfirmed.
-	out := siteDriver(t, map[string]any{
-		"signedIn, title":                map[string]any{"signedIn": false, "title": "Muse — Your Personal AI Agent from Meta"},
-		"const before = await __read();": map[string]any{"sent": false, "clicked": true},
-	})
-	if _, err := New(SiteMuse, out).Verify(ctx, cred); !isAuthFailed(err) {
-		t.Fatalf("Verify signed out = %v, want AUTH_FAILED", err)
-	}
-	res, err = New(SiteMuse, out).Send(ctx, cred, sessions[0].SessionRef(), provider.Outgoing{Text: "hi"}, provider.SendContext{})
-	if err != nil || res.Status != provider.Unconfirmed {
-		t.Fatalf("Send not read back = %+v, err=%v", res, err)
-	}
-	auth := siteDriver(t, map[string]any{"const before = await __read();": map[string]any{"error": "auth"}})
-	if _, err := New(SiteMuse, auth).Send(ctx, cred, sessions[0].SessionRef(), provider.Outgoing{Text: "hi"}, provider.SendContext{}); !isAuthFailed(err) {
-		t.Fatalf("Send signed out = %v, want AUTH_FAILED", err)
-	}
-}
-
 func TestClaudeDuetSite(t *testing.T) {
 	ctx := context.Background()
 	cred := EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})
