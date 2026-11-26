@@ -224,8 +224,8 @@ func TestAccountPageControlsFirstAndRename(t *testing.T) {
 	page := pageState{Page: pageAccount, Account: status.Accounts[0].AccountID}
 	v := render(t, h, page)
 	noJargon(t, "account page", v)
-	control, main, quota := sectionIndex(v, "助手指挥"), sectionIndex(v, "主助手"), sectionIndex(v, "头像上显示哪项额度")
-	if control < 0 || main < 0 || quota < 0 || control > quota || main > quota || sectionIndex(v, "名字") > control {
+	control, main, quota := sectionIndex(v, "助手指挥"), sectionIndex(v, "主助手"), sectionIndex(v, "额度")
+	if control < 0 || main < 0 || quota < 0 || control > quota || main > quota || renameSection(v) > control {
 		t.Fatalf("order: control %d, main %d, quota %d: %s", control, main, quota, text(v))
 	}
 	if f := v.Sections[control].Footer; !strings.Contains(f, "只读：Persona 助手能读") || !strings.Contains(f, "可代发：还能替你给它发消息") {

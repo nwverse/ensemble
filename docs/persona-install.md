@@ -66,7 +66,8 @@ question). It contributes:
   first few extension pages (three) and puts the rest under **更多** ("More"), so with other extensions installed the
   entry may be there; the card always opens it;
 - the link **账号** ("Accounts") in **Settings › Extensions › Ensemble**: the same accounts and ways to add one,
-  without the home's introduction and state;
+  without the home's introduction and state; one line on top says so and that the overview, with what needs you, is
+  **我的 AI 助手** in the navigation;
 - the connector `club`, shown as **让 Persona 助手使用 Ensemble** ("Let the Persona assistant use Ensemble"), which
   carries the assistant's `club_agent_*` tools;
 
@@ -135,15 +136,17 @@ The home (**我的 AI 助手**) shows, top to bottom:
     it, the extension cannot fill it in, and the extension never shows, returns or logs a saved key.
   - **先试试** (try it first): the demo account, with `demo_echo` on.
 
-An account's page starts with its state (and, when it needs you, what to do and *重新检查* / check again), then:
+An account's page starts with its state (and, when it needs you, what to do, *重新检查* / check again and, for a Grok
+Bot account, *重新登录* / sign in again), then:
 
-- **名字**: rename it (shown only in Persona);
+- the name field (**名字**): rename it (shown only in Persona);
 - **助手指挥** (assistant control): *关闭* (off, the default), *只读* (read) or *可代发（逐次确认）* (confirm). An account set to *auto* shows *可代发（自动档）*;
   its sends are still confirmed on the phone every time, since the manifest lists `club_agent_*` in `confirm_always`;
 - **主助手** (main assistant): the account itself answering as a Persona main assistant. With
   `assistant_runtime` off the page says to switch that on instead of offering a switch that does nothing;
-- syncing (sync now, pause, resume), which allowance the avatar shows, and for Grok Bot and Muse an advanced part that
-  connects the agent's own cloud computer to Persona;
+- syncing (sync now, pause, resume; for a Grok Bot account that works, *重新登录* waits here with a line saying it is
+  only for when its sign-in stops working), which allowance the avatar shows (only a sentence while the service has
+  reported none), and for Grok Bot and Muse an advanced part that connects the agent's own cloud computer to Persona;
 - removing it, keeping or deleting its chats.
 
 Every change says what it changed (*重新检查* reads the account back and says whether it works now), and a refusal says what to do next, in words rather than error codes.
