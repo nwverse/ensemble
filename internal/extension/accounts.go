@@ -160,7 +160,18 @@ var retryableLogin = []string{"NETWORK_ERROR", "UPSTREAM_ERROR", "RATE_LIMITED"}
 // assistant_runtime), which decides whether an account's 主助手 switch does anything.
 func accountsPage(club *core.Club, hub *atomic.Pointer[ext.Hub], drv browser.Driver, runtimeOn *atomic.Bool) ext.Page {
 	a := &accounts{club: club, hub: hub, browser: drv, runtimeOn: runtimeOn}
-	return ext.Page{Render: a.render, Action: a.action}
+	return ext.Page{Render: a.render, Action: a.action, Image: avatarTile}
+}
+
+// avatarTile serves a service's avatar tile (names.Tile), the picture its avatar names by ref: built into the
+// program, nothing fetched. A day is as long as the hub keeps a picture; a new tile ships with a new version, whose
+// install drops the hub's copies.
+func avatarTile(_ context.Context, r *ext.ImageRequest) (*wire.UIImage, error) {
+	data, ok := names.Tile(r.Ref)
+	if !ok {
+		return nil, &ext.Error{Code: "not_found", Message: "no picture " + r.Ref}
+	}
+	return ext.Image("image/png", data, wire.ImageMaxAgeMost), nil
 }
 
 type accounts struct {
@@ -577,20 +588,27 @@ func compactLine(l lang, acct protocol.Account) string {
 	return strings.Join(parts, " · ")
 }
 
-// withAvatar gives a service's row (an account, a way to add one) the service's letter avatar (names.Letters), so
-// services tell apart at a glance. A row's avatar came with UI version 3; an older app is given the icon it drew
-// before, since a row has at most one of icon and avatar.
+// withAvatar gives a service's row (an account, a way to add one) the service's avatar (serviceAvatar), so services
+// tell apart at a glance. A row's avatar came with UI version 3; an older app is given the icon it drew before, since
+// a row has at most one of icon and avatar.
 func withAvatar(r *ext.UIRequest, l lang, provider string, c wire.Component) wire.Component {
 	if r.UIVersion > 0 && r.UIVersion < 3 {
 		return c
 	}
 	c.Icon = ""
-	c.Avatar = serviceAvatar(l, provider)
+	c.Avatar = serviceAvatar(r, l, provider)
 	return c
 }
 
-func serviceAvatar(l lang, provider string) *wire.Avatar {
-	return &wire.Avatar{Text: names.Letters(string(l), provider)}
+// serviceAvatar is a service's avatar: its tile (names.TileRef, served by avatarTile), its letters in its own color,
+// for an app of UI version 6, which draws an avatar's ref; its letters (names.Letters) alone, which every app draws
+// alike, for an older one, and in place of the tile while it loads or when it fails.
+func serviceAvatar(r *ext.UIRequest, l lang, provider string) *wire.Avatar {
+	av := &wire.Avatar{Text: names.Letters(string(l), provider)}
+	if r.UIVersion == 0 || r.UIVersion >= 6 {
+		av.Ref = names.TileRef(string(l), provider)
+	}
+	return av
 }
 
 // accountLine is an account's row subtitle: the brand when the name does not carry it, the state in words and what
@@ -745,14 +763,14 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 	v.Title = accountTitle(l, acct)
 	control, _ := space.AssistantControl(ctx, acct.AccountID)
 
-	// What it is and how it is doing, with the fix when it needs one. The head carries the service's letter avatar
+	// What it is and how it is doing, with the fix when it needs one. The head carries the service's avatar
 	// (a header came with UI version 4; an older app gets the 服务 row it had).
 	info := wire.Section{Items: []wire.Component{
 		withAvatar(r, l, acct.Provider, wire.Component{Type: "row", Title: l.t("服务", "Service"), Value: providerName(l, acct.Provider)}),
 	}}
 	if r.UIVersion == 0 || r.UIVersion >= 4 {
 		info.Items[0] = wire.Component{Type: "header", Key: "head", Title: accountTitle(l, acct),
-			Subtitle: providerName(l, acct.Provider), Avatar: serviceAvatar(l, acct.Provider)}
+			Subtitle: providerName(l, acct.Provider), Avatar: serviceAvatar(r, l, acct.Provider)}
 	}
 	if acct.Email != "" {
 		// The name above shows only the part before @.
