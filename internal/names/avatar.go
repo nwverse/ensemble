@@ -16,15 +16,10 @@ import (
 //  3. Tile: the service's letters on its color (TileRef, served by the pages), and the letters alone for an app that
 //     draws no ref.
 //
-// Nothing is fetched or stored by club for 2: the app loads the icon itself, with no account of the owner's in the
-// address, and draws the letters while it loads or when it fails.
-
-// Picture kinds, in the order Avatar tries them.
-const (
-	PictureOwn     = "own"
-	PictureProduct = "product"
-	PictureTile    = "tile"
-)
+// Nothing is fetched or stored by club for 2: on the pages the app loads the icon from its address itself, without
+// credentials, and draws the letters while it loads or when it fails (web, Android and iOS alike, given the letters);
+// on the Agents page the hub fetches it as it does any conversation's avatarUrl. The address carries nothing of the
+// owner's accounts. No icon artwork is in this repository.
 
 // icons are the products' official icons: a PNG or ICO the product's own site serves at a fixed address, the site
 // the provider's code talks to (see each provider's package). A product with no entry has no icon established and
@@ -33,11 +28,11 @@ const (
 //     xAI's Grok (grok.com, x.ai) is another product and never its icon.
 //   - dots: chatgpt.com serves its icons only under addresses that change with every release.
 //   - gemini_tasks: gemini.google.com serves no icon at a fixed address (its page points at a versioned file).
-//   - muse2api: the owner's own relay, not a product with an icon; Muse's would say it is the web version.
 //   - echo: the demo, no product.
 var icons = map[string]string{
 	"claude_duet": "https://claude.ai/apple-touch-icon.png", // claude.ai/duet, the page the provider drives
 	"muse":        "https://muse.ai/favicon.ico",            // muse.ai, the site the provider drives
+	"muse2api":    "https://muse.ai/favicon.ico",            // the owner's relay drives muse.ai with their Muse accounts
 	"cue":         "https://manus.im/apple-icon.png",        // Manus: api.manus.ai, tasks at manus.im/app
 	"groq":        "https://groq.com/apple-touch-icon.png",  // Groq: api.groq.com
 }
@@ -47,7 +42,7 @@ func Icon(provider string) string { return icons[provider] }
 
 // Picture is an avatar's candidates as Avatar found them, best first: the own picture (an https URL, or a data URL a
 // roster gave), the product's icon (https), the tile's ref and the letters (always set). A consumer takes the first it
-// can draw (Pick).
+// can draw, keeping the letters for while a picture loads or when it fails.
 type Picture struct {
 	Own  string
 	Icon string
@@ -88,25 +83,4 @@ func Avatar(lang, provider, own string) Picture {
 		own = ""
 	}
 	return Picture{Own: own, Icon: Icon(provider), Ref: TileRef(lang, provider), Text: Letters(lang, provider)}
-}
-
-// URL is the https picture an app loads for p: the own picture when it is one, else the product's icon; "" when
-// neither.
-func (p Picture) URL() string {
-	if HTTPS(p.Own) {
-		return p.Own
-	}
-	return p.Icon
-}
-
-// Kind is which candidate an app that loads https pictures and data URLs draws: PictureOwn, PictureProduct or
-// PictureTile.
-func (p Picture) Kind() string {
-	switch {
-	case p.Own != "":
-		return PictureOwn
-	case p.Icon != "":
-		return PictureProduct
-	}
-	return PictureTile
 }

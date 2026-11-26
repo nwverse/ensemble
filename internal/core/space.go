@@ -221,8 +221,20 @@ func (s *Space) Sessions(ctx context.Context) (protocol.SessionsResult, error) {
 func sessionView(r store.Session) protocol.Session {
 	return protocol.Session{SessionKey: r.SessionKey, AccountID: r.AccountID, Provider: r.Provider, Title: r.Title,
 		Kind: r.Kind, ParentSessionKey: r.ParentSessionKey, CanSend: r.CanSend, UnreadCount: r.UnreadCount,
-		RankTimeMs: r.RankTimeMs, AvatarURL: r.AvatarURL, PreviewText: prefix16(r.PreviewText, previewChars),
+		RankTimeMs: r.RankTimeMs, AvatarURL: sessionAvatar(r), PreviewText: prefix16(r.PreviewText, previewChars),
 		PreviewIsMine: r.PreviewIsMine, OnTopRankTimeMs: r.OnTopRankTimeMs}
+}
+
+// sessionAvatar is a conversation's picture on Persona's Agents page (agentsrc.sessions avatarUrl, which the hub
+// fetches and draws), in names.Avatar's order: the agent's own picture as its service listed it, else the official
+// icon of its product (an https address with nothing of the account in it). Without either it stays empty and Persona
+// draws the title's first letter: the letter tile, as a data URL on every row, would weigh several kilobytes a row.
+func sessionAvatar(r store.Session) string {
+	p := names.Avatar(names.Default, r.Provider, r.AvatarURL)
+	if p.Own != "" {
+		return p.Own
+	}
+	return p.Icon
 }
 
 // prefix16 is the first n UTF-16 code units of s, as the gateway's JavaScript cuts a preview.

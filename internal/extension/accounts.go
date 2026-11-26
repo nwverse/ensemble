@@ -2,6 +2,7 @@ package extension
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"slices"
@@ -160,7 +161,42 @@ var retryableLogin = []string{"NETWORK_ERROR", "UPSTREAM_ERROR", "RATE_LIMITED"}
 // assistant_runtime), which decides whether an account's 主助手 switch does anything.
 func accountsPage(club *core.Club, hub *atomic.Pointer[ext.Hub], drv browser.Driver, runtimeOn *atomic.Bool) ext.Page {
 	a := &accounts{club: club, hub: hub, browser: drv, runtimeOn: runtimeOn}
-	return ext.Page{Render: a.render, Action: a.action, Image: avatarTile}
+	return ext.Page{Render: a.render, Action: a.action, Image: a.servePicture}
+}
+
+// ownRefPrefix starts the ref of an account's own picture that its service gave as image data (avatarOf).
+const ownRefPrefix = "own/"
+
+func ownRef(accountID string) string { return ownRefPrefix + accountID }
+
+// servable says whether an own picture given as image data is one the hub takes from ui.image (no SVG).
+func servable(own string) bool {
+	switch names.DataType(own) {
+	case "png", "jpeg", "webp", "gif":
+		return true
+	}
+	return false
+}
+
+// servePicture serves the pictures the pages name by ref: an account's own picture its service gave as image data
+// (decoded from what the last sync stored, nothing fetched; kept a minute, as a sync may change it), and a service's
+// tile (avatarTile).
+func (a *accounts) servePicture(ctx context.Context, r *ext.ImageRequest) (*wire.UIImage, error) {
+	id, ok := strings.CutPrefix(r.Ref, ownRefPrefix)
+	if !ok {
+		return avatarTile(ctx, r)
+	}
+	notFound := &ext.Error{Code: "not_found", Message: "no picture " + r.Ref}
+	acct, err := a.account(ctx, id)
+	if err != nil || !servable(acct.AvatarURL) {
+		return nil, notFound
+	}
+	_, b64, _ := strings.Cut(acct.AvatarURL, ",")
+	data, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil || len(data) == 0 {
+		return nil, notFound
+	}
+	return ext.Image("", data, 60), nil
 }
 
 // avatarTile serves a service's avatar tile (names.Tile), the picture its avatar names by ref: built into the
@@ -532,7 +568,7 @@ func pairedSection(r *ext.UIRequest, l lang, at string, accts []protocol.Account
 		if compact {
 			line = compactLine(l, acct)
 		}
-		paired.Items = append(paired.Items, withAvatar(r, l, acct.Provider, wire.Component{Type: "row", Key: "acct-" + acct.AccountID, Icon: "person",
+		paired.Items = append(paired.Items, withAvatar(r, l, &acct, acct.Provider, wire.Component{Type: "row", Key: "acct-" + acct.AccountID, Icon: "person",
 			Title: accountTitle(l, acct), Subtitle: line, Badge: statusBadge(l, acct), Action: openAccount(l, at, acct)}))
 	}
 	switch {
@@ -588,25 +624,41 @@ func compactLine(l lang, acct protocol.Account) string {
 	return strings.Join(parts, " · ")
 }
 
-// withAvatar gives a service's row (an account, a way to add one) the service's avatar (serviceAvatar), so services
-// tell apart at a glance. A row's avatar came with UI version 3; an older app is given the icon it drew before, since
-// a row has at most one of icon and avatar.
-func withAvatar(r *ext.UIRequest, l lang, provider string, c wire.Component) wire.Component {
+// withAvatar gives a row for an account (acct) or for a way to add one (acct nil, provider) its avatar (avatarOf), so
+// services tell apart at a glance. A row's avatar came with UI version 3; an older app is given the icon it drew
+// before, since a row has at most one of icon and avatar.
+func withAvatar(r *ext.UIRequest, l lang, acct *protocol.Account, provider string, c wire.Component) wire.Component {
 	if r.UIVersion > 0 && r.UIVersion < 3 {
 		return c
 	}
 	c.Icon = ""
-	c.Avatar = serviceAvatar(r, l, provider)
+	c.Avatar = avatarOf(r, l, acct, provider)
 	return c
 }
 
-// serviceAvatar is a service's avatar: its tile (names.TileRef, served by avatarTile), its letters in its own color,
-// for an app of UI version 6, which draws an avatar's ref; its letters (names.Letters) alone, which every app draws
-// alike, for an older one, and in place of the tile while it loads or when it fails.
-func serviceAvatar(r *ext.UIRequest, l lang, provider string) *wire.Avatar {
-	av := &wire.Avatar{Text: names.Letters(string(l), provider)}
-	if r.UIVersion == 0 || r.UIVersion >= 6 {
-		av.Ref = names.TileRef(string(l), provider)
+// avatarOf is the avatar of an account (acct) or of a way to add one (acct nil, provider), in the order names.Avatar
+// keeps: the account's own picture, else its product's official icon (an https url the app loads itself), else the
+// service's tile (names.TileRef, served by servePicture) for an app of UI version 6, which draws an avatar's ref. The
+// letters (names.Letters) ride along always: what an app draws while a picture loads, when it fails, and, before UI
+// version 6, in place of the tile. An own picture a roster gave as image data has no https address: an app of UI
+// version 6 gets it by ref (ownRef) when it is a PNG, JPEG, WebP or GIF; otherwise the next candidate stands.
+func avatarOf(r *ext.UIRequest, l lang, acct *protocol.Account, provider string) *wire.Avatar {
+	own := ""
+	if acct != nil {
+		provider, own = acct.Provider, acct.AvatarURL
+	}
+	p := names.Avatar(string(l), provider, own)
+	refs := r.UIVersion == 0 || r.UIVersion >= 6
+	av := &wire.Avatar{Text: p.Text}
+	switch {
+	case names.HTTPS(p.Own):
+		av.URL = p.Own
+	case refs && acct != nil && servable(p.Own):
+		av.Ref = ownRef(acct.AccountID)
+	case p.Icon != "":
+		av.URL = p.Icon
+	case refs:
+		av.Ref = p.Ref
 	}
 	return av
 }
@@ -679,7 +731,7 @@ func (a *accounts) addSections(r *ext.UIRequest, l lang, at string, providers []
 		available[p.Provider] = p.Available
 	}
 	row := func(p, subtitle string, st pageState) wire.Component {
-		return withAvatar(r, l, p, wire.Component{Type: "row", Key: "pair-" + p, Icon: "plus", Title: providerName(l, p), Subtitle: subtitle,
+		return withAvatar(r, l, nil, p, wire.Component{Type: "row", Key: "pair-" + p, Icon: "plus", Title: providerName(l, p), Subtitle: subtitle,
 			Action: &wire.Action{ID: "open", Push: &wire.Push{UI: at, Title: l.t("添加 ", "Add ") + providerName(l, p), State: ext.EncodeState(st)}}})
 	}
 	off := func(c wire.Component, why string) wire.Component {
@@ -769,11 +821,11 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 	// this page inside its Settings screen, shifted the whole screen up with a header atop a pushed page (a host bug;
 	// TestAccountPageHeadPerEntry pins this).
 	info := wire.Section{Items: []wire.Component{
-		withAvatar(r, l, acct.Provider, wire.Component{Type: "row", Title: l.t("服务", "Service"), Value: providerName(l, acct.Provider)}),
+		withAvatar(r, l, &acct, acct.Provider, wire.Component{Type: "row", Title: l.t("服务", "Service"), Value: providerName(l, acct.Provider)}),
 	}}
 	if at == HomeUI && (r.UIVersion == 0 || r.UIVersion >= 4) {
 		info.Items[0] = wire.Component{Type: "header", Key: "head", Title: accountTitle(l, acct),
-			Subtitle: providerName(l, acct.Provider), Avatar: serviceAvatar(r, l, acct.Provider)}
+			Subtitle: providerName(l, acct.Provider), Avatar: avatarOf(r, l, &acct, acct.Provider)}
 	}
 	if acct.Email != "" {
 		// The name above shows only the part before @.
