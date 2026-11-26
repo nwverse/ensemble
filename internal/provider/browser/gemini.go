@@ -41,6 +41,8 @@ const geminiMaxTurns = 20
 // RPC's decoded payload. It throws "auth" when the page is not signed in and "http <status>" on a failed request.
 const geminiPrelude = `
 const __wiz = () => {
+  // Google's "unusual traffic" check (www.google.com/sorry) is a rate limit, not a signed-out page.
+  if (location.pathname.startsWith("/sorry")) throw new Error("http 429");
   const w = window.WIZ_global_data || {};
   if (location.hostname !== "gemini.google.com" || !w.SNlM0e) throw new Error("auth");
   return w;
@@ -291,8 +293,11 @@ func (geminiSite) send(ctx context.Context, a *Adapter, credential string, sessi
 const ARGS0 = %s;
 await page.goto(%q);
 await page.waitForLoadState("domcontentloaded").catch(() => {});
-const signedIn = await page.evaluate(() => location.hostname === "gemini.google.com" && !!(window.WIZ_global_data && window.WIZ_global_data.SNlM0e));
-if (!signedIn) {
+const signedIn = await page.evaluate(() => location.pathname.startsWith("/sorry") ? "limited" :
+  location.hostname === "gemini.google.com" && !!(window.WIZ_global_data && window.WIZ_global_data.SNlM0e));
+if (signedIn === "limited") {
+  return { error: "http 429" };
+} else if (!signedIn) {
   return { error: "auth" };
 } else {
   const startedAt = Date.now();
@@ -324,9 +329,10 @@ if (!signedIn) {
 }
 `, args, geminiOrigin+"/app/"+id, geminiComposerSel, geminiSendSel, geminiPrelude, geminiTurnsJS)
 	var r struct {
-		Error string `json:"error"`
-		Sent  bool   `json:"sent"`
-		ID    string `json:"id"`
+		Error   string `json:"error"`
+		Sent    bool   `json:"sent"`
+		Clicked bool   `json:"clicked"`
+		ID      string `json:"id"`
 	}
 	if err := a.run(ctx, credential, script, &r); err != nil {
 		var pe *provider.Error
@@ -335,7 +341,8 @@ if (!signedIn) {
 		}
 		return provider.SendResult{Status: provider.Unconfirmed, Error: provider.CodeOf(err)}, nil
 	}
-	if r.Error == "auth" {
+	if r.Error == "auth" || (r.Error == "http 429" && !r.Clicked) {
+		// Refused before anything was typed: nothing went out.
 		return provider.SendResult{}, geminiError(r.Error)
 	}
 	if !r.Sent {

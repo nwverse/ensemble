@@ -38,6 +38,9 @@ func TestGeminiTasksReadsThroughTheHubFormat(t *testing.T) {
 	if err != nil || acct.ExternalAccountID != "gemini:ada@example.com" || acct.DisplayName != "Gemini Tasks · Ada" {
 		t.Fatalf("Verify = %+v, %v", acct, err)
 	}
+	if !strings.Contains(fd.gotReqs[0].Script, `startsWith("/sorry")`) {
+		t.Fatalf("verify script does not tell Google's unusual-traffic page from signed out")
+	}
 	if !strings.Contains(fd.gotReqs[0].Script, `"MaZiqc"`) || !strings.Contains(fd.gotReqs[0].Script, "https://gemini.google.com/app") {
 		t.Fatalf("verify script does not read the tasks on gemini.google.com")
 	}
@@ -105,6 +108,8 @@ func TestGeminiTasksSend(t *testing.T) {
 		{map[string]any{"sent": true, "id": "r_9:u"}, provider.Sent, "r_9:u", ""},
 		{map[string]any{"sent": false, "clicked": true}, provider.Unconfirmed, "", ""},
 		{map[string]any{"error": "auth"}, "", "", provider.CodeAuthFailed},
+		// Google's unusual-traffic page before anything was typed: refused, nothing went out.
+		{map[string]any{"error": "http 429"}, "", "", provider.CodeRateLimited},
 	} {
 		fd := &fakeDriver{answer: func(RunRequest) (RunResult, error) { return hubOutput(t, tc.value), nil }}
 		res, err := New(SiteGeminiTasks, fd).Send(ctx, cred, ref, provider.Outgoing{Text: `hi "there"`}, provider.SendContext{})
