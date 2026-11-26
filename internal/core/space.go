@@ -172,7 +172,26 @@ func (s *Space) accountViewWithBackends(ctx context.Context, a store.Account, ba
 		Email:         names.Email(a.Provider, a.DisplayName, a.NameSource),
 		Status:        a.Status, ExternalAccountID: a.ExternalAccountID, LastSyncedAt: a.LastSyncedAt, LastError: a.LastError,
 		SessionCount: len(sessions), AssistantControl: string(control), AssistantBackend: backends[a.AccountID],
-		ShowQuota: a.ShowQuota, QuotaDisplay: a.QuotaDisplay, Quota: s.quotaView(a, s.now())}, nil
+		ShowQuota: a.ShowQuota, QuotaDisplay: a.QuotaDisplay, Quota: s.quotaView(a, s.now()),
+		AvatarURL: ownAvatar(sessions)}, nil
+}
+
+// ownAvatar is the account's own picture as its service gave it: the one picture all its listed main conversations
+// share (a Grok Bot account with one bot: that bot's avatar from the roster, kept on its sessions and refreshed by
+// every successful sync). "" when they carry none or several different ones (bots of teammates, rooms): the account
+// then shows its product's icon or its letters (names.Avatar).
+func ownAvatar(sessions []store.Session) string {
+	own := ""
+	for _, r := range sessions {
+		if r.IsHidden || r.Kind != protocol.KindMain || r.AvatarURL == "" {
+			continue
+		}
+		if own != "" && own != r.AvatarURL {
+			return ""
+		}
+		own = r.AvatarURL
+	}
+	return own
 }
 
 // Sessions is agentsrc.sessions.
