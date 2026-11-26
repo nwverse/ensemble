@@ -127,7 +127,7 @@ func museThread(a *Adapter, session provider.SessionRef) (thread, url string, er
 }
 
 func (museSite) verify(ctx context.Context, a *Adapter, credential string) (provider.RemoteAccount, error) {
-	script := siteScript(a.site.AppURL, nil, fmt.Sprintf(`
+	script := siteScript(a.site.AppURL, "", nil, fmt.Sprintf(`
 await page.waitForFunction(() => %s, undefined, { timeout: 15000 }).catch(() => {});
 const signedIn = await page.evaluate(() => %s);
 const challenged = signedIn ? false : await page.evaluate(() => {
@@ -161,7 +161,7 @@ return { signedIn, title: await page.title(), challenged };
 // listSessions is the main chat (ExternalID "main", as before side chats were listed, so its synced messages keep
 // their session) and the side chats the panel lists, read from one page load without clicking any row.
 func (museSite) listSessions(ctx context.Context, a *Adapter, credential string) ([]provider.RemoteSession, error) {
-	script := siteScript(a.site.AppURL, map[string]any{"max": museMaxThreads}, fmt.Sprintf(`
+	script := siteScript(a.site.AppURL, "", map[string]any{"max": museMaxThreads}, fmt.Sprintf(`
 await page.waitForFunction(() => %s && !!document.querySelector('[data-testid="hatch-thread-row"]'), undefined, { timeout: 15000 }).catch(() => {});
 return await page.evaluate((ARGS) => {
 %s
@@ -246,7 +246,7 @@ func (museSite) listMessages(ctx context.Context, a *Adapter, credential string,
 	if err != nil {
 		return provider.RemotePage{}, err
 	}
-	script := siteScript(url, map[string]any{"thread": thread, "limit": clampLimit(opts.Limit, 50)}, fmt.Sprintf(`
+	script := siteScript(url, "", map[string]any{"thread": thread, "limit": clampLimit(opts.Limit, 50)}, fmt.Sprintf(`
 %s;
 return await page.evaluate((ARGS) => {
 %s
@@ -374,14 +374,14 @@ func (museSite) send(ctx context.Context, a *Adapter, credential string, session
 	if err != nil {
 		return provider.SendResult{}, err
 	}
-	script := siteScript(url, map[string]any{"thread": thread, "text": text}, museSendJS(18*time.Second))
+	script := siteScript(url, "", map[string]any{"thread": thread, "text": text}, museSendJS(18*time.Second))
 	var r struct {
 		Error  string `json:"error"`
 		Unsent bool   `json:"unsent"`
 		Sent   bool   `json:"sent"`
 		ID     string `json:"id"`
 	}
-	err = a.run(ctx, credential, script, &r)
+	err = a.runSend(ctx, credential, script, &r)
 	if err == nil && r.Unsent && r.Error != "" {
 		return provider.SendResult{}, museUnsent(r.Error)
 	}

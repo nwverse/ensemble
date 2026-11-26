@@ -61,12 +61,11 @@ const __api = async (s, path, init) => {
 `
 
 // dotsScript wraps body (an async function body of (ARGS) run inside the page) so its answer, or its failure, is
-// printed as one JSON line.
+// printed as one JSON line. The reads only call the backend-api from the page, so a tab already on a loaded
+// chatgpt.com page stays where it is (openJS): any of them answers, with the session read fresh every time.
 func dotsScript(gotoURL string, args any, body string) string {
 	a, _ := json.Marshal(args)
-	return fmt.Sprintf(`
-await page.goto(%q);
-await page.waitForLoadState("domcontentloaded").catch(() => {});
+	return openJS(gotoURL, dotsStay) + fmt.Sprintf(`
 const __out = await page.evaluate(async (ARGS) => {
 %s
   try {
@@ -76,8 +75,11 @@ const __out = await page.evaluate(async (ARGS) => {
   }
 }, %s);
 return __out;
-`, gotoURL, dotsPrelude, body, a)
+`, dotsPrelude, body, a)
 }
+
+// dotsStay is any chatgpt.com page (openJS).
+const dotsStay = `^https://chatgpt\.com/`
 
 // dotsError maps a site script's error string to the provider's error (Dots and the sites in sites.go).
 func dotsError(msg string) error {
@@ -355,7 +357,7 @@ if (signedIn === "human check") {
 		Sent  bool   `json:"sent"`
 		ID    string `json:"id"`
 	}
-	if err := a.run(ctx, credential, script, &r); err != nil {
+	if err := a.runSend(ctx, credential, script, &r); err != nil {
 		var pe *provider.Error
 		if errors.As(err, &pe) && pe.Code == provider.CodeAuthFailed {
 			return provider.SendResult{}, err
