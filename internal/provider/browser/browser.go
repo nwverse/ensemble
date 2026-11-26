@@ -136,16 +136,19 @@ var (
 		SignedOutHosts: []string{"login"},
 		impl:           duetSite{},
 	}
+	// SiteGeminiTasks is Gemini's tasks (gemini.google.com, the composer's 任务 / Tasks mode): one session per task,
+	// read through the page's own RPCs and sent through the task's composer (gemini.go).
 	SiteGeminiTasks = Site{
 		Provider:       "gemini_tasks",
 		Label:          "Gemini Tasks",
 		AppURL:         "https://gemini.google.com/app",
 		Slot:           "pac-gemini",
 		SingleSession:  false,
-		ComposerSel:    `div.ql-editor[contenteditable="true"], rich-textarea [contenteditable="true"], textarea`,
-		SendButtonSel:  `button[aria-label*="Send" i], button.send-button`,
+		ComposerSel:    geminiComposerSel,
+		SendButtonSel:  geminiSendSel,
 		MessageLogSel:  `user-query, model-response, message-content`,
 		SignedOutHosts: []string{"accounts.google.com"},
+		impl:           geminiSite{},
 	}
 	// SiteDots is ChatGPT's Dot (chatgpt.com/dots/<id>): one session per Dot, read through the page's own
 	// backend-api and sent through its composer (dots.go).

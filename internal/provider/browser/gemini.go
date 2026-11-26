@@ -1,0 +1,349 @@
+package browser
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/personal-agent-club/internal/provider"
+)
+
+// geminiSite drives Gemini's tasks (gemini.google.com, the composer's "任务" / "Tasks" mode: Gemini works on a task
+// with tools, and the conversation carries the task's status). It reads through the batchexecute RPCs the signed-in
+// page itself calls, with the page's own token (WIZ_global_data.SNlM0e, never leaving the browser), and sends through
+// the task conversation's composer, then reads the turn back to confirm it arrived.
+//
+// What the page answers (2026-11):
+//   - MaZiqc [n, null, [null,null,1,null,null,null,null,null,null,1,null,[statuses]]]: the sidebar's conversations
+//     with those task statuses, [null, token, [[ "c_<id>", title, …, [sec, nanos] (5), …]]]. The sidebar's filter
+//     asks [2] for 进行中 (running), [3,5] for 需要注意 (waiting for the user), [4,1] for 准备就绪; tasks are in
+//     2 to 5, plain chats in 1.
+//   - hNvQHb ["c_<id>", turns, null, 1, [0], [4], null, 1]: the conversation's turns, newest first,
+//     [[ ["c_<id>", "r_<id>"], null, [[user text], …], [[ ["rc_<id>", [answer markdown], …] ]], [sec, nanos] (4) ]].
+type geminiSite struct{}
+
+const geminiOrigin = "https://gemini.google.com"
+
+// Task statuses, as the sidebar's filter asks for them.
+const (
+	geminiRunning = "running"
+	geminiWaiting = "waiting"
+	geminiReady   = "ready"
+)
+
+// geminiMaxTurns is the most turns one read asks for.
+const geminiMaxTurns = 20
+
+// geminiPrelude defines __rpc(id, args) inside the page: one batchexecute call with the page's token, answering the
+// RPC's decoded payload. It throws "auth" when the page is not signed in and "http <status>" on a failed request.
+const geminiPrelude = `
+const __wiz = () => {
+  const w = window.WIZ_global_data || {};
+  if (location.hostname !== "gemini.google.com" || !w.SNlM0e) throw new Error("auth");
+  return w;
+};
+const __rpc = async (id, args) => {
+  const w = __wiz();
+  const qs = new URLSearchParams({ rpcids: id, "source-path": location.pathname || "/app", bl: w.cfb2h || "", "f.sid": w.FdrFJe || "",
+    hl: document.documentElement.lang || "en", _reqid: String(100000 + Math.floor(Math.random() * 800000)), rt: "c" });
+  const body = new URLSearchParams({ "f.req": JSON.stringify([[[id, JSON.stringify(args), null, "generic"]]]), at: w.SNlM0e });
+  const r = await fetch("/_/BardChatUi/data/batchexecute?" + qs, { method: "POST", body, credentials: "include",
+    headers: { "content-type": "application/x-www-form-urlencoded;charset=UTF-8" } });
+  if (r.status === 401 || r.status === 403) throw new Error("auth");
+  if (!r.ok) throw new Error("http " + r.status);
+  const text = await r.text();
+  for (const line of text.split("\n")) {
+    if (!line.includes('"wrb.fr"')) continue;
+    const frame = JSON.parse(line).find(f => f[0] === "wrb.fr" && f[1] === id);
+    if (!frame) continue;
+    return frame[2] ? JSON.parse(frame[2]) : null;
+  }
+  throw new Error("http 500");
+};
+const __ms = t => Array.isArray(t) ? t[0] * 1000 + Math.floor((t[1] || 0) / 1e6) : 0;
+const __tasks = async (statuses, n) => {
+  const v = await __rpc("MaZiqc", [n || 30, null, [null, null, 1, null, null, null, null, null, null, 1, null, statuses]]);
+  return ((v && v[2]) || []).filter(c => typeof c[0] === "string").map(c => ({ id: c[0].replace(/^c_/, ""), title: c[1] || "", at: __ms(c[5]) }));
+};
+const __allTasks = async n => {
+  const out = [];
+  for (const [status, codes] of [["running", [2]], ["waiting", [3, 5]], ["ready", [4]]]) {
+    for (const t of await __tasks(codes, n)) out.push({ ...t, status });
+  }
+  return out;
+};
+`
+
+// geminiScript wraps body (an async function body of (ARGS) run inside the page) so its answer, or its failure, is
+// the script's value.
+func geminiScript(gotoURL string, args any, body string) string {
+	a, _ := json.Marshal(args)
+	return fmt.Sprintf(`
+await page.goto(%q);
+await page.waitForLoadState("domcontentloaded").catch(() => {});
+const __out = await page.evaluate(async (ARGS) => {
+%s
+  try {
+%s
+  } catch (e) {
+    return { error: String((e && e.message) || e) };
+  }
+}, %s);
+return __out;
+`, gotoURL, geminiPrelude, body, a)
+}
+
+// geminiError maps a script's error string to the provider's error, as dotsError does.
+func geminiError(msg string) error {
+	if msg == "no task" {
+		return &provider.Error{Code: provider.CodeNotFound}
+	}
+	return dotsError(msg)
+}
+
+func (geminiSite) verify(ctx context.Context, a *Adapter, credential string) (provider.RemoteAccount, error) {
+	var r struct {
+		Error string `json:"error"`
+		Email string `json:"email"`
+		Name  string `json:"name"`
+		Tasks int    `json:"tasks"`
+	}
+	script := geminiScript(geminiOrigin+"/app", nil, `
+    const w = __wiz();
+    // "Google 账号： Name \n(email), Google One 会员" / "Google Account: Name (email)" on the account button.
+    const label = [...document.querySelectorAll('a[href*="SignOutOptions"], [aria-label*="@"]')].map(e => e.getAttribute("aria-label") || "").find(l => l.includes("@")) || "";
+    const m = label.match(/[:：]\s*([^()]*?)\s*\(([^()\s]+@[^()\s]+)\)/);
+    const email = (m && m[2]) || w.oPEP7c || "";
+    if (!email) throw new Error("auth");
+    const tasks = (await __allTasks(30)).length;
+    return { email, name: (m && m[1]) || "", tasks };
+`)
+	if err := a.run(ctx, credential, script, &r); err != nil {
+		return provider.RemoteAccount{}, err
+	}
+	if err := geminiError(r.Error); err != nil {
+		return provider.RemoteAccount{}, err
+	}
+	email := strings.ToLower(strings.TrimSpace(r.Email))
+	if email == "" {
+		return provider.RemoteAccount{}, &provider.Error{Code: provider.CodeAuthFailed}
+	}
+	name := strings.TrimSpace(r.Name)
+	if name == "" {
+		name = email
+	}
+	// No task yet is fine: the account is paired and its tasks show up as they are made.
+	return provider.RemoteAccount{ExternalAccountID: "gemini:" + email, DisplayName: a.site.Label + " · " + name}, nil
+}
+
+type geminiTask struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	At     int64  `json:"at"`
+	Status string `json:"status"`
+}
+
+func (geminiSite) listSessions(ctx context.Context, a *Adapter, credential string) ([]provider.RemoteSession, error) {
+	var r struct {
+		Error string       `json:"error"`
+		Tasks []geminiTask `json:"tasks"`
+	}
+	script := geminiScript(geminiOrigin+"/app", nil, `
+    return { tasks: await __allTasks(30) };
+`)
+	if err := a.run(ctx, credential, script, &r); err != nil {
+		return nil, err
+	}
+	if err := geminiError(r.Error); err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	out := make([]provider.RemoteSession, 0, len(r.Tasks))
+	for _, t := range r.Tasks {
+		id := strings.TrimSpace(t.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		title := strings.TrimSpace(t.Title)
+		if title == "" {
+			title = "Gemini 任务"
+		}
+		out = append(out, provider.RemoteSession{
+			ExternalID:     id,
+			Title:          title,
+			Kind:           protocol.KindTask,
+			LastActivityMs: t.At,
+			CanSend:        true,
+			Ref:            map[string]string{"url": geminiOrigin + "/app/" + id, "status": t.Status},
+		})
+	}
+	return out, nil
+}
+
+type geminiMessage struct {
+	ID    string `json:"id"`
+	At    int64  `json:"at"`
+	Owner bool   `json:"owner"`
+	Text  string `json:"text"`
+}
+
+// geminiTurnsJS reads ARGS.task's newest ARGS.turns turns into messages (oldest first, within a byte budget, as
+// dotsMessagesJS does); a running task's newest answer is left out until it is done, so a half-written answer is
+// never kept.
+const geminiTurnsJS = `
+    const v = await __rpc("hNvQHb", ["c_" + ARGS.task, ARGS.turns, null, 1, [0], [4], null, 1]);
+    const turns = ((v && v[0]) || []).filter(t => Array.isArray(t) && Array.isArray(t[0]));
+    if (!v || (!turns.length && !ARGS.allowEmpty)) throw new Error("no task");
+    const running = ARGS.checkRunning ? (await __tasks([2], 30)).some(t => t.id === ARGS.task) : false;
+    const all = [];
+    turns.slice().reverse().forEach((t, i, arr) => {
+      const at = __ms(t[4]);
+      const turnId = String(t[0][1] || "");
+      const user = t[2] && t[2][0] && t[2][0][0];
+      if (turnId && typeof user === "string") all.push({ id: turnId + ":u", at, owner: true, text: user });
+      const cand = t[3] && t[3][0] && t[3][0][0];
+      const answer = cand && cand[1] && cand[1][0];
+      const newest = i === arr.length - 1;
+      if (cand && typeof answer === "string" && !(newest && running)) all.push({ id: String(cand[0] || turnId + ":a"), at: at + 1, owner: false, text: answer });
+    });
+    const enc = new TextEncoder();
+    let budget = ARGS.budget || 40000;
+    const messages = [];
+    for (let i = all.length - 1; i >= 0; i--) {
+      const n = enc.encode(JSON.stringify(all[i])).length;
+      if (n > budget) {
+        if (messages.length === 0) { all[i].text = all[i].text.slice(0, Math.floor(budget / 4)); messages.unshift(all[i]); }
+        break;
+      }
+      budget -= n;
+      messages.unshift(all[i]);
+    }
+`
+
+func geminiTarget(session provider.SessionRef) string {
+	return strings.TrimPrefix(strings.TrimSpace(session.ExternalID), "c_")
+}
+
+func (geminiSite) listMessages(ctx context.Context, a *Adapter, credential string, session provider.SessionRef, opts provider.ListOptions) (provider.RemotePage, error) {
+	id := geminiTarget(session)
+	if id == "" || id == "main" {
+		return provider.RemotePage{}, &provider.Error{Code: provider.CodeNotFound}
+	}
+	turns := (opts.Limit + 1) / 2
+	if turns <= 0 || turns > geminiMaxTurns {
+		turns = geminiMaxTurns
+	}
+	var r struct {
+		Error    string          `json:"error"`
+		Messages []geminiMessage `json:"messages"`
+	}
+	script := geminiScript(geminiOrigin+"/app", map[string]any{"task": id, "turns": turns, "checkRunning": true},
+		geminiTurnsJS+`
+    return { messages };
+`)
+	if err := a.run(ctx, credential, script, &r); err != nil {
+		return provider.RemotePage{}, err
+	}
+	if err := geminiError(r.Error); err != nil {
+		return provider.RemotePage{}, err
+	}
+	out := make([]provider.RemoteMessage, 0, len(r.Messages))
+	for _, m := range r.Messages {
+		if m.ID == "" || strings.TrimSpace(m.Text) == "" {
+			continue
+		}
+		role := protocol.RoleAssistant
+		if m.Owner {
+			role = protocol.RoleUser
+		}
+		out = append(out, provider.RemoteMessage{
+			ExternalID:   m.ID,
+			Role:         role,
+			Blocks:       []protocol.Block{{Type: "text", Text: m.Text}},
+			CreateTimeMs: m.At,
+			Position:     m.At,
+		})
+	}
+	return provider.RemotePage{Messages: out}, nil
+}
+
+const geminiComposerSel = `rich-textarea div.ql-editor[contenteditable="true"]`
+const geminiSendSel = `button[aria-label="发送"]:not([disabled]), button[aria-label="Send message" i]:not([disabled]), button.send-button:not([disabled])`
+
+func (geminiSite) send(ctx context.Context, a *Adapter, credential string, session provider.SessionRef, msg provider.Outgoing) (provider.SendResult, error) {
+	text := strings.TrimSpace(msg.Text)
+	if text == "" {
+		return provider.SendResult{}, errors.New("empty message")
+	}
+	id := geminiTarget(session)
+	if id == "" || id == "main" {
+		return provider.SendResult{}, &provider.Error{Code: provider.CodeNotFound}
+	}
+	args, _ := json.Marshal(map[string]any{"task": id, "turns": 3, "text": text, "allowEmpty": true})
+	// Typed into the task's own conversation and sent, then read back: sent only once a turn of the user's with this
+	// text, made after the send started, is in the conversation. Each read is its own short evaluate, so a slow
+	// page never runs one evaluate into the driver's limit.
+	script := fmt.Sprintf(`
+const ARGS0 = %s;
+await page.goto(%q);
+await page.waitForLoadState("domcontentloaded").catch(() => {});
+const signedIn = await page.evaluate(() => location.hostname === "gemini.google.com" && !!(window.WIZ_global_data && window.WIZ_global_data.SNlM0e));
+if (!signedIn) {
+  return { error: "auth" };
+} else {
+  const startedAt = Date.now();
+  const sel = %q;
+  await page.waitForSelector("loc=css:" + sel, { state: "visible", timeout: 20000 });
+  await page.click("loc=css:" + sel);
+  await page.keyboard.insertText(ARGS0.text);
+  await new Promise(r => setTimeout(r, 500));
+  const clicked = await page.click("loc=css:" + %q, { timeout: 3000 }).then(() => true).catch(() => false);
+  if (!clicked) await page.press("loc=css:" + sel, "Enter");
+  let found = null;
+  for (let i = 0; i < 20 && !found; i++) {
+    await new Promise(r => setTimeout(r, 1500));
+    found = await page.evaluate(async (ARGS) => {
+%s
+      try {
+%s
+        const norm = t => String(t || "").replace(/\s+/g, " ").trim();
+        const want = norm(ARGS.text);
+        const hit = messages.filter(m => m.owner && norm(m.text) === want && m.at >= ARGS.since - 60000).pop();
+        return hit ? { id: hit.id } : null;
+      } catch (e) {
+        return { error: String((e && e.message) || e) };
+      }
+    }, { ...ARGS0, since: startedAt });
+    if (found && found.error) break;
+  }
+  return found ? (found.error ? { clicked, error: found.error } : { sent: true, clicked, id: found.id }) : { sent: false, clicked };
+}
+`, args, geminiOrigin+"/app/"+id, geminiComposerSel, geminiSendSel, geminiPrelude, geminiTurnsJS)
+	var r struct {
+		Error string `json:"error"`
+		Sent  bool   `json:"sent"`
+		ID    string `json:"id"`
+	}
+	if err := a.run(ctx, credential, script, &r); err != nil {
+		var pe *provider.Error
+		if errors.As(err, &pe) && pe.Code == provider.CodeAuthFailed {
+			return provider.SendResult{}, err
+		}
+		return provider.SendResult{Status: provider.Unconfirmed, Error: provider.CodeOf(err)}, nil
+	}
+	if r.Error == "auth" {
+		return provider.SendResult{}, geminiError(r.Error)
+	}
+	if !r.Sent {
+		code := provider.CodeUpstreamError
+		if r.Error != "" {
+			code = provider.CodeOf(geminiError(r.Error))
+		}
+		return provider.SendResult{Status: provider.Unconfirmed, Error: code}, nil
+	}
+	return provider.SendResult{Status: provider.Sent, ExternalID: r.ID}, nil
+}
