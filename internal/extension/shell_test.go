@@ -111,12 +111,12 @@ func text(v *wire.View) string {
 func TestAccountsPage(t *testing.T) {
 	h, club := start(t)
 	v := render(t, h, pageState{})
-	if !strings.Contains(text(v), "还没有账号") || !strings.Contains(text(v), "Echo") {
+	if !strings.Contains(text(v), "还没有接入任何账号") || !strings.Contains(text(v), "连接你的第一个账号") || !strings.Contains(text(v), "演示账号") {
 		t.Fatalf("empty list: %s", text(v))
 	}
 
 	// pairing: the key goes in and comes back nowhere
-	if res := act(t, h, pageState{Page: pagePair, Provider: echo.Name}, actPair, map[string]string{fieldCredential: "  "}); !strings.Contains(res.Toast, "无效") {
+	if res := act(t, h, pageState{Page: pagePair, Provider: echo.Name}, actPair, map[string]string{fieldCredential: "  "}); !strings.Contains(res.Toast, "还没填密钥") {
 		t.Fatalf("empty key: %+v", res)
 	}
 	res := act(t, h, pageState{Page: pagePair, Provider: echo.Name}, actPair, map[string]string{fieldCredential: demoCredential, fieldName: "Demo"})
@@ -139,24 +139,24 @@ func TestAccountsPage(t *testing.T) {
 	if v := render(t, h, page); !strings.Contains(text(v), fieldControl) || !strings.Contains(text(v), "立即同步") {
 		t.Fatalf("account: %s", text(v))
 	}
-	if res := act(t, h, page, actSync, nil); !strings.Contains(res.Toast, "已同步") {
+	if res := act(t, h, page, actSync, nil); res.Toast != "已同步，最新的对话已经拉下来了" {
 		t.Fatalf("sync: %+v", res)
 	}
 	// pause and the assistant control level go through club.accounts.update
-	if res := act(t, h, page, actPause, nil); !strings.Contains(res.Toast, "已更新") || !strings.Contains(text(res.View), "已暂停") {
+	if res := act(t, h, page, actPause, nil); !strings.Contains(res.Toast, "已暂停同步") || !strings.Contains(text(res.View), "已暂停") {
 		t.Fatalf("pause: %+v", res)
 	}
-	if res := act(t, h, page, actResume, nil); !strings.Contains(res.Toast, "已更新") || !strings.Contains(text(res.View), "正常") {
+	if res := act(t, h, page, actResume, nil); !strings.Contains(res.Toast, "已恢复同步") || !strings.Contains(text(res.View), "正常") {
 		t.Fatalf("resume: %+v", res)
 	}
-	if res := act(t, h, page, actControl, map[string]string{fieldControl: "read"}); !strings.Contains(res.Toast, "已更新") {
+	if res := act(t, h, page, actControl, map[string]string{fieldControl: "read"}); !strings.Contains(res.Toast, "已设为只读") {
 		t.Fatalf("control: %+v", res)
 	}
 	if c, _ := st.AssistantControl(context.Background(), id); c != core.ControlRead {
 		t.Fatalf("control is %s", c)
 	}
 	// without the grok_bot provider in this club, its sign-in says it is not available
-	if res := act(t, h, pageState{Page: pageGrok}, actGrokStart, nil); !strings.Contains(res.Toast, "不支持") {
+	if res := act(t, h, pageState{Page: pageGrok}, actGrokStart, nil); !strings.Contains(res.Toast, "还没打开") {
 		t.Fatalf("grok start: %+v", res)
 	}
 	if res := act(t, h, page, actRemove, nil); !res.Pop {
@@ -313,7 +313,7 @@ func TestClientIDIsAUUID(t *testing.T) {
 
 func TestReasonHidesTheSecret(t *testing.T) {
 	got := reason("zh", protocol.Invalid("bad key "+demoCredential), demoCredential)
-	if strings.Contains(got, demoCredential) || !strings.HasPrefix(got, "无效") {
+	if strings.Contains(got, demoCredential) || !strings.HasPrefix(got, "填写的内容不对") {
 		t.Fatalf("reason: %q", got)
 	}
 }
@@ -525,7 +525,7 @@ func TestGrokBotSignIn(t *testing.T) {
 
 	// a provider hiccup keeps the sign-in; approval pairs the account, and the token is shown nowhere
 	grok.answer(&provider.Error{Code: "NETWORK_ERROR", Retryable: true}, grokCredential)
-	if v := render(t, h, st); !strings.Contains(text(v), "NETWORK_ERROR") || !strings.Contains(text(v), "立即检查") {
+	if v := render(t, h, st); !strings.Contains(text(v), "暂时查不到登录结果") || strings.Contains(text(v), "NETWORK_ERROR") || !strings.Contains(text(v), "立即检查") {
 		t.Fatalf("a retryable failure: %s", text(v))
 	}
 	v := render(t, h, st)
@@ -556,7 +556,7 @@ func TestGrokBotSignIn(t *testing.T) {
 		t.Fatalf("%+v", sa)
 	}
 	grok.answer(&provider.Error{Code: "LOGIN_REFUSED", HTTPStatus: 403})
-	if v := render(t, h, sa); !strings.Contains(text(v), "LOGIN_REFUSED") || !strings.Contains(text(v), "开始登录") {
+	if v := render(t, h, sa); !strings.Contains(text(v), "Grok 没有同意这次登录") || strings.Contains(text(v), "LOGIN_REFUSED") || !strings.Contains(text(v), "开始登录") {
 		t.Fatalf("a refused sign-in: %s", text(v))
 	}
 	again = act(t, h, pageState{Page: pageGrok, Account: id}, actGrokStart, nil)
@@ -805,14 +805,14 @@ func TestMuse2APIPairsWithTheConfiguredServer(t *testing.T) {
 
 	// without an address: listed, and the badge says what it waits for
 	h, _ := start(t)
-	if v := render(t, h, pageState{}); !strings.Contains(text(v), "Muse (muse2api)") || !strings.Contains(text(v), "先在设置里填服务地址") {
+	if v := render(t, h, pageState{}); !strings.Contains(text(v), "Muse（自建转接）") || !strings.Contains(text(v), "里填「自建 Muse 转接服务的地址」") {
 		t.Fatalf("list without an address: %s", text(v))
 	}
 
 	club := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
 	cfg, _ := json.Marshal(map[string]any{"muse2api_url": up.URL, "muse2api_model": "muse-spark"})
 	h = startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), cfg)
-	if v := render(t, h, pageState{}); strings.Contains(text(v), "先在设置里填服务地址") {
+	if v := render(t, h, pageState{}); strings.Contains(text(v), "里填「自建 Muse 转接服务的地址」") {
 		t.Fatalf("list with an address: %s", text(v))
 	}
 	st := pageState{Page: pagePair, Provider: "muse2api"}

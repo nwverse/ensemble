@@ -1,6 +1,7 @@
 // Package extension is the Persona shell: club as a Persona extension program. It contributes the agent source "pac"
 // (the hub's agentsrc.* calls go to the club's default space through the same core.Club.Call the serve shell uses,
-// and the space's changes go back as agentsrc.updated), the accounts page (ui "accounts", accounts.go) and the
+// and the space's changes go back as agentsrc.updated), its pages (the home, its card and the accounts page, all
+// drawn by accounts.go) and the
 // connector "club" carrying the assistant's club_agent_* tools (tools.go). Its data lives in the extension's data
 // directory (storage.go).
 package extension
@@ -39,13 +40,19 @@ const (
 
 // Config is the extension's configuration (persona-extension.json "configuration").
 type Config struct {
-	DemoEcho         bool  `json:"demo_echo"`
-	BrowserProviders bool  `json:"browser_providers"`
+	DemoEcho bool `json:"demo_echo"`
+	// BrowserProviders adds Muse, Claude Duet, Gemini Tasks and Dots through a paired computer's browser. On unless
+	// switched off (as the manifest's default says): nothing is reached until an account is paired on a computer.
+	BrowserProviders *bool `json:"browser_providers"`
 	AssistantRuntime *bool `json:"assistant_runtime"`
 	// Muse2APIURL is the address of the owner's muse2api server; set, the muse2api provider is added. The manifest's
 	// "config:muse2api_url:http" lets the egress proxy through to that address only.
 	Muse2APIURL   string `json:"muse2api_url"`
 	Muse2APIModel string `json:"muse2api_model"`
+}
+
+func (c Config) browserProvidersEnabled() bool {
+	return c.BrowserProviders == nil || *c.BrowserProviders
 }
 
 func (c Config) assistantRuntimeEnabled() bool {
@@ -67,6 +74,9 @@ func resolveRuntimeSocket() string {
 func Program(club *core.Club, version string) ext.Program {
 	var hubPtr atomic.Pointer[ext.Hub]
 	driver := browser.NewPersonaHubDriver(&hubPtr)
+	var runtimeOn atomic.Bool
+	runtimeOn.Store(true)
+	page := accountsPage(club, &hubPtr, driver, &runtimeOn)
 	return ext.Program{
 		ID:       ID,
 		Version:  version,
@@ -77,7 +87,8 @@ func Program(club *core.Club, version string) ext.Program {
 			if err := init.Config(&cfg); err != nil {
 				return nil, err
 			}
-			if cfg.BrowserProviders {
+			runtimeOn.Store(cfg.assistantRuntimeEnabled())
+			if cfg.browserProvidersEnabled() {
 				for _, site := range []browser.Site{browser.SiteMuse, browser.SiteClaudeDuet, browser.SiteGeminiTasks, browser.SiteDots} {
 					if _, ok := club.Registry().Get(site.Provider); !ok {
 						club.Registry().Register(browser.New(site, driver))
@@ -141,7 +152,7 @@ func Program(club *core.Club, version string) ext.Program {
 			}
 			return map[string]any{"connectors": m.Contributes.Connectors}, nil
 		},
-		UI: map[string]ext.Page{AccountsUI: accountsPage(club, &hubPtr, driver)},
+		UI: map[string]ext.Page{HomeUI: page, HomeCardUI: page, AccountsUI: page},
 		Namespaces: map[string]ext.Handler{
 			ext.ConnectorNamespace: toolsHandler(club),
 			protocol.AgentSourceNamespace: func(ctx context.Context, method string, params json.RawMessage) (any, error) {
@@ -159,7 +170,7 @@ func Program(club *core.Club, version string) ext.Program {
 }
 
 // forward sends the space's changes to the hub until the program ends, then closes the club. A change also redraws
-// the accounts page where it is on screen (the hub coalesces these).
+// the extension's pages where they are on screen (the hub coalesces these).
 func forward(ctx context.Context, sub *core.Subscription, hub *ext.Hub, club *core.Club, bridgeDone <-chan struct{}) {
 	defer club.Close()
 	defer sub.Close()
@@ -174,7 +185,9 @@ func forward(ctx context.Context, sub *core.Subscription, hub *ext.Hub, club *co
 			for _, e := range sub.Take() {
 				_ = hub.Notify(protocol.EventUpdated, protocol.UpdatedEvent{Contribution: Contribution, SessionKeys: e.SessionKeys})
 			}
-			_ = hub.Invalidate(AccountsUI)
+			for _, ui := range []string{HomeUI, HomeCardUI, AccountsUI} {
+				_ = hub.Invalidate(ui)
+			}
 		}
 	}
 }
