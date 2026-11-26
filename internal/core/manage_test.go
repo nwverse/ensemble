@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/store"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/store"
 )
 
 // scripted is a provider whose every answer a test can change; it counts calls.

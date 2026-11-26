@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/store"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/store"
 )
 
 // fake is a scripted provider: sendFn decides each send; calls counts sends per client id.

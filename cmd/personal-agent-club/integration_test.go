@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/datadir"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider/providertest"
-	"github.com/nwverse/personal-agent-club/internal/store"
+	"github.com/nwverse/ensemble/internal/datadir"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider/providertest"
+	"github.com/nwverse/ensemble/internal/store"
 )
 
 // These run the whole program as the Lark gateway meets it: the serve command on a data directory on disk (SQLite

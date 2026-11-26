@@ -10,12 +10,12 @@ import (
 	"github.com/nwverse/persona/sdk/go/exttest"
 	"github.com/nwverse/persona/sdk/go/wire"
 
-	pac "github.com/nwverse/personal-agent-club"
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/names"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/store"
+	pac "github.com/nwverse/ensemble"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/names"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/store"
 )
 
 // named is a provider that pairs any credential under its name, for pages with accounts of several services.

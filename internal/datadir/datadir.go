@@ -19,8 +19,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/store"
-	"github.com/nwverse/personal-agent-club/internal/vault"
+	"github.com/nwverse/ensemble/internal/store"
+	"github.com/nwverse/ensemble/internal/vault"
 )
 
 // ErrInUse is Open's error while another process owns the directory.

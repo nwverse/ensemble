@@ -13,14 +13,14 @@ import (
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
 
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/names"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/provider/browser"
-	"github.com/nwverse/personal-agent-club/internal/provider/cue"
-	"github.com/nwverse/personal-agent-club/internal/provider/echo"
-	"github.com/nwverse/personal-agent-club/internal/provider/muse2api"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/names"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider/browser"
+	"github.com/nwverse/ensemble/internal/provider/cue"
+	"github.com/nwverse/ensemble/internal/provider/echo"
+	"github.com/nwverse/ensemble/internal/provider/muse2api"
 )
 
 // productName is the product as the pages name it. It must read as the manifest's "name" does, since the pages send

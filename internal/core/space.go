@@ -13,11 +13,11 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"github.com/nwverse/personal-agent-club/internal/names"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/store"
-	"github.com/nwverse/personal-agent-club/internal/vault"
+	"github.com/nwverse/ensemble/internal/names"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/store"
+	"github.com/nwverse/ensemble/internal/vault"
 )
 
 const (

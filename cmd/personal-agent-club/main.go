@@ -16,11 +16,11 @@ import (
 
 	"github.com/nwverse/persona/sdk/go/ext"
 
-	pac "github.com/nwverse/personal-agent-club"
-	"github.com/nwverse/personal-agent-club/internal/extension"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/providers"
+	pac "github.com/nwverse/ensemble"
+	"github.com/nwverse/ensemble/internal/extension"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/providers"
 )
 
 // version may be set at build time (-ldflags "-X main.version=..."); by default it is the manifest's.

@@ -10,9 +10,9 @@ import (
 
 	"github.com/nwverse/persona/sdk/go/ext"
 
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/datadir"
-	"github.com/nwverse/personal-agent-club/internal/providers"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/datadir"
+	"github.com/nwverse/ensemble/internal/providers"
 )
 
 // Where the Persona shell keeps its data. The hub gives every extension one data directory (PERSONA_EXTENSION_DATA,

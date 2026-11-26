@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
 )
 
 // Muse (muse.ai): the main chat at muse.ai/ and its side chats (旁聊) at muse.ai/thread/<uuid>. Muse talks to its

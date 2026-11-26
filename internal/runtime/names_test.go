@@ -3,7 +3,7 @@ package runtime
 import (
 	"testing"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/ensemble/internal/protocol"
 )
 
 // A launcher and an assistant session are named after the account; an account the space gives no name is named

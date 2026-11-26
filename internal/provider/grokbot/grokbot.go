@@ -25,9 +25,9 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/provider/web"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider/web"
 )
 
 // Name is the provider's name.

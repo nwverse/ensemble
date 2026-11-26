@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/store"
-	"github.com/nwverse/personal-agent-club/internal/vault"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/store"
+	"github.com/nwverse/ensemble/internal/vault"
 )
 
 // DefaultFollowUps are when a sent message's session is synced again, and an unconfirmed send asked about.

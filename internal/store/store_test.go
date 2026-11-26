@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/ensemble/internal/protocol"
 )
 
 var ctx = context.Background()

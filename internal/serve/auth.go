@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/ensemble/internal/protocol"
 )
 
 // Level is what a token may do.

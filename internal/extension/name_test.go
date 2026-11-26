@@ -10,11 +10,11 @@ import (
 	"github.com/nwverse/persona/sdk/go/exttest"
 	"github.com/nwverse/persona/sdk/go/wire"
 
-	pac "github.com/nwverse/personal-agent-club"
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/provider/cue"
-	"github.com/nwverse/personal-agent-club/internal/provider/echo"
+	pac "github.com/nwverse/ensemble"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider/cue"
+	"github.com/nwverse/ensemble/internal/provider/echo"
 )
 
 // oldProductName is the product's former display name. Ids (personal-agent-club, pac, club) keep it; nothing a person

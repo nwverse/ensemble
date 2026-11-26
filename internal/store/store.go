@@ -8,7 +8,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/ensemble/internal/protocol"
 )
 
 // ErrNotFound is returned by updates of a row that does not exist.

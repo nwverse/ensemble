@@ -12,12 +12,12 @@ import (
 	"github.com/nwverse/persona/sdk/go/exttest"
 	"github.com/nwverse/persona/sdk/go/wire"
 
-	pac "github.com/nwverse/personal-agent-club"
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/provider/echo"
-	"github.com/nwverse/personal-agent-club/internal/store"
+	pac "github.com/nwverse/ensemble"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider/echo"
+	"github.com/nwverse/ensemble/internal/store"
 )
 
 // jargon are words a first-time user should not meet on the Chinese pages: English UI words, the program's own

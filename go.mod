@@ -1,4 +1,4 @@
-module github.com/nwverse/personal-agent-club
+module github.com/nwverse/ensemble
 
 go 1.27.3
 

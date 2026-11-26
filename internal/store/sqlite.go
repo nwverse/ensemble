@@ -14,7 +14,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/ensemble/internal/protocol"
 )
 
 // schemaVersion is the SQLite schema's version (PRAGMA user_version).

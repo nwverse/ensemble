@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
 )
 
 // The sites below replace the generic DOM scripts, whose selectors no longer matched the pages (2026-11): Muse's

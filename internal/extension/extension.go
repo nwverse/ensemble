@@ -21,14 +21,14 @@ import (
 
 	"github.com/nwverse/persona/sdk/go/ext"
 
-	pac "github.com/nwverse/personal-agent-club"
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider/browser"
-	"github.com/nwverse/personal-agent-club/internal/provider/echo"
-	"github.com/nwverse/personal-agent-club/internal/provider/muse2api"
-	"github.com/nwverse/personal-agent-club/internal/provider/web"
-	"github.com/nwverse/personal-agent-club/internal/runtime"
+	pac "github.com/nwverse/ensemble"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider/browser"
+	"github.com/nwverse/ensemble/internal/provider/echo"
+	"github.com/nwverse/ensemble/internal/provider/muse2api"
+	"github.com/nwverse/ensemble/internal/provider/web"
+	"github.com/nwverse/ensemble/internal/runtime"
 )
 
 // ID is the extension's id; Contribution is its agent_sources contribution, the prefix of its session ids in
