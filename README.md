@@ -1,8 +1,8 @@
-# personal-agent-club
+# Ensemble (personal-agent-club)
 
-Personal Agent Club ("club") keeps your personal agents in one place: accounts you pair at agent services, their
-sessions and messages, an outbox for what you send them, read state and search. It is one Go program that runs in
-either of two ways:
+Ensemble (extension id `personal-agent-club`, "club" in its code and protocol) keeps your personal agents in one
+place: accounts you pair at agent services, their sessions and messages, an outbox for what you send them, read
+state and search. It is one Go program that runs in either of two ways:
 
 - **As a Persona extension.** A Persona hub starts the program with no arguments and talks to it over the extension
   protocol on stdin and stdout. It contributes the agent source `pac`, so its sessions show up on Persona's Agents

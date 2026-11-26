@@ -1,6 +1,6 @@
 # Installing the Persona extension from a local package
 
-This guide installs Personal Agent Club on a Persona hub from a package you build yourself, before it is published
+This guide installs Ensemble on a Persona hub from a package you build yourself, before it is published
 in a market. Everything below runs on the hub's machine, as the user the hub runs as.
 
 ## What the package is
@@ -62,7 +62,7 @@ question). It contributes:
 - the agent source `pac` (its sessions appear on the Agents page as `pac:<sessionKey>`);
 - the home page **我的 AI 助手** ("My AI assistants"): an entry in the main navigation (icon `robot`), a card on
   Overview (on the phones, above the list in Settings › Extensions) and the link **账号** ("Accounts") in
-  **Settings › Extensions › Personal Agent Club**. All three open the same home;
+  **Settings › Extensions › Ensemble**. All three open the same home;
 - the connector `club`, which carries the assistant's `club_agent_*` tools;
 
 and asks for network access to `api.manus.ai` (Cue), `api2.cursor.sh` (Grok Bot) and `api.groq.com` (Groq), and to the

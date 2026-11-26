@@ -23,7 +23,7 @@ import (
 
 // productName is the product as the pages name it. It must read as the manifest's "name" does, since the pages send
 // people to Settings › Extensions › <name>; a rename of the product is this one line and the manifest's.
-const productName = "Personal Agent Club"
+const productName = "Ensemble"
 
 // The extension's pages (contributes.ui). They all draw the same home, the page a first-time user lands on: what this
 // is, where it stands, the one thing to do next, then the accounts and the ways to add one; an account's own page
