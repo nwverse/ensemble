@@ -2,7 +2,6 @@ package browser
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"regexp"
@@ -217,15 +216,6 @@ return await page.evaluate((ARGS) => {
 		CanSend:        true,
 		Ref:            map[string]string{"url": a.site.AppURL},
 	}}
-	// A side chat the panel gives no title is named after its own thread id (museSideNames): never after its place in
-	// the panel, which moves as chats are used, titled, deleted or pushed past museMaxThreads.
-	var untitled []string
-	for _, t := range r.Threads {
-		if id := strings.ToLower(strings.TrimSpace(t.ID)); strings.TrimSpace(t.Title) == "" && museThreadIDRe.MatchString(id) {
-			untitled = append(untitled, id)
-		}
-	}
-	names := museSideNames(untitled)
 	for _, t := range r.Threads {
 		id := strings.ToLower(strings.TrimSpace(t.ID))
 		if !museThreadIDRe.MatchString(id) {
@@ -233,7 +223,7 @@ return await page.evaluate((ARGS) => {
 		}
 		title := strings.TrimSpace(t.Title)
 		if title == "" {
-			title = names[id]
+			title = museUntitled
 		}
 		out = append(out, provider.RemoteSession{
 			ExternalID:       id,
@@ -248,61 +238,11 @@ return await page.evaluate((ARGS) => {
 	return out, nil
 }
 
-// museSideWord is what Muse's own page calls a side chat (旁聊).
-const museSideWord = "旁聊"
-
-var (
-	museConsonants = "bdfghjklmnprstvz"
-	museVowels     = "aeiou"
-)
-
-// museSideNames names side chats the panel gives no title, by thread id: "旁聊 · " and a pronounceable word read
-// from a hash of the chat's own id ("旁聊 · korubima"). The panel's rows carry nothing else that stays put (a
-// title, when there is one, and a last-activity date), so the id is the one thing a name can be stable over, and a
-// hash of it keeps the name from reading like an id fragment. Each chat's word is four syllables (80^4, about 41
-// million words, so two chats ever sharing one is unlikely even across chats no longer listed), longer only when two
-// chats listed together would share a word: then each takes more syllables of its own hash until no two do. So a
-// chat's name never depends on where it sits in the panel, and no two names in a list are equal.
-func museSideNames(ids []string) map[string]string {
-	word := func(id string, syllables int) string {
-		h := sha256.Sum256([]byte(id))
-		var b strings.Builder
-		for i := 0; i < syllables; i++ {
-			b.WriteByte(museConsonants[h[2*i]%byte(len(museConsonants))])
-			b.WriteByte(museVowels[h[2*i+1]%byte(len(museVowels))])
-		}
-		return b.String()
-	}
-	length := map[string]int{}
-	for _, id := range ids {
-		length[id] = 4
-	}
-	names := map[string]string{}
-	for {
-		names = map[string]string{}
-		holders := map[string][]string{}
-		for id, n := range length {
-			w := word(id, n)
-			names[id] = museSideWord + " · " + w
-			holders[w] = append(holders[w], id)
-		}
-		clash := false
-		for _, same := range holders {
-			if len(same) < 2 {
-				continue
-			}
-			for _, id := range same {
-				if length[id] < sha256.Size/2 {
-					length[id]++
-					clash = true
-				}
-			}
-		}
-		if !clash {
-			return names
-		}
-	}
-}
+// museUntitled is the title of every side chat the panel gives none. The row carries nothing else that is both
+// stable and readable (only a last-activity date), so it is not numbered by its place in the panel, which moves,
+// nor named after its id: chats may share it, and the Agents list tells them apart by their preview and time. It
+// is the same in every locale.
+const museUntitled = "未命名旁聊"
 
 func (museSite) listMessages(ctx context.Context, a *Adapter, credential string, session provider.SessionRef, opts provider.ListOptions) (provider.RemotePage, error) {
 	thread, url, err := museThread(a, session)

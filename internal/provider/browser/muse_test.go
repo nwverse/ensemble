@@ -3,7 +3,6 @@ package browser
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -46,7 +45,7 @@ func TestMuseSite(t *testing.T) {
 		side.Ref["url"] != "https://muse.ai/thread/"+museSideID || !side.CanSend || side.LastActivityMs <= 0 {
 		t.Fatalf("side session = %+v", side)
 	}
-	if s := sessions[2]; s.ExternalID != "664f4567-e43b-497d-a2d4-aa827e02a801" || s.Title != museSideNames([]string{s.ExternalID})[s.ExternalID] || !museSideTitleRe.MatchString(s.Title) {
+	if s := sessions[2]; s.ExternalID != "664f4567-e43b-497d-a2d4-aa827e02a801" || s.Title != "未命名旁聊" {
 		t.Fatalf("untitled side session = %+v", s)
 	}
 	if sc := d.gotReqs[1].Script; !strings.Contains(sc, "thread_id") || strings.Contains(sc, "page.click") {
@@ -220,11 +219,9 @@ func TestMuseActivityMs(t *testing.T) {
 	}
 }
 
-var museSideTitleRe = regexp.MustCompile(`^旁聊 · [a-z]{8,}$`)
-
-// A side chat the panel gives no title is named after its own id, never after where it sits in the panel: when
-// another chat is deleted, falls past the list's cap or gets a title, the rest keep their names. No name reads like
-// an id fragment and no two are equal; a titled chat keeps the panel's title.
+// A side chat the panel gives no title is 未命名旁聊, never named after where it sits in the panel or after its id:
+// when another chat is deleted, falls past the list's cap, gets a title or loses one, the rest keep theirs. A titled
+// chat keeps the panel's title, and no title holds a fragment of an id.
 func TestMuseUntitledSideChats(t *testing.T) {
 	cred := EncodeCredential(Credential{MachineID: "mm-2", Backend: "ego"})
 	ids := make([]string, museMaxThreads+1)
@@ -244,19 +241,16 @@ func TestMuseUntitledSideChats(t *testing.T) {
 			t.Fatal(err)
 		}
 		titles := map[string]string{}
-		seen := map[string]string{}
 		for _, s := range got[1:] {
 			titles[s.ExternalID] = s.Title
-			if other, ok := seen[s.Title]; ok {
-				t.Errorf("%s and %s are both titled %q", other, s.ExternalID, s.Title)
-			}
-			seen[s.Title] = s.ExternalID
 			if _, ok := titled[s.ExternalID]; ok {
 				continue
 			}
-			if !museSideTitleRe.MatchString(s.Title) {
+			if s.Title != "未命名旁聊" {
 				t.Errorf("%s titled %q", s.ExternalID, s.Title)
 			}
+		}
+		for _, s := range got {
 			for i := 0; i+4 <= len(s.ExternalID); i++ {
 				if strings.Contains(s.Title, s.ExternalID[i:i+4]) {
 					t.Errorf("%s titled %q, a fragment of its id", s.ExternalID, s.Title)
@@ -295,30 +289,11 @@ func TestMuseUntitledSideChats(t *testing.T) {
 	keep("past the cap", after)
 	// One untitled chat gets a title; the titled one loses its title.
 	after = list(ids[:museMaxThreads], map[string]string{ids[7]: "新标题"})
-	if after[ids[7]] != "新标题" || !museSideTitleRe.MatchString(after[ids[3]]) {
+	if after[ids[7]] != "新标题" || after[ids[3]] != "未命名旁聊" {
 		t.Fatalf("titled/untitled = %q / %q", after[ids[7]], after[ids[3]])
 	}
 	keep("titled", after, ids[7], ids[3])
-	// The same chat is named the same whatever else is listed, and in any order.
-	if a, b := museSideNames([]string{ids[0], ids[1]}), museSideNames([]string{ids[1]}); a[ids[1]] != b[ids[1]] || a[ids[0]] == a[ids[1]] {
-		t.Fatalf("names = %v / %v", a, b)
-	}
 }
-
-// Two chats whose four-syllable words agree are both named longer, each from its own hash, so they differ; listed
-// apart, each has the short name.
-func TestMuseSideNamesTellClashesApart(t *testing.T) {
-	const a, b = "00000416-0000-4000-8000-000000000416", "00001279-0000-4000-8000-000000001279"
-	if x, y := museSideNames([]string{a})[a], museSideNames([]string{b})[b]; x != y || x != "旁聊 · lenonavu" {
-		t.Fatalf("alone: %q, %q (the fixture no longer clashes)", x, y)
-	}
-	both := museSideNames([]string{b, a, ids0})
-	if both[a] != "旁聊 · lenonavuso" || both[b] != "旁聊 · lenonavuko" || both[ids0] != museSideNames([]string{ids0})[ids0] {
-		t.Fatalf("together: %v", both)
-	}
-}
-
-const ids0 = "a0000000-0000-4000-8000-000000000000"
 
 // Cloudflare's "Verify you are human" in front of muse.ai is "human check", a signed-out landing page "auth", and a
 // signed-in page with its chat log neither, as the page scripts see them.
