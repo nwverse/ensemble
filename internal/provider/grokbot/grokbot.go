@@ -168,7 +168,8 @@ func (a *Adapter) data(ctx context.Context, credential, method string, body any)
 	return web.Record(r.Data), nil
 }
 
-// Verify reads who the token belongs to.
+// Verify reads who the token belongs to, in one request: its alias is the email GetMe answers (grok-bot-sdk 0.78.1's
+// shape: {authId, userId, email}). Pairing asks PairingAlias for a better one.
 func (a *Adapter) Verify(ctx context.Context, credential string) (provider.RemoteAccount, error) {
 	r := a.rpc(ctx, credential, "DashboardService", "GetMe", map[string]any{})
 	if !r.OK {
@@ -186,7 +187,27 @@ func (a *Adapter) Verify(ctx context.Context, credential string) (provider.Remot
 	if id == "" {
 		return provider.RemoteAccount{}, &provider.Error{Code: provider.CodeAuthFailed, HTTPStatus: r.Status}
 	}
-	return provider.RemoteAccount{ExternalAccountID: id, DisplayName: "Grok Bot"}, nil
+	return provider.RemoteAccount{ExternalAccountID: id, Alias: web.Text(me["email"])}, nil
+}
+
+// PairingAlias is the name of the account's only bot of its own, which tells two Grok Bot accounts apart better than
+// an email: the roster is asked without teammates' bots (includeTeamAgents false) and rooms are not bots. "" when the
+// account has none, several, or the roster cannot be read (pairing does not fail for a name).
+func (a *Adapter) PairingAlias(ctx context.Context, credential string) string {
+	roster, err := a.data(ctx, credential, "ListGrokBotAgents", map[string]any{"includeTeamAgents": false})
+	if err != nil {
+		return ""
+	}
+	var names []string
+	for _, bot := range web.Records(roster["agents"]) {
+		if botID.MatchString(web.Text(bot["agentId"])) && !roomKinds[web.String(bot["kind"])] {
+			names = append(names, or(web.Text(bot["name"]), web.Text(bot["title"])))
+		}
+	}
+	if len(names) != 1 {
+		return ""
+	}
+	return names[0]
 }
 
 var roomKinds = map[string]bool{"2": true, "ROOM": true, "GROK_BOT_AGENT_KIND_ROOM": true}

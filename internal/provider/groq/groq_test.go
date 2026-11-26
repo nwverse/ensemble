@@ -27,7 +27,7 @@ func TestVerifiesTheKeyAgainstTheModelList(t *testing.T) {
 	groq := providertest.Fixture(t, "groq-openai-v1.json")
 	up := providertest.Serve(t, func(providertest.Call) providertest.Answer { return providertest.Answer{Body: groq["models"]} })
 	acct, err := New(Options{Origin: up.URL + "/openai/v1"}).Verify(ctx, key)
-	if err != nil || !reflect.DeepEqual(acct, provider.RemoteAccount{ExternalAccountID: "groq", DisplayName: "Groq"}) {
+	if err != nil || !reflect.DeepEqual(acct, provider.RemoteAccount{ExternalAccountID: "groq"}) {
 		t.Fatalf("%+v %v", acct, err)
 	}
 	c := up.Calls()[0]

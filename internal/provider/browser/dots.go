@@ -150,12 +150,7 @@ func (dotsSite) verify(ctx context.Context, a *Adapter, credential string) (prov
 	if name == "" {
 		name = strings.TrimSpace(r.Email)
 	}
-	if name == "" {
-		name = a.site.Label
-	} else {
-		name = a.site.Label + " · " + name
-	}
-	return provider.RemoteAccount{ExternalAccountID: id, DisplayName: name}, nil
+	return provider.RemoteAccount{ExternalAccountID: id, Alias: name}, nil
 }
 
 type dotItem struct {

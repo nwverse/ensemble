@@ -74,6 +74,9 @@ func (m *Memory) UpdateAccount(_ context.Context, id string, p AccountPatch, now
 	if p.DisplayName != nil {
 		a.DisplayName = *p.DisplayName
 	}
+	if p.NameSource != nil {
+		a.NameSource = *p.NameSource
+	}
 	if p.LastSyncedAt != nil {
 		a.LastSyncedAt = *p.LastSyncedAt
 	}

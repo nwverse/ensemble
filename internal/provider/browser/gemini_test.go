@@ -35,7 +35,7 @@ func TestGeminiTasksReadsThroughTheHubFormat(t *testing.T) {
 	a := New(SiteGeminiTasks, fd)
 
 	acct, err := a.Verify(ctx, cred)
-	if err != nil || acct.ExternalAccountID != "gemini:ada@example.com" || acct.DisplayName != "Gemini Tasks · Ada" {
+	if err != nil || acct.ExternalAccountID != "gemini:ada@example.com" || acct.Alias != "Ada" {
 		t.Fatalf("Verify = %+v, %v", acct, err)
 	}
 	if !strings.Contains(fd.gotReqs[0].Script, `startsWith("/sorry")`) {

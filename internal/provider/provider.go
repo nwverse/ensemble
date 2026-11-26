@@ -15,7 +15,12 @@ import (
 // RemoteAccount is what Verify learns about the account a credential belongs to.
 type RemoteAccount struct {
 	ExternalAccountID string
-	DisplayName       string
+	// Alias is who the account is at the provider, without the provider's brand: a person's name or email, a bot's
+	// or agent's name; "" when the provider says nothing better than its brand. Club adds the brand (names.Stored).
+	Alias string
+	// DisplayName is the older, whole name ("Muse · Glint"); club reads its alias out of it (names.Split) when Alias
+	// is empty. New code sets Alias.
+	DisplayName string
 	// Quota is what the answer said about the account's allowance, when it says (as SendResult.Quota).
 	Quota []QuotaReading
 }

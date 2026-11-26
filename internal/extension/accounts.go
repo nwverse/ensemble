@@ -14,6 +14,7 @@ import (
 	"github.com/nwverse/persona/sdk/go/wire"
 
 	"github.com/nwverse/personal-agent-club/internal/core"
+	"github.com/nwverse/personal-agent-club/internal/names"
 	"github.com/nwverse/personal-agent-club/internal/protocol"
 	"github.com/nwverse/personal-agent-club/internal/provider"
 	"github.com/nwverse/personal-agent-club/internal/provider/browser"
@@ -1181,51 +1182,24 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 	return nil, nil
 }
 
-// accountName is an account's name for the assistant's tools and the machine it pairs: the name it was given or
-// found, else its service.
+// accountName is an account's name for the assistant's tools and the machine it pairs (Chinese, names.Default): the
+// space's name for it, else its service's.
 func accountName(a protocol.Account) string {
-	if a.DisplayName != "" {
-		return a.DisplayName
-	}
-	return providerName("en", a.Provider)
+	return names.Fallback(names.Default, a.Provider, a.DisplayName)
 }
 
-// echoAccountName is what the demo provider names every account it verifies (echo.go); the pages say 演示账号.
-const echoAccountName = "Echo"
-
-// accountTitle is what an account is called on the pages: the name it was given or found, else its service in the
-// page's words (never the raw provider id the core falls back to).
+// accountTitle is what an account is called on a page in l: the space's name for it in that language (owner-chosen
+// names as typed), else its service's, never the raw provider id.
 func accountTitle(l lang, a protocol.Account) string {
-	if a.DisplayName != "" && a.DisplayName != a.Provider && !(a.Provider == echo.Name && a.DisplayName == echoAccountName) {
-		return a.DisplayName
+	if l.t("zh", "en") == "en" && a.DisplayNameEn != "" {
+		return a.DisplayNameEn
 	}
-	return providerName(l, a.Provider)
+	return names.Fallback(string(l), a.Provider, a.DisplayName)
 }
 
-// providerName is a service's name as people know it.
+// providerName is a service's name as people know it, in l (names.Brand, the one label table).
 func providerName(l lang, p string) string {
-	switch p {
-	case "cue":
-		return "Cue"
-	case grokBot:
-		return "Grok Bot"
-	case "groq":
-		return "Groq"
-	case muse2api.Name:
-		return l.t("Muse（自建转接）", "Muse (own relay)")
-	case echo.Name:
-		return l.t("演示账号", "Demo account")
-	case browser.SiteMuse.Provider:
-		return l.t("Muse（网页版）", "Muse (web)")
-	case browser.SiteGeminiTasks.Provider:
-		return "Gemini"
-	case browser.SiteDots.Provider:
-		return "ChatGPT Dots"
-	}
-	if label, ok := browserProviderLabel(p); ok {
-		return label
-	}
-	return p
+	return names.Brand(string(l), p)
 }
 
 func statusBadge(l lang, acct protocol.Account) *wire.Badge {

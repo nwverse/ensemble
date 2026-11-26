@@ -18,11 +18,20 @@ var ErrNotFound = errors.New("store: not found")
 // listed, as in the Lark gateway.
 const AccountRemoved = "removed"
 
+// Who chose an account's display name (Account.NameSource).
+const (
+	NameAuto  = "auto"
+	NameOwner = "owner"
+)
+
 // Account is a paired account. Credentials are not here: they live in the vault.
 type Account struct {
-	AccountID         string
-	Provider          string
-	DisplayName       string
+	AccountID   string
+	Provider    string
+	DisplayName string
+	// NameSource says who chose DisplayName: NameOwner (shown as it is, never renamed or numbered), NameAuto (club
+	// composed it from the provider's brand and the account's alias), or "" for a row stored before club kept this.
+	NameSource        string
 	ExternalAccountID string
 	Status            string // protocol.AccountActive, AccountPaused, AccountError, or AccountRemoved
 	LastSyncedAt      int64
@@ -39,6 +48,7 @@ type Account struct {
 type AccountPatch struct {
 	Status           *string
 	DisplayName      *string
+	NameSource       *string
 	LastSyncedAt     *int64
 	LastError        *string
 	AssistantControl *string

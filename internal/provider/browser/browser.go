@@ -284,13 +284,9 @@ return { url, title, signedOut, composer };
 		return provider.RemoteAccount{}, &provider.Error{Code: provider.CodeAuthFailed}
 	}
 	cred, _ := ParseCredential(credential)
-	name := strings.TrimSpace(r.Title)
-	if name == "" {
-		name = a.site.Label
-	}
 	return provider.RemoteAccount{
 		ExternalAccountID: a.site.Provider + ":" + cred.MachineID,
-		DisplayName:       name,
+		Alias:             strings.TrimSpace(r.Title),
 	}, nil
 }
 

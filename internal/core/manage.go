@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode/utf16"
 
+	"github.com/nwverse/personal-agent-club/internal/names"
 	"github.com/nwverse/personal-agent-club/internal/protocol"
 	"github.com/nwverse/personal-agent-club/internal/provider"
 	"github.com/nwverse/personal-agent-club/internal/store"
@@ -42,7 +43,8 @@ func (s *Space) UpdateAccount(ctx context.Context, p protocol.UpdateAccountParam
 		if name == "" || len(utf16.Encode([]rune(name))) > maxDisplayName {
 			return protocol.Account{}, badInput("display_name must be 1 to 80 characters")
 		}
-		patch.DisplayName = &name
+		owner := names.SourceOwner
+		patch.DisplayName, patch.NameSource = &name, &owner
 	}
 	if p.AssistantControl != nil {
 		c, err := ParseControl(*p.AssistantControl)

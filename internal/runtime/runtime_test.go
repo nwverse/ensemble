@@ -262,7 +262,7 @@ func newScriptedAsync(name string) *scriptedAsyncProvider {
 func (p *scriptedAsyncProvider) Name() string       { return p.name }
 func (p *scriptedAsyncProvider) Connection() string { return protocol.ConnectionServer }
 func (p *scriptedAsyncProvider) Verify(context.Context, string) (provider.RemoteAccount, error) {
-	return provider.RemoteAccount{ExternalAccountID: "ext-" + p.name, DisplayName: "Async Bot"}, nil
+	return provider.RemoteAccount{ExternalAccountID: "ext-" + p.name, Alias: "Async Bot"}, nil
 }
 func (p *scriptedAsyncProvider) ListSessions(context.Context, string) ([]provider.RemoteSession, error) {
 	return []provider.RemoteSession{{ExternalID: "main", Title: "Main", Kind: protocol.KindMain, CanSend: true}}, nil

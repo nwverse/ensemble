@@ -60,7 +60,7 @@ func TestDotsReadsThroughTheHubFormat(t *testing.T) {
 	a := New(SiteDots, fd)
 
 	acct, err := a.Verify(ctx, cred)
-	if err != nil || acct.ExternalAccountID != "dots:user-X:acc-1" || acct.DisplayName != "Dots · Ada" {
+	if err != nil || acct.ExternalAccountID != "dots:user-X:acc-1" || acct.Alias != "Ada" {
 		t.Fatalf("Verify = %+v, %v", acct, err)
 	}
 	ss, err := a.ListSessions(ctx, cred)

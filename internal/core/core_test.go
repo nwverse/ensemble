@@ -35,7 +35,7 @@ func (f *fake) Verify(_ context.Context, cred string) (provider.RemoteAccount, e
 	if cred == "bad-credential" {
 		return provider.RemoteAccount{}, &provider.Error{Code: provider.CodeAuthFailed, HTTPStatus: 401}
 	}
-	return provider.RemoteAccount{ExternalAccountID: "ext-" + cred, DisplayName: "Fake"}, nil
+	return provider.RemoteAccount{ExternalAccountID: "ext-" + cred, Alias: "Fake"}, nil
 }
 func (f *fake) ListSessions(context.Context, string) ([]provider.RemoteSession, error) {
 	return []provider.RemoteSession{

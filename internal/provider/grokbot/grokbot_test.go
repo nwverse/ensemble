@@ -53,7 +53,7 @@ func TestVerifiesWithGetMeAndListsMainAndSideSessions(t *testing.T) {
 	up := providertest.Serve(t, routes(t))
 	a := New(Options{Origin: up.URL})
 	acct, err := a.Verify(ctx, key)
-	if err != nil || !reflect.DeepEqual(acct, provider.RemoteAccount{ExternalAccountID: "auth0|fixture", DisplayName: "Grok Bot"}) {
+	if err != nil || !reflect.DeepEqual(acct, provider.RemoteAccount{ExternalAccountID: "auth0|fixture", Alias: "fixture@example.com"}) {
 		t.Fatalf("%+v %v", acct, err)
 	}
 	c := up.Calls()[0]
@@ -74,6 +74,38 @@ func TestVerifiesWithGetMeAndListsMainAndSideSessions(t *testing.T) {
 	}
 	if !reflect.DeepEqual(sessions, want) {
 		t.Fatalf("%+v", sessions)
+	}
+}
+
+func TestPairingAliasIsTheSoleBot(t *testing.T) {
+	base := routes(t)
+	withRoster := func(answer providertest.Answer) func(providertest.Call) providertest.Answer {
+		return func(c providertest.Call) providertest.Answer {
+			if method(c) == "ListGrokBotAgents" {
+				// Only the account's own bots: a teammate's is not "the only bot".
+				if !strings.Contains(string(c.Body), `"includeTeamAgents":false`) {
+					return providertest.Answer{Status: 400, Body: map[string]any{"code": "want own bots"}}
+				}
+				return answer
+			}
+			return base(c)
+		}
+	}
+	withRoom := providertest.Answer{Body: map[string]any{"agents": []any{
+		map[string]any{"agentId": "bot_alpha", "name": "Grok 秘书"}, map[string]any{"agentId": "bot_room", "name": "Team room", "kind": "GROK_BOT_AGENT_KIND_ROOM"}}}}
+	two := providertest.Answer{Body: map[string]any{"agents": []any{
+		map[string]any{"agentId": "bot_alpha", "name": "Grok 秘书"}, map[string]any{"agentId": "bot_beta", "name": "Grok 2"}}}}
+	none := providertest.Answer{Body: map[string]any{"agents": []any{}}}
+	untitled := providertest.Answer{Body: map[string]any{"agents": []any{map[string]any{"agentId": "bot_alpha", "title": "Helper"}}}}
+	broken := providertest.Answer{Status: 500, Body: map[string]any{"code": "internal"}}
+	for _, c := range []struct {
+		roster providertest.Answer
+		want   string
+	}{{providertest.Answer{Body: providertest.Fixture(t, "grok-bot-0.78.1.json")["ListGrokBotAgents"]}, "Grok 秘书"},
+		{two, ""}, {none, ""}, {untitled, "Helper"}, {broken, ""}, {withRoom, "Grok 秘书"}} {
+		if got := New(Options{Origin: providertest.Serve(t, withRoster(c.roster)).URL}).PairingAlias(ctx, key); got != c.want {
+			t.Fatalf("%+v: %q, want %q", c.roster.Body, got, c.want)
+		}
 	}
 }
 

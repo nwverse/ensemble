@@ -22,7 +22,7 @@ const schemaVersion = 2
 
 // The tables and columns are the Lark gateway's agent_* tables, so an import can be checked row for row. Booleans
 // are 0/1, JSON is text, the Postgres tsvector is an FTS5 index over search_text and the pre-split cjk_tokens.
-// assistant_control, show_quota and quota_display are club's own.
+// assistant_control, show_quota, quota_display and name_source are club's own.
 const schema = `
 CREATE TABLE IF NOT EXISTS agent_accounts (
   account_id text PRIMARY KEY NOT NULL,
@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS agent_accounts (
   updated_at integer NOT NULL,
   assistant_control text NOT NULL DEFAULT 'off',
   show_quota integer NOT NULL DEFAULT 0,
-  quota_display text NOT NULL DEFAULT ''
+  quota_display text NOT NULL DEFAULT '',
+  name_source text NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS agent_sessions (
   session_key text PRIMARY KEY NOT NULL,
@@ -190,6 +191,18 @@ func (s *SQLite) migrate() error {
 			return err
 		}
 	}
+	// name_source is added without a version bump, so an older program (0.6.0, schema 2) still opens the store: it
+	// ignores the column, and a row it writes anew reads "" again, which core settles on the next sync. Rows from
+	// before keep "" too.
+	var named int
+	if err := s.db.QueryRow(`SELECT count(*) FROM pragma_table_info('agent_accounts') WHERE name = 'name_source'`).Scan(&named); err != nil {
+		return err
+	}
+	if named == 0 {
+		if _, err := s.db.Exec(`ALTER TABLE agent_accounts ADD COLUMN name_source text NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
 	_, err := s.db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion))
 	return err
 }
@@ -237,7 +250,7 @@ func boolInt(b bool) int {
 }
 
 const accountColumns = `account_id, provider, display_name, status, external_account_id, last_synced_at, last_error,
-  assistant_control, show_quota, quota_display, created_at, updated_at`
+  assistant_control, show_quota, quota_display, created_at, updated_at, name_source`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -247,7 +260,7 @@ func scanAccount(r scanner) (Account, error) {
 	var synced sql.NullInt64
 	var show int
 	err := r.Scan(&a.AccountID, &a.Provider, &a.DisplayName, &a.Status, &ext, &synced, &lastErr, &a.AssistantControl,
-		&show, &a.QuotaDisplay, &a.CreatedAt, &a.UpdatedAt)
+		&show, &a.QuotaDisplay, &a.CreatedAt, &a.UpdatedAt, &a.NameSource)
 	a.ExternalAccountID, a.LastError, a.LastSyncedAt, a.ShowQuota = ext.String, lastErr.String, synced.Int64, show != 0
 	return a, err
 }
@@ -285,9 +298,9 @@ func putAccount(ctx context.Context, q querier, a Account) error {
 		control = "off"
 	}
 	_, err := q.ExecContext(ctx, `INSERT OR REPLACE INTO agent_accounts (`+accountColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, a.AccountID, a.Provider, a.DisplayName, a.Status,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, a.AccountID, a.Provider, a.DisplayName, a.Status,
 		nullString(a.ExternalAccountID), nullInt(a.LastSyncedAt), nullString(a.LastError), control,
-		boolInt(a.ShowQuota), a.QuotaDisplay, a.CreatedAt, a.UpdatedAt)
+		boolInt(a.ShowQuota), a.QuotaDisplay, a.CreatedAt, a.UpdatedAt, a.NameSource)
 	return err
 }
 
@@ -305,6 +318,9 @@ func (s *SQLite) UpdateAccount(ctx context.Context, id string, p AccountPatch, n
 	}
 	if p.DisplayName != nil {
 		add("display_name", *p.DisplayName)
+	}
+	if p.NameSource != nil {
+		add("name_source", *p.NameSource)
 	}
 	if p.LastSyncedAt != nil {
 		add("last_synced_at", nullInt(*p.LastSyncedAt))

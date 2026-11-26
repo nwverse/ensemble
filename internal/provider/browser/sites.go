@@ -191,13 +191,9 @@ func (duetSite) verify(ctx context.Context, a *Adapter, credential string) (prov
 	if r.UUID == "" {
 		return provider.RemoteAccount{}, &provider.Error{Code: provider.CodeAuthFailed}
 	}
-	name := a.site.Label
-	if n := strings.TrimSpace(r.Name); n != "" {
-		name += " · " + n
-	}
 	// Keyed by the computer, as the generic sites were, so an account paired before keeps its identity.
 	cred, _ := ParseCredential(credential)
-	return provider.RemoteAccount{ExternalAccountID: a.site.Provider + ":" + cred.MachineID, DisplayName: name}, nil
+	return provider.RemoteAccount{ExternalAccountID: a.site.Provider + ":" + cred.MachineID, Alias: strings.TrimSpace(r.Name)}, nil
 }
 
 func (duetSite) listSessions(ctx context.Context, a *Adapter, credential string) ([]provider.RemoteSession, error) {

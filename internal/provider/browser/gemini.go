@@ -163,7 +163,7 @@ func (geminiSite) verify(ctx context.Context, a *Adapter, credential string) (pr
 		name = email
 	}
 	// No task yet is fine: the account is paired and its tasks show up as they are made.
-	return provider.RemoteAccount{ExternalAccountID: "gemini:" + email, DisplayName: a.site.Label + " · " + name}, nil
+	return provider.RemoteAccount{ExternalAccountID: "gemini:" + email, Alias: name}, nil
 }
 
 type geminiTask struct {

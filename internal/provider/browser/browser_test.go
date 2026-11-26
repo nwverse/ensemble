@@ -62,7 +62,7 @@ func TestGenericSiteVerifyListReadSend(t *testing.T) {
 		t.Fatalf("unexpected adapter metadata: %s %s", a.Name(), a.Connection())
 	}
 	acct, err := a.Verify(ctx, cred)
-	if err != nil || acct.DisplayName != "Agent" || acct.ExternalAccountID != "generic:mm-2" {
+	if err != nil || acct.Alias != "Agent" || acct.ExternalAccountID != "generic:mm-2" {
 		t.Fatalf("Verify = %+v, err=%v", acct, err)
 	}
 	sessions, err := a.ListSessions(ctx, cred)
@@ -125,7 +125,7 @@ func TestClaudeDuetSite(t *testing.T) {
 	})
 	a := New(SiteClaudeDuet, d)
 	acct, err := a.Verify(ctx, cred)
-	if err != nil || acct.ExternalAccountID != "claude_duet:mm-2" || acct.DisplayName != "Claude Duet · Shengtao" {
+	if err != nil || acct.ExternalAccountID != "claude_duet:mm-2" || acct.Alias != "Shengtao" {
 		t.Fatalf("Verify = %+v, err=%v", acct, err)
 	}
 	sessions, err := a.ListSessions(ctx, cred)
