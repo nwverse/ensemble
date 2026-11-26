@@ -21,13 +21,12 @@ import (
 // on the Agents page the hub fetches it as it does any conversation's avatarUrl. The address carries nothing of the
 // owner's accounts. No icon artwork is in this repository.
 
-// icons are the products' official icons: a PNG or ICO the product's own site serves at a fixed address, the site
-// the provider's code talks to (see each provider's package). A product with no entry has no icon established and
+// icons are the products' official icons: a PNG or ICO the product itself publishes (its own site, or its maker's
+// branding path named by the product), for the product the provider's code talks to (see each provider's package).
+// Should one go away, every app draws the letters in its place. A product with no entry has no icon established and
 // shows its letters (the owner decides those):
 //   - grok_bot: the API is api2.cursor.sh and sign-in is on cursor.com, but neither names an icon of Grok Bot's own;
 //     xAI's Grok (grok.com, x.ai) is another product and never its icon.
-//   - dots: chatgpt.com serves its icons only under addresses that change with every release.
-//   - gemini_tasks: gemini.google.com serves no icon at a fixed address (its page points at a versioned file).
 //   - echo: the demo, no product.
 var icons = map[string]string{
 	"claude_duet": "https://claude.ai/apple-touch-icon.png", // claude.ai/duet, the page the provider drives
@@ -35,6 +34,12 @@ var icons = map[string]string{
 	"muse2api":    "https://muse.ai/favicon.ico",            // the owner's relay drives muse.ai with their Muse accounts
 	"cue":         "https://manus.im/apple-icon.png",        // Manus: api.manus.ai, tasks at manus.im/app
 	"groq":        "https://groq.com/apple-touch-icon.png",  // Groq: api.groq.com
+	// Gemini (gemini.google.com/app): Google's product-branding path, named by product, not by release.
+	"gemini_tasks": "https://www.gstatic.com/images/branding/product/2x/gemini_96dp.png",
+	// ChatGPT (chatgpt.com, where the Dots are): the apple-touch-icon chatgpt.com's page declares. Its name carries a
+	// content hash, so a later release may drop it: the url then fails and the apps draw the letters until this
+	// address is updated. Not openai.com's icon, which is the company's.
+	"dots": "https://chatgpt.com/cdn/assets/favicon-180x180.9e0103ce69.png",
 }
 
 // Icon is the official icon of provider's product, "" when none is established.

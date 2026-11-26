@@ -189,9 +189,9 @@ personad extension show personal-agent-club   # "sandbox": {"active": true, "egr
   goes out through it and the extension needs nothing more.
 - Pictures need no network entry: an account's avatar is its own picture when the service gives one (a Grok Bot's
   bot avatar), else its product's official icon, else its letters (internal/names/avatar.go). The icons are https
-  addresses on the products' own sites (claude.ai, muse.ai, manus.im, groq.com) that the Persona app loads itself on
-  the pages, and the hub fetches as a conversation's `avatarUrl` on the Agents page; the program never fetches one,
-  and no address carries anything of your accounts.
+  addresses the products publish (claude.ai, muse.ai, manus.im, groq.com, chatgpt.com, and Google's branding path on
+  www.gstatic.com for Gemini) that the Persona app loads itself on the pages, and the hub fetches as a conversation's
+  `avatarUrl` on the Agents page; the program never fetches one, and no address carries anything of your accounts.
 
 ## Stopping just this extension
 

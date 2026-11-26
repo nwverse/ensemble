@@ -13,13 +13,13 @@ import (
 // productHosts are the sites each provider's code talks to (its API, sign-in or the page it drives), which is where
 // its product's icon may come from; a provider missing here may have no icon.
 var productHosts = map[string][]string{
-	"claude_duet":  {"claude.ai"},         // browser.SiteClaudeDuet: https://claude.ai/duet
-	"muse":         {"muse.ai"},           // browser.SiteMuse: https://muse.ai/
-	"muse2api":     {"muse.ai"},           // muse2api drives muse.ai's web chat
-	"cue":          {"manus.im"},          // cue.Origin https://api.manus.ai, task_url https://manus.im/app/…
-	"groq":         {"groq.com"},          // groq.Origin https://api.groq.com
-	"dots":         {"chatgpt.com"},       // browser.SiteDots
-	"gemini_tasks": {"gemini.google.com"}, // browser.SiteGeminiTasks
+	"claude_duet":  {"claude.ai"},                            // browser.SiteClaudeDuet: https://claude.ai/duet
+	"muse":         {"muse.ai"},                              // browser.SiteMuse: https://muse.ai/
+	"muse2api":     {"muse.ai"},                              // muse2api drives muse.ai's web chat
+	"cue":          {"manus.im"},                             // cue.Origin https://api.manus.ai, task_url https://manus.im/app/…
+	"groq":         {"groq.com"},                             // groq.Origin https://api.groq.com
+	"dots":         {"chatgpt.com"},                          // browser.SiteDots
+	"gemini_tasks": {"gemini.google.com", "www.gstatic.com"}, // browser.SiteGeminiTasks; Google's product branding
 }
 
 // Every service's avatar is, in order: its own picture when it has one (https, or an image data URL), else its
