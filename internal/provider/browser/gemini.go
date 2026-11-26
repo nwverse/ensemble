@@ -321,11 +321,45 @@ if (signedIn === "limited") {
   if (before.turns === 0) {
     return { error: "no task" };
   } else {
-    await page.click("loc=css:" + sel);
-    await page.keyboard.press("ControlOrMeta+A");
-    await page.keyboard.press("Backspace");
-    await page.keyboard.insertText(ARGS0.text);
-    await new Promise(r => setTimeout(r, 500));
+    // Gemini puts back a draft it kept for the conversation a moment after the page shows: wait for the composer to
+    // settle, empty it, type, and send only when it holds exactly this text.
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const settle = async () => {
+      let prev = null;
+      for (let i = 0, same = 0; i < 12 && same < 2; i++) {
+        const d = (await look()).draft;
+        same = d === prev ? same + 1 : 0;
+        prev = d;
+        await sleep(400);
+      }
+    };
+    const setDraft = async (t) => {
+      await page.click("loc=css:" + sel).catch(() => {});
+      await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return;
+        el.focus();
+        const r = document.createRange();
+        r.selectNodeContents(el);
+        const s = getSelection();
+        s.removeAllRanges();
+        s.addRange(r);
+        document.execCommand("delete");
+      }, sel);
+      if (t) await page.keyboard.insertText(t);
+      await sleep(400);
+      return norm((await look()).draft) === norm(t);
+    };
+    await settle();
+    let ready = await setDraft(ARGS0.text);
+    if (!ready) {
+      await settle();
+      ready = await setDraft(ARGS0.text);
+    }
+    if (!ready) {
+      await setDraft("");
+      return { error: "not sent" };
+    }
     const clicked = await page.click("loc=css:" + %q, { timeout: 3000 }).then(() => true).catch(() => false);
     if (!clicked) await page.press("loc=css:" + sel, "Enter");
     const want = norm(ARGS0.text);
@@ -338,9 +372,7 @@ if (signedIn === "limited") {
     if (now.turns > before.turns && norm(now.last).includes(want)) {
       return { sent: true, clicked };
     } else if (norm(now.draft).includes(want)) {
-      await page.click("loc=css:" + sel).catch(() => {});
-      await page.keyboard.press("ControlOrMeta+A").catch(() => {});
-      await page.keyboard.press("Backspace").catch(() => {});
+      await setDraft("");
       return { clicked, error: "not sent" };
     } else {
       return { sent: false, clicked };

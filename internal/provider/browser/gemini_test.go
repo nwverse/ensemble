@@ -129,7 +129,7 @@ func TestGeminiTasksSend(t *testing.T) {
 			t.Errorf("%v: %+v, %v", tc.value, res, err)
 		}
 		if sc := fd.gotReqs[0].Script; !strings.Contains(sc, `https://gemini.google.com/app/8857`) || !strings.Contains(sc, `"text":"hi \"there\""`) ||
-			!strings.Contains(sc, `ControlOrMeta+A`) {
+			!strings.Contains(sc, `document.execCommand("delete")`) || !strings.Contains(sc, `if (!ready)`) {
 			t.Errorf("script does not clear the draft and type the text into the task")
 		}
 	}
