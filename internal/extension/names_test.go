@@ -167,13 +167,30 @@ func TestEmailNamedAccountsShowTheShortNameAndKeepTheEmailOnTheirPage(t *testing
 }
 
 // The pages name the web and the self-hosted Muse with the labels' table, in the rows to add one and on the
-// self-hosted one's page that sends people to the web one.
+// self-hosted one's page that sends people to the web one. The relay's row says first that it is not Muse's own and
+// sends an ordinary Muse account to the web one.
 func TestMuseLabelsOnThePages(t *testing.T) {
 	h, _ := start(t)
-	for _, c := range []struct{ locale, web, relay string }{{"zh-Hans", "Muse 网页版", "Muse 自建转接"}, {"en", "Muse (web)", "Muse (own relay)"}} {
-		list := text(renderIn(t, h, c.locale, pageState{Page: pageAdd}))
+	for _, c := range []struct{ locale, web, relay, notMuse string }{
+		{"zh-Hans", "Muse 网页版", "Muse 自建转接", "不是 Muse 官方的："}, {"en", "Muse (web)", "Muse (own relay)", "Not Muse's own: "}} {
+		add := renderIn(t, h, c.locale, pageState{Page: pageAdd})
+		list := text(add)
 		if !strings.Contains(list, `"title":"`+c.web+`"`) || !strings.Contains(list, `"title":"`+c.relay+`"`) || strings.Contains(list, "（网页版）") {
 			t.Errorf("%s list: %s", c.locale, list)
+		}
+		found := false
+		for _, s := range add.Sections {
+			for _, it := range s.Items {
+				if it.Key == "pair-muse2api" {
+					found = true
+					if !strings.HasPrefix(it.Subtitle, c.notMuse) || !strings.Contains(it.Subtitle, c.web) {
+						t.Errorf("%s relay row: %q", c.locale, it.Subtitle)
+					}
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s: no relay row", c.locale)
 		}
 		relay := text(renderIn(t, h, c.locale, pageState{Page: pagePair, Provider: "muse2api"}))
 		if !strings.Contains(relay, c.web) || strings.Contains(relay, "（网页版）") {
