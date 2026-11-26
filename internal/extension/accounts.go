@@ -745,12 +745,15 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 	v.Title = accountTitle(l, acct)
 	control, _ := space.AssistantControl(ctx, acct.AccountID)
 
-	// What it is and how it is doing, with the fix when it needs one. The head carries the service's letter avatar
-	// (a header came with UI version 4; an older app gets the 服务 row it had).
+	// What it is and how it is doing, with the fix when it needs one. On the home the head carries the service's
+	// letter avatar (a header came with UI version 4; an older app gets the 服务 row it had). Opened from the
+	// settings page's 账号 it is always the 服务 row, with the avatar on it, as 0.6.3 drew it: the web app, drawing
+	// this page inside its Settings screen, shifted the whole screen up with a header atop a pushed page (a host bug;
+	// TestAccountPageHeadPerEntry pins this).
 	info := wire.Section{Items: []wire.Component{
 		withAvatar(r, l, acct.Provider, wire.Component{Type: "row", Title: l.t("服务", "Service"), Value: providerName(l, acct.Provider)}),
 	}}
-	if r.UIVersion == 0 || r.UIVersion >= 4 {
+	if at == HomeUI && (r.UIVersion == 0 || r.UIVersion >= 4) {
 		info.Items[0] = wire.Component{Type: "header", Key: "head", Title: accountTitle(l, acct),
 			Subtitle: providerName(l, acct.Provider), Avatar: serviceAvatar(l, acct.Provider)}
 	}

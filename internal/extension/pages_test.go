@@ -343,14 +343,49 @@ func TestAvatarsDifferPerService(t *testing.T) {
 			}
 		}
 	}
-	page := renderVersion(t, h, AccountsUI, 11, pageState{Page: pageAccount, Account: ids[1]})
+	page := renderVersion(t, h, HomeUI, 11, pageState{Page: pageAccount, Account: ids[1]})
 	if head := page.Sections[0].Items[0]; head.Type != "header" || head.Avatar == nil || head.Avatar.Text != names.Letters("zh-Hans", "claude_duet") ||
 		head.Subtitle != "Claude Duet" {
 		t.Errorf("account page head: %+v", head)
 	}
-	old := renderVersion(t, h, AccountsUI, 3, pageState{Page: pageAccount, Account: ids[1]})
+	old := renderVersion(t, h, HomeUI, 3, pageState{Page: pageAccount, Account: ids[1]})
 	if row := old.Sections[0].Items[0]; row.Type != "row" || row.Title != "服务" || row.Value != "Claude Duet" || row.Avatar == nil {
 		t.Errorf("account page head at UI version 3: %+v", row)
+	}
+}
+
+// An account's page starts with a header (title, service, avatar) on the home only. Opened from the settings page's
+// 账号 it starts with the 服务 row, avatar on it, as in 0.6.3: the web app draws 账号 inside its Settings screen, and
+// there an account page pushed with a header atop shifted the whole screen, navigation included, up by about 300 px,
+// for good (a host layout bug, reported to the app's maintainers). Drop this once the apps in use are fixed.
+func TestAccountPageHeadPerEntry(t *testing.T) {
+	h, club := startServices(t)
+	ids := pairFive(t, club)
+	for _, version := range []int{0, 4, 11} {
+		home := renderVersion(t, h, HomeUI, version, pageState{Page: pageAccount, Account: ids[1]})
+		if head := home.Sections[0].Items[0]; head.Type != "header" || head.Title != home.Title || head.Avatar == nil {
+			t.Errorf("home, UI version %d: the page starts with %+v, not the header", version, head)
+		}
+		page := renderVersion(t, h, AccountsUI, version, pageState{Page: pageAccount, Account: ids[1]})
+		if page.Title != home.Title {
+			t.Errorf("账号, UI version %d: title %q, the home's %q", version, page.Title, home.Title)
+		}
+		first := page.Sections[0].Items[0]
+		if first.Type != "row" || first.Title != "服务" || first.Value != "Claude Duet" || first.Avatar == nil ||
+			first.Avatar.Text != names.Letters("zh-Hans", "claude_duet") {
+			t.Errorf("账号, UI version %d: the page starts with %+v, not the 服务 row with its avatar", version, first)
+		}
+		for _, s := range page.Sections {
+			for _, c := range s.Items {
+				if c.Type == "header" {
+					t.Errorf("账号, UI version %d: a header on the account page: %+v", version, c)
+				}
+			}
+		}
+		// the rest of the page is the home's
+		if len(page.Sections) != len(home.Sections) || len(page.Sections[0].Items) != len(home.Sections[0].Items) {
+			t.Errorf("UI version %d: 账号 draws %d sections, the home %d", version, len(page.Sections), len(home.Sections))
+		}
 	}
 }
 
