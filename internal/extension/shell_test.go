@@ -38,10 +38,25 @@ func storePatch(level string) store.AccountPatch { return store.AccountPatch{Ass
 
 const demoCredential = "echo-synthetic-0001"
 
+// startHost is exttest.Start with machines.status answered as a hub without the computer does: the accounts page
+// reads each account's takeover machine, and the host's own answer ({}) does not hold to the call's schema.
+func startHost(t *testing.T, manifest []byte, run exttest.Run, config json.RawMessage) *exttest.Host {
+	t.Helper()
+	h := exttest.Start(t, manifest, run, config)
+	h.Answer(methodMachinesStatus, func(raw json.RawMessage) (any, error) {
+		var p machineStatusParams
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		return machineStatusResult{MachineID: p.MachineID}, nil
+	})
+	return h
+}
+
 func start(t *testing.T) (*exttest.Host, *core.Club) {
 	t.Helper()
 	club := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
-	h := exttest.Start(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{"demo_echo":true}`))
+	h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{"demo_echo":true}`))
 	return h, club
 }
 
@@ -467,7 +482,7 @@ func (f *fakeGrok) answer(polls ...any) {
 func TestGrokBotSignIn(t *testing.T) {
 	grok := &fakeGrok{}
 	club := core.New(core.Options{Registry: provider.NewRegistry(grok), FollowUps: []time.Duration{}, WatchLimit: -1})
-	h := exttest.Start(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{}`))
+	h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{}`))
 	ctx := context.Background()
 	noToken := func(v *wire.View) {
 		t.Helper()
@@ -711,7 +726,7 @@ func TestEmbeddedAssistantRuntimeBridgeConnectsToPersonaSocket(t *testing.T) {
 
 	t.Setenv("PERSONA_RUNTIME_SOCKET", sock)
 	club := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
-	h := exttest.Start(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{"demo_echo":true,"assistant_runtime":true}`))
+	h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{"demo_echo":true,"assistant_runtime":true}`))
 
 	select {
 	case msg := <-hellos:
@@ -760,7 +775,7 @@ checkDisabled:
 	}()
 	t.Setenv("PERSONA_RUNTIME_SOCKET", offSock)
 	clubOff := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
-	_ = exttest.Start(t, pac.Manifest, exttest.Serve(t, Program(clubOff, pac.Version())), json.RawMessage(`{"demo_echo":true,"assistant_runtime":false}`))
+	_ = startHost(t, pac.Manifest, exttest.Serve(t, Program(clubOff, pac.Version())), json.RawMessage(`{"demo_echo":true,"assistant_runtime":false}`))
 	time.Sleep(150 * time.Millisecond)
 	if dialed.Load() != 0 {
 		t.Fatalf("assistant_runtime=false unexpectedly dialed Persona runtime socket (%d times)", dialed.Load())
@@ -794,7 +809,7 @@ func TestMuse2APIPairsWithTheConfiguredServer(t *testing.T) {
 
 	club := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
 	cfg, _ := json.Marshal(map[string]any{"muse2api_url": up.URL, "muse2api_model": "muse-spark"})
-	h = exttest.Start(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), cfg)
+	h = startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), cfg)
 	if v := render(t, h, pageState{}); strings.Contains(text(v), "先在设置里填服务地址") {
 		t.Fatalf("list with an address: %s", text(v))
 	}
