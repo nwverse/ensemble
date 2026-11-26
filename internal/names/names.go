@@ -41,9 +41,11 @@ type brand struct {
 	// site are the words a browser service's page titles are made of ("Claude", "Duet"); set for browser services
 	// only, whose rows before 0.5 stored the tab's title.
 	site []string
-	// letters are the service's letter avatar (Letters), at most 2 characters and different for every service; lettersZh
-	// replaces them on Chinese pages for a label that is translated.
-	letters, lettersZh string
+	// letters are the service's letter avatar (Letters), at most 2 characters and different for every service: what a
+	// user guesses from the label next to it, no digits. lettersZh replaces them on Chinese pages for a label that is
+	// translated. color is the avatar's tile (Tile), "#rrggbb", different for every service and dark enough for white
+	// letters in light and dark themes alike.
+	letters, lettersZh, color string
 }
 
 // brands are the providers' labels, the one table every page and host-facing name uses. Trademarks stay as they are
@@ -51,20 +53,20 @@ type brand struct {
 // translated. A label carries no brackets: "Muse（网页版） · Ada" leaves a wider gap before the dot than any other
 // title, so the bracketed labels 0.6.1 and 0.6.2 showed are legacy spellings, read back as club's and shown anew.
 var brands = map[string]brand{
-	"grok_bot":     {zh: "Grok Bot", en: "Grok Bot", letters: "Gk"},
-	"muse":         {zh: "Muse 网页版", en: "Muse (web)", legacy: []string{"Muse", "Muse（网页版）"}, site: []string{"Muse", "Chat", "聊天"}, letters: "Mu"},
-	"claude_duet":  {zh: "Claude Duet", en: "Claude Duet", site: []string{"Claude", "Duet", "Claude.ai", "Anthropic"}, letters: "Cl"},
-	"gemini_tasks": {zh: "Gemini", en: "Gemini", legacy: []string{"Gemini Tasks", "Gemini 任务"}, site: []string{"Gemini", "Google", "Google Gemini", "Tasks", "任务"}, letters: "Ge"},
-	"dots":         {zh: "ChatGPT Dots", en: "ChatGPT Dots", legacy: []string{"Dots"}, site: []string{"ChatGPT", "Dots", "Dot", "OpenAI"}, letters: "GP"},
-	"cue":          {zh: "Cue", en: "Cue", letters: "Cu"},
-	"groq":         {zh: "Groq", en: "Groq", letters: "Gq"},
-	"muse2api":     {zh: "Muse 自建转接", en: "Muse (own relay)", legacy: []string{"Muse (muse2api)", "Muse（自建转接）"}, letters: "M2"},
-	"echo":         {zh: "演示账号", en: "Demo account", legacy: []string{"Echo", "Echo（演示）", "Echo (demo)"}, letters: "De", lettersZh: "演"},
+	"grok_bot":     {zh: "Grok Bot", en: "Grok Bot", letters: "GB", color: "#52525B"},
+	"muse":         {zh: "Muse 网页版", en: "Muse (web)", legacy: []string{"Muse", "Muse（网页版）"}, site: []string{"Muse", "Chat", "聊天"}, letters: "Mu", color: "#7C3AED"},
+	"claude_duet":  {zh: "Claude Duet", en: "Claude Duet", site: []string{"Claude", "Duet", "Claude.ai", "Anthropic"}, letters: "Cl", color: "#C2410C"},
+	"gemini_tasks": {zh: "Gemini", en: "Gemini", legacy: []string{"Gemini Tasks", "Gemini 任务"}, site: []string{"Gemini", "Google", "Google Gemini", "Tasks", "任务"}, letters: "Ge", color: "#1D4ED8"},
+	"dots":         {zh: "ChatGPT Dots", en: "ChatGPT Dots", legacy: []string{"Dots"}, site: []string{"ChatGPT", "Dots", "Dot", "OpenAI"}, letters: "Ch", color: "#047857"},
+	"cue":          {zh: "Cue", en: "Cue", letters: "Cu", color: "#BE123C"},
+	"groq":         {zh: "Groq", en: "Groq", letters: "Gr", color: "#A21CAF"},
+	"muse2api":     {zh: "Muse 自建转接", en: "Muse (own relay)", legacy: []string{"Muse (muse2api)", "Muse（自建转接）"}, letters: "Re", lettersZh: "转", color: "#0E7490"},
+	"echo":         {zh: "演示账号", en: "Demo account", legacy: []string{"Echo", "Echo（演示）", "Echo (demo)"}, letters: "De", lettersZh: "演", color: "#4D7C0F"},
 }
 
-// Letters is a provider's letter avatar in lang: what an account's or a service's row draws in place of a picture, so
-// services tell apart at a glance (the pages draw no brand images). Every known service has letters of its own; an
-// unknown one shows the first letter of its readable name.
+// Letters is a provider's letter avatar in lang: what an account's or a service's row draws when the app shows no
+// picture (Tile), so services tell apart at a glance (the pages draw no brand images). Every known service has letters
+// of its own; an unknown one shows the first letter of its readable name.
 func Letters(lang, provider string) string {
 	if b, ok := brands[provider]; ok && b.letters != "" {
 		if isZh(lang) && b.lettersZh != "" {
