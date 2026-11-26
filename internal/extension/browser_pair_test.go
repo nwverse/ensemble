@@ -50,9 +50,11 @@ func TestBrowserPairDots(t *testing.T) {
 		t.Fatalf("pair page: %s", text(v))
 	}
 	res := act(t, h, st, actBrowserPair, map[string]string{fieldMachine: "mac|ego"})
-	if !res.Pop || !strings.Contains(res.Toast, "Dots · Ada") {
+	if !pairedDone(res) || !strings.Contains(res.Toast, "Dots · Ada") || !strings.Contains(text(res.View), "已添加「Dots · Ada」") ||
+		!strings.Contains(text(res.View), "要让 Persona 助手用这个账号吗？") {
 		t.Fatalf("pair = %+v", res)
 	}
+	noJargon(t, "browser done step", res.View)
 	if len(runs) == 0 || runs[0].MachineID != "mac" || runs[0].Backend != "ego" || runs[0].Slot != "pac-dots" {
 		t.Fatalf("browser.run = %+v", runs)
 	}

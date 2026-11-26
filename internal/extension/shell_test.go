@@ -120,7 +120,7 @@ func TestAccountsPage(t *testing.T) {
 		t.Fatalf("empty key: %+v", res)
 	}
 	res := act(t, h, pageState{Page: pagePair, Provider: echo.Name}, actPair, map[string]string{fieldCredential: demoCredential, fieldName: "Demo"})
-	if !res.Pop || !strings.Contains(res.Toast, "Demo") {
+	if !pairedDone(res) || !strings.Contains(res.Toast, "Demo") {
 		t.Fatalf("pair: %+v", res)
 	}
 	st, err := club.Space(context.Background(), core.DefaultSpace)
@@ -530,7 +530,7 @@ func TestGrokBotSignIn(t *testing.T) {
 	}
 	v := render(t, h, st)
 	noToken(v)
-	if !strings.Contains(text(v), "已登录并配对") || !strings.Contains(text(v), "开始登录") {
+	if !strings.Contains(text(v), "要让 Persona 助手用这个账号吗？") || strings.Contains(text(v), "开始登录") {
 		t.Fatalf("done: %s", text(v))
 	}
 	space, _ := club.Space(ctx, core.DefaultSpace)
@@ -562,7 +562,7 @@ func TestGrokBotSignIn(t *testing.T) {
 	again = act(t, h, pageState{Page: pageGrok, Account: id}, actGrokStart, nil)
 	_ = json.Unmarshal([]byte(again.View.State), &sa)
 	grok.answer("fixture-grok-signin-token-0002")
-	if v := render(t, h, sa); !strings.Contains(text(v), "已重新登录") {
+	if v := render(t, h, sa); !strings.Contains(text(v), "已重新登录") || strings.Contains(text(v), "开始登录") {
 		t.Fatalf("signed in again: %s", text(v))
 	}
 	if status, _ := space.Status(ctx); len(status.Accounts) != 1 {
@@ -816,11 +816,11 @@ func TestMuse2APIPairsWithTheConfiguredServer(t *testing.T) {
 		t.Fatalf("list with an address: %s", text(v))
 	}
 	st := pageState{Page: pagePair, Provider: "muse2api"}
-	if res := act(t, h, st, actPair, map[string]string{fieldCredential: "wrong-key"}); res.Pop {
+	if res := act(t, h, st, actPair, map[string]string{fieldCredential: "wrong-key"}); pairedDone(res) {
 		t.Fatalf("a wrong key was paired: %+v", res)
 	}
 	res := act(t, h, st, actPair, map[string]string{fieldCredential: key})
-	if !res.Pop || !strings.Contains(res.Toast, "Muse (muse2api)") || strings.Contains(res.Toast, key) {
+	if !pairedDone(res) || !strings.Contains(res.Toast, "Muse (muse2api)") || strings.Contains(res.Toast, key) {
 		t.Fatalf("pair: %+v", res)
 	}
 	space, _ := club.Space(context.Background(), core.DefaultSpace)
