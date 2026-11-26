@@ -241,12 +241,14 @@ func TestAssistantTools(t *testing.T) {
 		return res.Text, err
 	}
 
-	// off (the default): the account does not exist for the assistant
+	// off (the default): the account does not exist for the assistant, but the connector stays ok so the assistant
+	// can list and learn that something is paired and where the user hands it over
 	var cs wire.ConnectorStatus
-	if err := h.Call("connector.status", wire.ConnectorParams{Contribution: Connector}, &cs); err != nil || cs.State != wire.ConnectorStateNotConfigured {
+	if err := h.Call("connector.status", wire.ConnectorParams{Contribution: Connector}, &cs); err != nil || cs.State != wire.ConnectorStateOk || cs.Error != "" {
 		t.Fatalf("status at off: %+v %v", cs, err)
 	}
-	if out, err := callTool(toolList, map[string]any{}); err != nil || strings.Contains(out, id) {
+	if out, err := callTool(toolList, map[string]any{}); err != nil || strings.Contains(out, id) || strings.Contains(out, main) ||
+		!strings.Contains(out, "助手指挥") || !strings.Contains(out, "只读") {
 		t.Fatalf("list at off: %q %v", out, err)
 	}
 	if _, err := callTool(toolRead, map[string]any{"session_key": main}); err == nil {

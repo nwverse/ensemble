@@ -65,3 +65,13 @@ func TestBrowserPairDots(t *testing.T) {
 		t.Fatalf("sessions = %+v, %v", sessions, err)
 	}
 }
+
+// With nothing paired the connector is not configured; the hub then offers none of its tools.
+func TestConnectorNotConfiguredWithoutAccounts(t *testing.T) {
+	club := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
+	h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), nil)
+	var cs wire.ConnectorStatus
+	if err := h.Call("connector.status", wire.ConnectorParams{Contribution: Connector}, &cs); err != nil || cs.State != wire.ConnectorStateNotConfigured {
+		t.Fatalf("status: %+v %v", cs, err)
+	}
+}
