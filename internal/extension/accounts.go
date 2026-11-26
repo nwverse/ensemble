@@ -28,15 +28,17 @@ import (
 const productName = "Ensemble"
 
 // The extension's pages (contributes.ui). The home is the page a first-time user lands on: what this is, where it
-// stands, the one thing to do next, then the accounts and the ways to add one; an account's own page and the pairing
-// pages open from there.
+// stands, the one thing to do next, then the accounts at a glance (those that need the user first) and one row to add
+// another, or, before the first account, the ways to add one; an account's own page, the add-account page and the
+// pairing pages open from there.
 //
 //   - HomeUI is the home, an entry in the navigation (nav_page). The web's sidebar lists only a few extension pages
 //     and puts the rest under 更多, so copy that sends people there says so (homeWhere).
 //   - HomeCardUI is the card on Overview, and in Settings › Extensions on the phones (overview_card): the counts, the
 //     account that needs the user first and the one next step, opening HomeUI.
 //   - AccountsUI is Settings › Extensions › <name> › 账号 (plugin_page), which the assistant's guide points at: the
-//     same accounts and ways to add one, titled 账号, without the home's introduction and state.
+//     management list, every account with its details and one row to add another, without the home's introduction,
+//     state and next step.
 //
 // They list the paired accounts and pair, pause, resume, sync, rename and unpair them through the core's club.*
 // methods, the same ones the serve shell's admin token reaches.
@@ -75,6 +77,9 @@ const homeCardTitle = homeTitle + " · 概况"
 // accountsTitle is the settings page's link to the accounts, as the manifest has it.
 const accountsTitle = "账号"
 
+// addTitle is the add-account page's title, and the row that opens it.
+const addTitle = "添加账号"
+
 // homeWhere is where the home is, for the assistant to tell people (its words are Chinese): true on every app, where
 // the navigation may keep it under 更多 and the phones show the card in Settings › Extensions.
 const homeWhere = "「" + homeTitle + "」页（在导航里，导航放不下时收在「更多」里；也可以点概览页上的「" + homeTitle +
@@ -90,6 +95,7 @@ const (
 	pageAccount = "account"
 	pagePair    = "pair"
 	pageGrok    = "grok"
+	pageAdd     = "add" // the ways to add an account, opened from the home and from 账号
 )
 
 // Actions of the accounts UI.
@@ -197,6 +203,8 @@ func (a *accounts) view(ctx context.Context, r *ext.UIRequest, st pageState) *wi
 		v = a.browserPairView(ctx, l, st)
 	case st.Page == pageDone:
 		v = a.doneView(ctx, l, st)
+	case st.Page == pageAdd:
+		v = a.addView(ctx, r, l)
 	default:
 		v = a.listView(ctx, r, l)
 	}
@@ -426,11 +434,11 @@ func (a *accounts) listView(ctx context.Context, r *ext.UIRequest, l lang) *wire
 	}
 	o := overviewOf(status.Accounts)
 	if at == AccountsUI {
-		// the settings page's 账号: the accounts and the ways to add one, not a second copy of the home
+		// the settings page's 账号: the management list, every account in full and one row to add another, not a
+		// second copy of the home
 		v.Title = l.t(accountsTitle, "Accounts")
 		about := wire.Section{Items: []wire.Component{{Type: "text", Text: accountsAbout(l)}}}
-		v.Sections = append([]wire.Section{about, pairedSection(l, at, status.Accounts, r.Location())},
-			a.addSections(l, at, status.Providers)...)
+		v.Sections = []wire.Section{about, pairedSection(r, l, at, status.Accounts, false)}
 		return v
 	}
 	about := wire.Section{Items: []wire.Component{{Type: "text",
@@ -441,9 +449,54 @@ func (a *accounts) listView(ctx context.Context, r *ext.UIRequest, l lang) *wire
 	if step, ok := o.nextStep(l, at); ok {
 		state.Items = append(state.Items, wire.Component{Type: "text", Style: "secondary", Text: l.t("下一步", "Next")}, step)
 	}
-	v.Sections = append([]wire.Section{about, state, pairedSection(l, at, status.Accounts, r.Location())},
-		a.addSections(l, at, status.Providers)...)
+	v.Sections = []wire.Section{about, state}
+	if len(status.Accounts) == 0 {
+		// before the first account the choices are on the home itself: no tap before seeing them
+		chooser := wire.Section{Title: l.t(addTitle, "Add an account"), Items: []wire.Component{{Type: "text", Text: chooseLine(l)}}}
+		v.Sections = append(append(v.Sections, chooser), a.addSections(r, l, at, status.Providers)...)
+		return v
+	}
+	v.Sections = append(v.Sections, pairedSection(r, l, at, status.Accounts, true))
 	return v
+}
+
+// addView is the add-account page: how to choose in one line, then the ways to add one, grouped by how one connects.
+func (a *accounts) addView(ctx context.Context, r *ext.UIRequest, l lang) *wire.View {
+	v := &wire.View{Title: l.t(addTitle, "Add an account")}
+	space, err := a.club.Space(ctx, core.DefaultSpace)
+	if err != nil {
+		v.Sections = []wire.Section{{Items: []wire.Component{{Type: "text", Text: reason(l, err, "")}}}}
+		return v
+	}
+	status, err := space.Status(ctx)
+	if err != nil {
+		v.Sections = []wire.Section{{Items: []wire.Component{{Type: "text", Text: reason(l, err, "")}}}}
+		return v
+	}
+	v.Sections = append([]wire.Section{{Items: []wire.Component{{Type: "text", Text: chooseLine(l)}}}},
+		a.addSections(r, l, ui(r), status.Providers)...)
+	return v
+}
+
+// chooseLine says above the ways to add an account which services go which way, so the choice needs no reading of
+// each way's explanation (the page each row opens explains it in full).
+func chooseLine(l lang) string {
+	var web []string
+	for _, s := range browserProviders {
+		web = append(web, providerName(l, s.Provider))
+	}
+	var keys []string
+	for _, p := range keyProviders {
+		n := providerName(l, p)
+		if p == cue.Name {
+			n += l.t("（Manus）", " (Manus)")
+		}
+		keys = append(keys, n)
+	}
+	return l.t("怎么选："+providerName(l, grokBot)+" 在你自己的浏览器里登录；"+strings.Join(web, "、")+" 借用电脑上已登录的网页；"+
+		strings.Join(keys, "、")+" 粘贴密钥。",
+		"How to choose: "+providerName(l, grokBot)+" signs in in your own browser; "+strings.Join(web, ", ")+
+			" use a website signed in on a computer; "+strings.Join(keys, " and ")+" take a pasted key.")
 }
 
 // accountsAbout is the one line atop 账号, which otherwise reads like the top of the home: what this page is for, and
@@ -453,23 +506,91 @@ func accountsAbout(l lang) string {
 		"Every account you connected: open one to manage it, or add another below. For the overview and what needs you, open "+homeTitle+" (My AI assistants) in the navigation (under More when it does not fit).")
 }
 
-// pairedSection lists the accounts, each opening its page.
-func pairedSection(l lang, at string, accts []protocol.Account, loc *time.Location) wire.Section {
+// pairedSection lists the accounts, each opening its page, and ends with the row to add another. compact is the
+// home's list: the accounts that need the user first, each in a few words; otherwise it is 账号's management list,
+// in the order the space keeps, each with its last sync and what can be done on its page.
+func pairedSection(r *ext.UIRequest, l lang, at string, accts []protocol.Account, compact bool) wire.Section {
 	paired := wire.Section{Title: l.t("已接入的账号", "Your accounts")}
-	for _, acct := range accts {
-		name := accountTitle(l, acct)
-		paired.Items = append(paired.Items, wire.Component{Type: "row", Key: "acct-" + acct.AccountID, Icon: "person",
-			Title: name, Subtitle: accountLine(l, acct, loc), Badge: statusBadge(l, acct),
-			Action: openAccount(l, at, acct)})
+	if compact {
+		paired.Title = l.t("账号一览", "Your accounts at a glance")
+		accts = slices.Clone(accts)
+		slices.SortStableFunc(accts, func(x, y protocol.Account) int { return attention(x) - attention(y) })
 	}
-	if len(paired.Items) == 0 {
+	for _, acct := range accts {
+		line := accountLine(l, acct, r.Location())
+		if compact {
+			line = compactLine(l, acct)
+		}
+		paired.Items = append(paired.Items, withAvatar(r, l, acct.Provider, wire.Component{Type: "row", Key: "acct-" + acct.AccountID, Icon: "person",
+			Title: accountTitle(l, acct), Subtitle: line, Badge: statusBadge(l, acct), Action: openAccount(l, at, acct)}))
+	}
+	switch {
+	case len(paired.Items) == 0:
 		paired.Items = []wire.Component{{Type: "empty", Icon: "person", Title: l.t("还没有接入任何账号", "No accounts yet"),
-			Detail: l.t("从下面选一个你常用的服务添加。", "Add one of the services you use below.")}}
-	} else {
+			Detail: l.t("点下面的「"+addTitle+"」，选一个你常用的服务。", "Tap Add an account below and pick a service you use.")}}
+	case !compact:
 		paired.Footer = l.t("点开一个账号可以改名、决定 Persona 助手能不能用它（助手指挥）、设为主助手，或者暂停、移除。",
 			"Open an account to rename it, choose what the Persona assistant may do with it (Assistant control), make it the main assistant, pause or remove it.")
 	}
+	paired.Items = append(paired.Items, addRow(l, at))
 	return paired
+}
+
+// addRow opens the add-account page.
+func addRow(l lang, at string) wire.Component {
+	return wire.Component{Type: "row", Key: "add", Icon: "plus", Title: l.t(addTitle, "Add an account"),
+		Subtitle: l.t("Grok、Muse、Claude、Gemini、ChatGPT 等，选一个照提示做。", "Grok, Muse, Claude, Gemini, ChatGPT and more: pick one and follow the steps."),
+		Action: &wire.Action{ID: "open", Push: &wire.Push{UI: at, Title: l.t(addTitle, "Add an account"),
+			State: ext.EncodeState(pageState{Page: pageAdd})}}}
+}
+
+// attention orders the home's list: the accounts that need the user, then those with a recent hiccup, then the rest.
+func attention(acct protocol.Account) int {
+	switch {
+	case acct.Status == protocol.AccountError:
+		return 0
+	case acct.LastError != "":
+		return 1
+	}
+	return 2
+}
+
+// compactLine is an account's row subtitle on the home: the brand when the name does not carry it, then what is wrong
+// in a few words, that it is paused, or what the Persona assistant may do with it.
+func compactLine(l lang, acct protocol.Account) string {
+	var parts []string
+	if brand := providerName(l, acct.Provider); !strings.Contains(accountTitle(l, acct), brand) {
+		parts = append(parts, brand)
+	}
+	switch {
+	case acct.Status == protocol.AccountError || acct.LastError != "":
+		short := l.t("出了问题", "something is wrong")
+		if p, ok := problemOf(l, acct.LastError, basicPlace(acct)); ok && acct.LastError != "" {
+			short = p.Short
+		}
+		parts = append(parts, short+l.t("，点开看看", "; open it"))
+	case acct.Status == protocol.AccountPaused:
+		parts = append(parts, l.t("已暂停同步", "paused"))
+	default:
+		parts = append(parts, controlWords(l, core.Control(acct.AssistantControl)))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// withAvatar gives a service's row (an account, a way to add one) the service's letter avatar (names.Letters), so
+// services tell apart at a glance. A row's avatar came with UI version 3; an older app is given the icon it drew
+// before, since a row has at most one of icon and avatar.
+func withAvatar(r *ext.UIRequest, l lang, provider string, c wire.Component) wire.Component {
+	if r.UIVersion > 0 && r.UIVersion < 3 {
+		return c
+	}
+	c.Icon = ""
+	c.Avatar = serviceAvatar(l, provider)
+	return c
+}
+
+func serviceAvatar(l lang, provider string) *wire.Avatar {
+	return &wire.Avatar{Text: names.Letters(string(l), provider)}
 }
 
 // accountLine is an account's row subtitle: the brand when the name does not carry it, the state in words and what
@@ -534,31 +655,32 @@ func problemWords(l lang, acct protocol.Account) string {
 
 // addSections are the ways to add an account, grouped by how one connects, each row saying in one line what it takes
 // and, when it cannot be added in this configuration, why and what to switch on.
-func (a *accounts) addSections(l lang, at string, providers []protocol.Provider) []wire.Section {
+func (a *accounts) addSections(r *ext.UIRequest, l lang, at string, providers []protocol.Provider) []wire.Section {
 	available := map[string]bool{}
 	for _, p := range providers {
 		available[p.Provider] = p.Available
 	}
 	row := func(p, subtitle string, st pageState) wire.Component {
-		return wire.Component{Type: "row", Key: "pair-" + p, Icon: "plus", Title: providerName(l, p), Subtitle: subtitle,
-			Action: &wire.Action{ID: "open", Push: &wire.Push{UI: at, Title: l.t("添加 ", "Add ") + providerName(l, p), State: ext.EncodeState(st)}}}
+		return withAvatar(r, l, p, wire.Component{Type: "row", Key: "pair-" + p, Icon: "plus", Title: providerName(l, p), Subtitle: subtitle,
+			Action: &wire.Action{ID: "open", Push: &wire.Push{UI: at, Title: l.t("添加 ", "Add ") + providerName(l, p), State: ext.EncodeState(st)}}})
 	}
 	off := func(c wire.Component, why string) wire.Component {
 		c.Subtitle = why
 		c.Badge = &wire.Badge{Text: l.t("还没打开", "Not switched on"), Tone: wire.ToneCaution}
 		return c
 	}
-	signIn := wire.Section{Title: l.t("添加账号：在浏览器里登录", "Add an account: sign in in your browser"),
+	signIn := wire.Section{Title: l.t("在你自己的浏览器里登录", "Sign in in your own browser"),
 		Items: []wire.Component{row(grokBot, l.t("在你自己的浏览器里点「同意」就行。", "Approve it in your own browser."), pageState{Page: pageGrok})}}
 	if !available[grokBot] {
 		signIn.Items[0] = off(signIn.Items[0], l.t("这个版本没有带上 Grok Bot。", "This version has no Grok Bot."))
 	}
 
-	web := wire.Section{Title: l.t("添加账号：借用电脑上已登录的网页", "Add an account: use a website signed in on your computer"),
-		Footer: l.t("「借用电脑上的浏览器」是指：一台已经连上 Persona 的电脑（比如家里的 Mac）上有一个 Persona 能控制的浏览器（"+browserName+"），你在这个浏览器里登录好这些网站，Persona 就通过它收发消息。密码和登录信息不会离开那台电脑，那台电脑要开着。",
-			"Using a computer's browser means: a computer connected to Persona (your Mac at home, say) has a browser Persona controls ("+browserName+"); you sign in to these sites in that browser and Persona reads and writes through it. Passwords and sign-ins never leave that computer, which has to be on.")}
+	// One line each: the page a row opens explains the way in full (browserPairView, pairView).
+	web := wire.Section{Title: l.t("借用电脑上已登录的网页", "Use a website signed in on a computer"),
+		Footer: l.t("要一台连着 Persona、开着的电脑，在它上面登录好这些网站；密码不会离开那台电脑。",
+			"Needs a computer that is on and connected to Persona, signed in to these sites; passwords stay on it.")}
 	for _, s := range browserProviders {
-		c := row(s.Provider, l.t("用那个浏览器里登录好的 ", "Through ")+siteHost(s.AppURL)+l.t("。", " signed in in that browser."),
+		c := row(s.Provider, l.t("用那台电脑上登录好的 ", "Through ")+siteHost(s.AppURL)+l.t("。", " signed in on that computer."),
 			pageState{Page: pageBrowserPair, Provider: s.Provider})
 		if !available[s.Provider] {
 			c = off(c, l.t("要先在 ", "Switch on ")+settingsPath(l)+l.t(" 里打开「"+settingBrowser+"」。", " → \""+settingBrowser+"\"."))
@@ -566,9 +688,9 @@ func (a *accounts) addSections(l lang, at string, providers []protocol.Provider)
 		web.Items = append(web.Items, c)
 	}
 
-	keys := wire.Section{Title: l.t("添加账号：粘贴密钥", "Add an account: paste a key"),
-		Footer: l.t("密钥（API Key）是对方网站给你的一串字符，凭它就能代表你使用服务。它只在添加时提交一次，加密保存，之后不会再显示出来。",
-			"A key (API key) is a string the service gives you that acts on your behalf. It is sent once when adding, kept encrypted, and never shown again.")}
+	keys := wire.Section{Title: l.t("粘贴密钥", "Paste a key"),
+		Footer: l.t("密钥是对方网站给你的一串字符，只在添加时提交一次，加密保存。",
+			"A key is a string the service gives you; it is sent once when adding and kept encrypted.")}
 	for _, p := range keyProviders {
 		c := row(p, l.t("到 ", "Copy a key from ")+providerName(l, p)+l.t(" 网站复制一串密钥粘贴进来。", " and paste it."), pageState{Page: pagePair, Provider: p})
 		if p == cue.Name {
@@ -623,10 +745,15 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 	v.Title = accountTitle(l, acct)
 	control, _ := space.AssistantControl(ctx, acct.AccountID)
 
-	// What it is and how it is doing, with the fix when it needs one.
+	// What it is and how it is doing, with the fix when it needs one. The head carries the service's letter avatar
+	// (a header came with UI version 4; an older app gets the 服务 row it had).
 	info := wire.Section{Items: []wire.Component{
-		{Type: "row", Title: l.t("服务", "Service"), Value: providerName(l, acct.Provider)},
+		withAvatar(r, l, acct.Provider, wire.Component{Type: "row", Title: l.t("服务", "Service"), Value: providerName(l, acct.Provider)}),
 	}}
+	if r.UIVersion == 0 || r.UIVersion >= 4 {
+		info.Items[0] = wire.Component{Type: "header", Key: "head", Title: accountTitle(l, acct),
+			Subtitle: providerName(l, acct.Provider), Avatar: serviceAvatar(l, acct.Provider)}
+	}
 	if acct.Email != "" {
 		// The name above shows only the part before @.
 		info.Items = append(info.Items, wire.Component{Type: "row", Title: l.t("邮箱", "Email"), Value: acct.Email})
@@ -928,7 +1055,8 @@ func (a *accounts) pairView(l lang, st pageState) *wire.View {
 		keyLabel = l.t("随便填一串字", "Any text")
 		keyHelp = l.t("演示账号不连任何网站：填一串以 echo- 开头的字就行，比如 echo-test-001。", "The demo reaches nothing: any text starting with echo-, like echo-test-001.")
 	}
-	footer := l.t("密钥加密保存在你的 Persona 上，只会发给 ", "The key is kept encrypted on your Persona and sent only to ") + sendsTo +
+	footer := l.t("密钥（API Key）是对方网站给你的一串字符，凭它就能代表你使用服务。它只在添加时提交一次，加密保存在你的 Persona 上，只会发给 ",
+		"A key (API key) is a string the service gives you that acts on your behalf. It is sent once, kept encrypted on your Persona and sent only to ") + sendsTo +
 		l.t("，之后不会再显示出来。", "; it is never shown again.")
 	if st.Provider == echo.Name {
 		footer = l.t("演示账号不会把任何东西发到外面。", "The demo account sends nothing anywhere.")

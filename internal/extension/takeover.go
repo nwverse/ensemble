@@ -148,9 +148,11 @@ func (a *accounts) machineSection(ctx context.Context, l lang, acct protocol.Acc
 		statusErr = hub.Call(ctx, methodMachinesStatus, machineStatusParams{MachineID: mid}, &st)
 	}
 	sec := wire.Section{
-		Title: l.t("高级：把它的云端电脑接进 Persona", "Advanced: connect its cloud computer to Persona"),
-		Footer: l.t("这个助手背后有一台它自己用的云端电脑。点下面的按钮，会给它发一段安装说明，让它把那台电脑连到你的 Persona，之后 Persona 也能用那台电脑干活。连上后，还要到 Persona 的「机器」页点「这是我的电脑」确认。不需要的话不用管。",
-			"Sends this assistant instructions to connect its own cloud computer to your Persona. Once it connects, confirm \"This is my computer\" on the Machines page."),
+		// What it does (runTakeover): the assistant is sent setup instructions in its chat and pairs the cloud computer
+		// it runs on as one of the hub's machines, which Persona can then work on like the owner's own.
+		Title: l.t("高级：让 Persona 也能用它的云端电脑", "Advanced: let Persona use its cloud computer too"),
+		Footer: l.t("这个助手自己有一台云端电脑；接上后它会出现在「机器」页，Persona 就能在上面运行程序、处理文件。想多一台一直开着的电脑给 Persona 干活时才需要。",
+			"This assistant has a cloud computer of its own; once linked it shows on the Machines page and Persona can run programs and handle files on it. Only worth it when you want one more always-on computer for Persona."),
 	}
 	if hub == nil {
 		sec.Items = []wire.Component{{Type: "row", Title: l.t("状态", "Status"), Value: l.t("现在连不上你的 Persona，稍后再来看", "Persona cannot be reached now; look again later")}}

@@ -171,7 +171,7 @@ func TestEmailNamedAccountsShowTheShortNameAndKeepTheEmailOnTheirPage(t *testing
 func TestMuseLabelsOnThePages(t *testing.T) {
 	h, _ := start(t)
 	for _, c := range []struct{ locale, web, relay string }{{"zh-Hans", "Muse 网页版", "Muse 自建转接"}, {"en", "Muse (web)", "Muse (own relay)"}} {
-		list := text(renderIn(t, h, c.locale, pageState{}))
+		list := text(renderIn(t, h, c.locale, pageState{Page: pageAdd}))
 		if !strings.Contains(list, `"title":"`+c.web+`"`) || !strings.Contains(list, `"title":"`+c.relay+`"`) || strings.Contains(list, "（网页版）") {
 			t.Errorf("%s list: %s", c.locale, list)
 		}

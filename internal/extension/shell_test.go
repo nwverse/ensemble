@@ -111,7 +111,8 @@ func text(v *wire.View) string {
 func TestAccountsPage(t *testing.T) {
 	h, club := start(t)
 	v := render(t, h, pageState{})
-	if !strings.Contains(text(v), "还没有接入任何账号") || !strings.Contains(text(v), "从下面选一个你常用的服务添加") || !strings.Contains(text(v), "演示账号") {
+	if !strings.Contains(text(v), "还没有接入任何账号") || !strings.Contains(text(v), "点下面的「添加账号」") ||
+		!strings.Contains(text(render(t, h, pageState{Page: pageAdd})), "演示账号") {
 		t.Fatalf("empty list: %s", text(v))
 	}
 
@@ -805,14 +806,14 @@ func TestMuse2APIPairsWithTheConfiguredServer(t *testing.T) {
 
 	// without an address: listed, and the badge says what it waits for
 	h, _ := start(t)
-	if v := render(t, h, pageState{}); !strings.Contains(text(v), "Muse 自建转接") || !strings.Contains(text(v), "里填「自建 Muse 转接服务的地址」") {
+	if v := render(t, h, pageState{Page: pageAdd}); !strings.Contains(text(v), "Muse 自建转接") || !strings.Contains(text(v), "里填「自建 Muse 转接服务的地址」") {
 		t.Fatalf("list without an address: %s", text(v))
 	}
 
 	club := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
 	cfg, _ := json.Marshal(map[string]any{"muse2api_url": up.URL, "muse2api_model": "muse-spark"})
 	h = startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), cfg)
-	if v := render(t, h, pageState{}); strings.Contains(text(v), "里填「自建 Muse 转接服务的地址」") {
+	if v := render(t, h, pageState{Page: pageAdd}); strings.Contains(text(v), "里填「自建 Muse 转接服务的地址」") {
 		t.Fatalf("list with an address: %s", text(v))
 	}
 	st := pageState{Page: pagePair, Provider: "muse2api"}

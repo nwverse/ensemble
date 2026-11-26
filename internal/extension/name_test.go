@@ -205,7 +205,7 @@ func TestCueSaysItIsManus(t *testing.T) {
 			"Your Manus account's API key: copy it from Manus and paste all of it.", "sent only to Manus (api.manus.ai)"},
 	} {
 		var row *wire.Component
-		for _, s := range renderIn(t, h, c.locale, pageState{}).Sections {
+		for _, s := range renderIn(t, h, c.locale, pageState{Page: pageAdd}).Sections {
 			for i := range s.Items {
 				if s.Items[i].Key == "pair-"+cue.Name {
 					row = &s.Items[i]
