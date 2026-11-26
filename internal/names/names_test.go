@@ -23,13 +23,13 @@ func TestBrandsAreOneTable(t *testing.T) {
 }
 
 // Every service has a letter avatar of its own, in both languages, that the view schema takes (at most 2 characters,
-// none empty); an unknown provider gets its readable name's first letter.
+// none empty, no digits); an unknown provider gets its readable name's first letter.
 func TestLettersDifferPerService(t *testing.T) {
 	for _, lang := range []string{"zh-Hans", "en"} {
 		seen := map[string]string{}
 		for _, p := range providers {
 			l := Letters(lang, p)
-			if n := len([]rune(l)); n == 0 || n > 2 {
+			if n := len([]rune(l)); n == 0 || n > 2 || strings.ContainsAny(l, "0123456789") {
 				t.Errorf("%s %s: letters %q", lang, p, l)
 			}
 			if other, dup := seen[strings.ToLower(l)]; dup {
