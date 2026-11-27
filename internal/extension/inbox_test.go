@@ -1145,8 +1145,9 @@ func TestInboxRowAnsweredDuringARoundIsNotAlerted(t *testing.T) {
 	}
 }
 
-// One goroutine sends: however many events come while the hub is slow, alerts never overlap and nothing piles up.
-func TestInboxAlertsNeverOverlap(t *testing.T) {
+// However many events come while the hub is slow, each waiting reply is alerted once and the kicks do not pile up
+// (they are one slot; there is one sending goroutine by construction).
+func TestInboxManyEventsAlertEachReplyOnce(t *testing.T) {
 	e := newInboxEnv(t, inboxOff)
 	var rows []cachedRow
 	for i := range 4 {
@@ -1224,15 +1225,70 @@ func TestInboxAlertLogInTrouble(t *testing.T) {
 	}
 }
 
-// When the program ends, no more alerts are started.
+// When the program ends in the middle of a round, the alerts not yet started are not sent.
 func TestInboxNoAlertAfterTheProgramEnds(t *testing.T) {
 	e := newInboxEnv(t, inboxOff)
-	rows := []cachedRow{waitingRow(0, attnAuth, e.club.Now())}
+	rows := []cachedRow{waitingRow(0, attnAuth, e.club.Now()), waitingRow(1, attnAuth, e.club.Now())}
 	n := e.direct(&rows)
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if more := n.pushAttention(ctx); more || len(e.alerts()) != 0 {
-		t.Fatalf("alerted after the end: %+v", e.alerts())
+	n.push = func(c context.Context, a notification) error {
+		cancel() // the program ends while the first alert is on its way
+		return e.push(c, a)
+	}
+	if more := n.pushAttention(ctx); more || len(e.alerts()) != 1 {
+		t.Fatalf("want the one alert that was under way and no more: more=%v %+v", more, e.alerts())
+	}
+}
+
+// Without the hub's notify scope nothing can be sent in this run: the round stops and asks for no retry.
+func TestInboxNoRetryWithoutTheNotifyScope(t *testing.T) {
+	e := newInboxEnv(t, inboxOff)
+	rows := []cachedRow{waitingRow(0, attnAuth, e.club.Now()), waitingRow(1, attnAuth, e.club.Now())}
+	n := e.direct(&rows)
+	tries := 0
+	real := hubPush(HTTPClient(), func() hubAPI { return hubAPI{} }) // what the program has when the scope was not granted
+	n.push = func(c context.Context, a notification) error { tries++; return real(c, a) }
+	if more := n.pushAttention(context.Background()); more || tries != 1 {
+		t.Fatalf("more=%v after %d tries; want one try and no retry", more, tries)
+	}
+}
+
+// A hub that fails every time costs a round a bounded number of tries.
+func TestInboxFailuresAreCappedPerRound(t *testing.T) {
+	e := newInboxEnv(t, inboxOff)
+	var rows []cachedRow
+	for i := range 12 {
+		rows = append(rows, waitingRow(i, attnAuth, e.club.Now()))
+	}
+	n := e.direct(&rows)
+	tries := 0
+	n.push = func(context.Context, notification) error { tries++; return errors.New("hub unreachable") }
+	if more := n.pushAttention(context.Background()); !more || tries != pushMaxEach {
+		t.Fatalf("more=%v after %d tries; want %d and a retry", more, tries, pushMaxEach)
+	}
+}
+
+// If the seed at the start could not be done, the round that makes up for it remembers only what waited at the
+// start: a reply that came since is alerted.
+func TestInboxLateSeedDoesNotSwallowNews(t *testing.T) {
+	e := newInboxEnv(t, inboxOff)
+	start := e.club.Now()
+	rows := []cachedRow{waitingRow(0, attnAuth, start.Add(-time.Minute))}
+	n := newNotifier(newInbox(e.club, nil, func() inboxConfig { return Config{InboxConversations: true}.inbox() }), func() *ext.Hub { return nil }, e.push)
+	fail := true
+	n.rows = func(context.Context) ([]cachedRow, error) {
+		if fail {
+			return nil, errors.New("store busy")
+		}
+		return rows, nil
+	}
+	n.seed(context.Background()) // fails: the log stays unseeded
+	fail = false
+	e.now.Add(120_000)
+	rows = append(rows, waitingRow(1, attnAuth, e.club.Now())) // came after the start
+	n.pushAttention(context.Background())
+	if got := e.alerts(); len(got) != 1 || got[0].ID != pushID(rows[1].thing.Thread, "m:1") {
+		t.Fatalf("want only the reply that came after the start alerted: %+v", got)
 	}
 }
 

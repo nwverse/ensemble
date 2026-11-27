@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,7 +27,7 @@ import (
 
 const (
 	pushWindow  = 6 * time.Hour // a reply older than this is not worth an alert (after a restart, or a switch turned on)
-	pushMaxEach = 5             // alerts in one round
+	pushMaxEach = 5             // alerts tried in one round
 	pushKeep    = 500           // replies remembered
 	pushTimeout = 15 * time.Second
 	pushRetry   = time.Minute // when an alert failed or the round's cap left some waiting
@@ -44,8 +45,12 @@ type notification struct {
 	PushLevel string `json:"push_level,omitempty"` // P0: the hub's push grading lets it through
 }
 
-// pushFunc sends a notification; an error says it did not go and may be tried again.
+// pushFunc sends a notification; an error says it did not go and may be tried again, except errNoHubAccess.
 type pushFunc func(ctx context.Context, n notification) error
+
+// errNoHubAccess says alerts cannot be sent in this run at all: the hub gave no address or token for its notify route
+// (the owner did not grant the scope). Trying again changes nothing.
+var errNoHubAccess = errors.New("no hub address or token to send an alert with")
 
 // hubAPI is how the program reaches the hub's HTTP API: the address and the token this run's hub gave it in
 // initialize (its own, with only the scopes it asked for).
@@ -56,7 +61,7 @@ func hubPush(client *http.Client, api func() hubAPI) pushFunc {
 	return func(ctx context.Context, n notification) error {
 		a := api()
 		if a.URL == "" || a.Token == "" {
-			return fmt.Errorf("no hub address or token to send an alert with")
+			return errNoHubAccess
 		}
 		body, err := json.Marshal(n)
 		if err != nil {
@@ -181,13 +186,11 @@ func (n *notifier) pushAttention(ctx context.Context) (more bool) {
 	l := &n.log
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if seeded, err := n.seedLocked(ctx, st); err != nil {
+	if _, err := n.seedLocked(ctx, st); err != nil {
 		return true // not known what was alerted before: try again before alerting anything
-	} else if seeded {
-		return false
 	}
 	failed := map[string]bool{}
-	for sent := 0; ; {
+	for tries := 0; ; tries++ {
 		if ctx.Err() != nil {
 			return false
 		}
@@ -206,14 +209,16 @@ func (n *notifier) pushAttention(ctx context.Context) (more bool) {
 		if next == nil {
 			return len(failed) > 0
 		}
-		if sent >= pushMaxEach {
+		if tries >= pushMaxEach { // sends and failures alike: a hub that hangs costs one round a bounded time
 			return true
 		}
 		if err := n.push(ctx, alertFor(*next)); err != nil {
+			if errors.Is(err, errNoHubAccess) {
+				return false // nothing can be sent in this run: no retry
+			}
 			failed[pushKey(*next)] = true
 			continue
 		}
-		sent++
 		l.m[pushKey(*next)] = now.UnixMilli() // remembered for this run even if the write below fails
 		_ = l.save(ctx, st)
 	}
@@ -232,6 +237,9 @@ func (n *notifier) seed(ctx context.Context) {
 	}
 	n.log.mu.Lock()
 	defer n.log.mu.Unlock()
+	if n.startAt.IsZero() {
+		n.startAt = n.in.club.Now()
+	}
 	_, _ = n.seedLocked(ctx, space.Store())
 }
 
@@ -249,8 +257,13 @@ func (n *notifier) seedLocked(ctx context.Context, st store.Store) (seeded bool,
 		return false, err
 	}
 	now := n.in.club.Now()
+	if n.startAt.IsZero() {
+		n.startAt = now
+	}
 	for _, r := range rows {
-		if owed(r, now) {
+		// only what waited when the program started: if this is a later round making up for a seed that failed
+		// then, a reply that came since is news and is alerted
+		if owed(r, now) && !r.thing.At.After(n.startAt) {
 			l.m[pushKey(r)] = now.UnixMilli()
 		}
 	}

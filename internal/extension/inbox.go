@@ -430,6 +430,7 @@ type notifier struct {
 	done    chan struct{} // closed when run has ended
 	onRound func()        // after each round of alerts (tests)
 	rows    func(ctx context.Context) ([]cachedRow, error)
+	startAt time.Time // when the program started; under log.mu
 
 	mu      sync.Mutex
 	digest  string
