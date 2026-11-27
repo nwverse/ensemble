@@ -18,6 +18,7 @@ import (
 	"github.com/nwverse/ensemble/internal/core"
 	"github.com/nwverse/ensemble/internal/protocol"
 	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/store"
 )
 
 // The hub holds every view an extension answers to wire.CheckView and answers HTTP 502 「扩展返回的界面无法显示」
@@ -411,4 +412,56 @@ func TestEveryPageHoldsToCheckView(t *testing.T) {
 
 	nowMs.Add((20 * time.Minute).Milliseconds())
 	sweep("stale", ids)
+
+	// a level a newer version wrote: the 助手指挥 selector shows off, not a value none of its choices has
+	newer := "some_newer_level"
+	if err := space.Store().UpdateAccount(ctx, ids[0], store.AccountPatch{AssistantControl: &newer}, 1); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range bothLocales {
+		for _, ui := range []string{HomeUI, AccountsUI} {
+			renderPage(t, h, ui, l, pageState{Page: pageAccount, Account: ids[0]})
+		}
+	}
+}
+
+// The 仓库 page's list of granted repositories stays within a view's strings however many an installation has (an
+// "All repositories" grant on a large org), and its links are what the hub draws.
+func TestReposListsAndLinksFitTheHub(t *testing.T) {
+	for _, l := range bothLocales {
+		var names []string
+		var repos []repoStatus
+		for i := range 400 {
+			names = append(names, fmt.Sprintf("nwverse/a-rather-long-repository-name-%03d", i))
+			repos = append(repos, repoStatus{URL: fmt.Sprintf("https://github.com/nwverse/repo-%03d", i), Authorized: i%2 == 0})
+		}
+		for _, n := range []int{0, 1, 2, 40, 400} {
+			got := joinFit(l, names[:n], wire.StringMost)
+			if utf8.RuneCountInString(got) > wire.StringMost {
+				t.Errorf("%s %d names: %d characters", l, n, utf8.RuneCountInString(got))
+			}
+			if n == 400 && !strings.Contains(got, l.t("还有", "more")) {
+				t.Errorf("%s: the rest is not counted: …%s", l, got[len(got)-40:])
+			}
+		}
+		if got := joinFit(l, []string{strings.Repeat("x", 3000)}, wire.StringMost); utf8.RuneCountInString(got) > wire.StringMost {
+			t.Errorf("one long name: %d characters", utf8.RuneCountInString(got))
+		}
+		var inv provider.RepoInventory
+		for _, r := range repos {
+			inv.Authorized = append(inv.Authorized, provider.Repo{URL: r.URL})
+		}
+		sections := []wire.Section{grantSection(l, inv)}
+		sections = append(sections, outcomeSections(l, repoOutcome{Channel: "#c", State: repoNeedsGitHub, Repos: repos[:20], // a mount names at most 20
+			Guide: &repoGuide{Why: "why", Repos: names[:20], URL: "https://github.com/settings/installations/1"}})...)
+		segmentedFits(t, "repos "+string(l), &wire.View{Sections: sections})
+	}
+	for _, u := range []string{"https://user@github.com/x", "https://:443/x", "HTTPS://github.com/x", "http://github.com/x", "", "github.com"} {
+		if httpsURL(u) {
+			t.Errorf("httpsURL(%q) let through a link the hub refuses", u)
+		}
+	}
+	if !httpsURL("https://github.com/apps/claude/installations/new") {
+		t.Error("a GitHub link is refused")
+	}
 }

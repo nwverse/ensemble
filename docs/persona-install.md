@@ -37,6 +37,10 @@ The account page no longer fails with HTTP 502 「扩展返回的界面无法显
   Auto, Off, the one chosen and the ones with the least left, so it never has more than five choices.
 - **English Inbox choice.** "Not in the Inbox" (16 characters) is "Not in Inbox", which the hub refused the same way
   once 「把 AI 对话放进收件箱」 was on.
+- **Other pages that some data would have refused.** An assistant level this version does not know (written by a
+  newer one) showed as a selector value with no choice; it shows as off now. A link is drawn only when it is what the
+  hub accepts (lowercase `https://`, a host, no user name). The list of repositories granted to the Claude GitHub App
+  is cut to a view's 2000 characters, counting the rest, for an installation with many repositories.
 - Every page (home, 账号, add, card, account, terminal, repositories, pairing, Grok Bot sign-in) is now tested against
   `wire.CheckView` in both languages, with every service's real readings, seven buckets, and stale readings.
 

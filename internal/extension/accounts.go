@@ -883,7 +883,12 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 		return v
 	}
 	v.Title = accountTitle(l, acct)
-	control, _ := space.AssistantControl(ctx, acct.AccountID)
+	control, err := space.AssistantControl(ctx, acct.AccountID)
+	if err != nil || control == "" {
+		// A level this version does not know (written by a newer one) would be a segmented value none of its choices
+		// has, and the hub refuses the page (wire.CheckView): it shows as off, the most careful level.
+		control = core.ControlOff
+	}
 
 	// What it is and how it is doing, with the fix when it needs one. On the home the head carries the account's
 	// avatar (avatarOf; a header came with UI version 4; an older app gets the 服务 row it had). Opened from the
@@ -1529,7 +1534,9 @@ func (a *accounts) clock(r *ext.UIRequest) clock {
 	return clock{now: a.club.Now(), loc: r.Location()}
 }
 
+// httpsURL is a link the hub draws: what wire.CheckHTTPS and the schema's lowercase "https://host" let through.
 func httpsURL(s string) bool {
 	u, err := url.Parse(s)
-	return err == nil && u.Scheme == "https" && u.Host != ""
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && strings.HasPrefix(s, "https://") &&
+		wire.CheckHTTPS(s, "link") == nil
 }
