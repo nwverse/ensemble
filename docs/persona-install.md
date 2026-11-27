@@ -25,6 +25,14 @@ shasum -a 256 -c personal-agent-club-<version>.tar.gz.sha256   # or: sha256sum -
 To hold the program to the hub's own checks without a hub (manifest and package as at install, handshake, error
 codes, every page drawable), run `scripts/persona-test.sh` with a `personad` on `PATH` (or `PERSONAD=/path/to/personad`).
 
+## What 0.7.4 adds
+
+Claude Duet and ChatGPT dots show their own pictures, no longer Claude's and ChatGPT's icons: Claude Duet the icon of
+its own app (Claude Duet by Anthropic in the App Store), whole on a transparent margin so the round avatar shows all of
+it; ChatGPT dots the dot chatgpt.com's dots page shows, on a gray ground so it reads on light and dark pages alike. Both
+are https addresses the apps load without credentials; nothing is added to this repository, and no new permission,
+network entry or setting.
+
 ## What 0.7.3 adds
 
 Quota & usage across every account:
@@ -231,8 +239,9 @@ personad extension show personal-agent-club   # "sandbox": {"active": true, "egr
   goes out through it and the extension needs nothing more.
 - Pictures need no network entry: an account's avatar is its own picture when the service gives one (a Grok Bot's
   bot avatar), else its product's official icon, else its letters (internal/names/avatar.go). The icons are https
-  addresses the products publish (claude.ai, muse.ai, manus.im, groq.com, chatgpt.com, Google's branding path on
-  www.gstatic.com for Gemini, and for Grok Bot the App Store artwork of its own app, whole on a transparent margin)
+  addresses the products publish (muse.ai, manus.im, groq.com, Google's branding path on www.gstatic.com for Gemini;
+  for Grok Bot and Claude Duet the App Store artwork of each one's own app, whole on a transparent margin; for
+  ChatGPT dots the dot chatgpt.com's dots page shows, from its image CDN images.ctfassets.net, padded on a gray ground)
   that the Persona app loads itself on the pages, and the hub fetches as a conversation's `avatarUrl` on the Agents
   page; the program never fetches one, and no address carries anything of your accounts. The self-hosted Muse relay
   is not the Muse app and shows its letters.
