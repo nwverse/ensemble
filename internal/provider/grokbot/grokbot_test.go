@@ -617,3 +617,34 @@ func TestReadQuotaFromSandUsageStatusAndCurrentPeriod(t *testing.T) {
 		t.Fatalf("404 got=%+v err=%v", got, err)
 	}
 }
+
+func TestBoxStateReadOnly(t *testing.T) {
+	srv := providertest.Serve(t, func(c providertest.Call) providertest.Answer {
+		if c.Path == "/aiserver.v1.SandBoxService/GetSandBoxRunState" {
+			return providertest.Answer{Body: map[string]any{
+				"state":                "SANDBOX_RUN_STATE_PAUSED",
+				"image":                "cursor-sand:2026.11",
+				"imageUpdateAvailable": true,
+			}}
+		}
+		return providertest.Answer{Status: http.StatusNotFound}
+	})
+	st, err := New(Options{Origin: srv.URL}).BoxState(ctx, key)
+	if err != nil || st.State != "paused" || st.Image != "cursor-sand:2026.11" || !st.ImageUpdateAvailable || st.SourceNote != "grok_bot:GetSandBoxRunState" {
+		t.Fatalf("box state = %+v, err = %v", st, err)
+	}
+	if calls := srv.Calls(); len(calls) != 1 || calls[0].Path != "/aiserver.v1.SandBoxService/GetSandBoxRunState" {
+		t.Fatalf("calls = %+v", calls)
+	}
+	// 404 returns empty state without error; 401 returns AUTH_FAILED.
+	nfSrv := providertest.Serve(t, func(providertest.Call) providertest.Answer { return providertest.Answer{Status: http.StatusNotFound} })
+	if got, err := New(Options{Origin: nfSrv.URL}).BoxState(ctx, key); err != nil || got.State != "" {
+		t.Fatalf("404 got=%+v err=%v", got, err)
+	}
+	unauth := providertest.Serve(t, func(providertest.Call) providertest.Answer {
+		return providertest.Answer{Status: http.StatusUnauthorized}
+	})
+	if _, err := New(Options{Origin: unauth.URL}).BoxState(ctx, key); provider.CodeOf(err) != provider.CodeAuthFailed {
+		t.Fatalf("401 err = %v", err)
+	}
+}

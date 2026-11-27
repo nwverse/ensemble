@@ -162,7 +162,7 @@ var retryableLogin = []string{"NETWORK_ERROR", "UPSTREAM_ERROR", "RATE_LIMITED"}
 // accountsPage is the accounts UI. runtimeOn says whether the main assistant bridge runs (the setting
 // assistant_runtime), which decides whether an account's 主助手 switch does anything.
 func accountsPage(club *core.Club, hub *atomic.Pointer[ext.Hub], drv browser.Driver, runtimeOn *atomic.Bool, inboxCfg func() inboxConfig) ext.Page {
-	a := &accounts{club: club, hub: hub, browser: drv, runtimeOn: runtimeOn, inboxCfg: inboxCfg}
+	a := &accounts{club: club, hub: hub, browser: drv, runtimeOn: runtimeOn, inboxCfg: inboxCfg, terms: newTermState()}
 	return ext.Page{Render: a.render, Action: a.action, Image: a.servePicture}
 }
 
@@ -218,6 +218,8 @@ type accounts struct {
 	browser   browser.Driver
 	runtimeOn *atomic.Bool
 	inboxCfg  func() inboxConfig
+	terms     *termState
+	termExec  termRunner
 }
 
 func (a *accounts) runtimeEnabled() bool { return a.runtimeOn == nil || a.runtimeOn.Load() }
@@ -245,6 +247,8 @@ func (a *accounts) view(ctx context.Context, r *ext.UIRequest, st pageState) *wi
 		v = a.cardView(ctx, l)
 	case st.Page == pageAccount:
 		v = a.accountView(ctx, r, l, &st)
+	case st.Page == pageTerminal:
+		v = a.terminalView(ctx, r, l, &st)
 	case st.Page == pagePair:
 		v = a.pairView(l, st)
 	case st.Page == pageGrok:
@@ -949,6 +953,7 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 	}
 	sections = append(sections, syncing)
 	sections = append(sections, quotaDisplaySection(l, acct, a.clock(r)))
+	sections = append(sections, a.terminalEntrySection(ctx, l, at, acct))
 	if takeoverSupported(acct.Provider) && a.hub != nil {
 		sec, pending := a.machineSection(ctx, l, acct)
 		sections = append(sections, sec)
@@ -1372,6 +1377,7 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 		if err := call(ctx, a.club, protocol.MethodClubAccountsRemove, p, nil); err != nil {
 			return failed(err, "")
 		}
+		a.term().deleteAccount(st.Account)
 		if p.DeleteData {
 			return &wire.ActionResult{Pop: true, Toast: l.t("已移除这个账号，并删除了它的聊天记录", "Removed, with its chats deleted")}, nil
 		}
@@ -1459,6 +1465,8 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 			return failed(err, "")
 		}
 		return done(l.t("已让它把电脑重新连上（电脑编号 "+mid+"）", "Asked it to reconnect its computer ("+mid+")"))
+	case actTermSaveSSH, actTermClearSSH, actTermProbe, actTermStage, actTermPreset, actTermExec, actTermCancel, actTermChatStage, actTermChatSend:
+		return a.handleTerminalAction(ctx, r, l, st, done, refuse, failed)
 	}
 	return nil, nil
 }

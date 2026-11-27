@@ -130,6 +130,20 @@ type QuotaReader interface {
 	ReadQuota(ctx context.Context, credential string) ([]QuotaReading, error)
 }
 
+// BoxState is the read-only run state of an agent's cloud sandbox or computer, when its service reports one
+// without waking a sleeping environment.
+type BoxState struct {
+	State                string // running | starting | paused | stopped | unknown
+	Image                string
+	ImageUpdateAvailable bool
+	SourceNote           string
+}
+
+// BoxStater reads the current cloud sandbox state read-only without starting or waking it.
+type BoxStater interface {
+	BoxState(ctx context.Context, credential string) (BoxState, error)
+}
+
 // Adapter is one provider. A call that returns an *Error was refused by the provider (nothing was accepted); any
 // other error from Send leaves the send unconfirmed.
 type Adapter interface {

@@ -427,6 +427,45 @@ func (a *Adapter) ReadQuota(ctx context.Context, credential string) ([]provider.
 	return parseSandQuota(status, period), nil
 }
 
+// BoxState reads the cloud sandbox run state read-only via SandBoxService/GetSandBoxRunState.
+// Unlike EnsureSandBox, this RPC does not wake a sleeping sandbox.
+func (a *Adapter) BoxState(ctx context.Context, credential string) (provider.BoxState, error) {
+	r := a.rpc(ctx, credential, "SandBoxService", "GetSandBoxRunState", map[string]any{})
+	if !r.OK {
+		if r.Status == http.StatusUnauthorized || r.Status == http.StatusForbidden {
+			return provider.BoxState{}, web.ReadError(r)
+		}
+		return provider.BoxState{}, nil
+	}
+	body := web.Record(r.Data)
+	if len(body) == 0 {
+		return provider.BoxState{}, nil
+	}
+	return provider.BoxState{
+		State:                normalizeBoxState(web.Text(body["state"])),
+		Image:                web.Text(body["image"]),
+		ImageUpdateAvailable: body["imageUpdateAvailable"] == true,
+		SourceNote:           "grok_bot:GetSandBoxRunState",
+	}, nil
+}
+
+func normalizeBoxState(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	s = strings.TrimPrefix(s, "sandbox_run_state_")
+	switch {
+	case strings.Contains(s, "running") || s == "ready" || s == "active":
+		return "running"
+	case strings.Contains(s, "starting") || strings.Contains(s, "boot") || strings.Contains(s, "creating"):
+		return "starting"
+	case strings.Contains(s, "paus") || strings.Contains(s, "sleep") || strings.Contains(s, "suspend"):
+		return "paused"
+	case strings.Contains(s, "stop") || strings.Contains(s, "off") || strings.Contains(s, "terminat"):
+		return "stopped"
+	default:
+		return "unknown"
+	}
+}
+
 func parseSandQuota(status, period map[string]any) []provider.QuotaReading {
 	var out []provider.QuotaReading
 	if len(status) > 0 && status["usesPooledEnterpriseAllowance"] != true {

@@ -1,0 +1,1077 @@
+package extension
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"os/exec"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/nwverse/persona/sdk/go/ext"
+	"github.com/nwverse/persona/sdk/go/wire"
+
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider/cue"
+	"github.com/nwverse/ensemble/internal/provider/echo"
+	"github.com/nwverse/ensemble/internal/provider/groq"
+	"github.com/nwverse/ensemble/internal/provider/muse2api"
+)
+
+const (
+	pageTerminal = "terminal"
+
+	actTermSaveSSH   = "term_save_ssh"
+	actTermClearSSH  = "term_clear_ssh"
+	actTermProbe     = "term_probe"
+	actTermStage     = "term_stage"
+	actTermPreset    = "term_preset"
+	actTermExec      = "term_exec"
+	actTermCancel    = "term_cancel"
+	actTermChatStage = "term_chat_stage"
+	actTermChatSend  = "term_chat_send"
+
+	fieldTermSSHTarget    = "term_ssh_target"
+	fieldTermSSHTransport = "term_ssh_transport"
+	fieldTermCmd          = "term_cmd"
+	fieldTermChatCmd      = "term_chat_cmd"
+
+	valTermDigest = "digest"
+	valTermPreset = "preset"
+
+	termModeSSH  = "ssh"
+	termModeChat = "chat"
+
+	termMaxCommandLen = 1024
+	termMaxOutputSize = 16 * 1024
+	termProbeTimeout  = 15 * time.Second
+	termExecTimeout   = 20 * time.Second
+	termStageTTL      = 5 * time.Minute
+	termMaxHistory    = 5
+
+	// Fixed read-only status probe: OS/kernel version and uptime/load average only.
+	termProbeCommand = "uname -srm && uptime"
+)
+
+// termRunOutput is the captured outcome of one remote SSH/Tailscale command execution.
+type termRunOutput struct {
+	Output     string
+	ExitCode   int
+	DurationMs int64
+	Truncated  bool
+}
+
+// termRunner executes a single command against a validated SSHTarget. Tests replace this so
+// terminal logic is thoroughly tested without spawning real ssh processes.
+type termRunner interface {
+	Run(ctx context.Context, cfg core.SSHTarget, command string) (termRunOutput, error)
+}
+
+type execTermRunner struct{}
+
+func (execTermRunner) Run(ctx context.Context, cfg core.SSHTarget, command string) (termRunOutput, error) {
+	dest, port, err := core.SplitSSHTarget(cfg.Target)
+	if err != nil {
+		return termRunOutput{}, err
+	}
+	transport := core.NormalizeTransport(cfg.Transport)
+	var bin string
+	var args []string
+	if transport == core.TransportTailscale {
+		if port != "" {
+			return termRunOutput{}, errors.New("tailscale ssh does not support custom :port")
+		}
+		bin = "tailscale"
+		args = []string{"ssh", "--", dest, command}
+	} else {
+		bin = "ssh"
+		args = []string{
+			"-o", "BatchMode=yes",
+			"-o", "ConnectTimeout=10",
+			"-o", "StrictHostKeyChecking=accept-new",
+			"-o", "NumberOfPasswordPrompts=0",
+		}
+		if port != "" {
+			args = append(args, "-p", port)
+		}
+		args = append(args, "--", dest, command)
+	}
+	start := time.Now()
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Stdin = nil
+	buf := &limitedBuffer{max: termMaxOutputSize}
+	cmd.Stdout = buf
+	cmd.Stderr = buf
+	err = cmd.Run()
+	dur := time.Since(start).Milliseconds()
+	out := termRunOutput{
+		Output:     cleanTerminalOutput(buf.String()),
+		DurationMs: dur,
+		Truncated:  buf.truncated,
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return out, ctx.Err()
+		}
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			out.ExitCode = ee.ExitCode()
+			return out, nil
+		}
+		return out, err
+	}
+	return out, nil
+}
+
+type limitedBuffer struct {
+	buf       bytes.Buffer
+	max       int
+	truncated bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if b.buf.Len() >= b.max {
+		b.truncated = true
+		return n, nil
+	}
+	avail := b.max - b.buf.Len()
+	if len(p) > avail {
+		b.buf.Write(p[:avail])
+		b.truncated = true
+		return n, nil
+	}
+	b.buf.Write(p)
+	return n, nil
+}
+
+func (b *limitedBuffer) String() string { return b.buf.String() }
+
+var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]`)
+
+// cleanTerminalOutput strips ANSI escape sequences and non-printable control characters (keeping \n and \t).
+func cleanTerminalOutput(s string) string {
+	s = ansiEscapeRE.ReplaceAllString(s, "")
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '\n' || r == '\t' || r >= 0x20 && r != 0x7f {
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+type stagedCommand struct {
+	Mode      string // termModeSSH | termModeChat
+	Target    string
+	Transport string
+	Command   string
+	Digest    string
+	StagedAt  time.Time
+}
+
+type termProbeRecord struct {
+	Target     string
+	Transport  string
+	CheckedAt  int64
+	OK         bool
+	ExitCode   int
+	DurationMs int64
+	Output     string
+	ErrMsg     string
+}
+
+type termRunRecord struct {
+	Target     string
+	Transport  string
+	Command    string
+	RanAt      int64
+	ExitCode   int
+	DurationMs int64
+	Output     string
+	Truncated  bool
+	ErrMsg     string
+}
+
+// termState holds per-account in-memory terminal confirmation state, read-only probes, and recent runs.
+type termState struct {
+	mu      sync.Mutex
+	staged  map[string]stagedCommand
+	probes  map[string]termProbeRecord
+	history map[string][]termRunRecord
+}
+
+func newTermState() *termState {
+	return &termState{
+		staged:  map[string]stagedCommand{},
+		probes:  map[string]termProbeRecord{},
+		history: map[string][]termRunRecord{},
+	}
+}
+
+func (ts *termState) getStaged(acctID string, now time.Time) (stagedCommand, bool) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	sc, ok := ts.staged[acctID]
+	if !ok {
+		return stagedCommand{}, false
+	}
+	if !sc.StagedAt.IsZero() && now.Sub(sc.StagedAt) > termStageTTL {
+		delete(ts.staged, acctID)
+		return stagedCommand{}, false
+	}
+	return sc, true
+}
+
+func (ts *termState) putStaged(acctID string, sc stagedCommand) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.staged[acctID] = sc
+}
+
+func (ts *termState) popStaged(acctID, mode, digest string, now time.Time) (stagedCommand, bool) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	sc, ok := ts.staged[acctID]
+	if !ok {
+		return stagedCommand{}, false
+	}
+	if !sc.StagedAt.IsZero() && now.Sub(sc.StagedAt) > termStageTTL {
+		delete(ts.staged, acctID)
+		return stagedCommand{}, false
+	}
+	if sc.Mode != mode || sc.Digest == "" || sc.Digest != digest {
+		return stagedCommand{}, false
+	}
+	delete(ts.staged, acctID)
+	return sc, true
+}
+
+func (ts *termState) clearStaged(acctID string) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	delete(ts.staged, acctID)
+}
+
+func (ts *termState) deleteAccount(acctID string) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	delete(ts.staged, acctID)
+	delete(ts.probes, acctID)
+	delete(ts.history, acctID)
+}
+
+func (ts *termState) setProbe(acctID string, rec termProbeRecord) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.probes[acctID] = rec
+}
+
+func (ts *termState) getProbe(acctID string) (termProbeRecord, bool) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	rec, ok := ts.probes[acctID]
+	return rec, ok
+}
+
+func (ts *termState) addHistory(acctID string, rec termRunRecord) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	list := append([]termRunRecord{rec}, ts.history[acctID]...)
+	if len(list) > termMaxHistory {
+		list = list[:termMaxHistory]
+	}
+	ts.history[acctID] = list
+}
+
+func (ts *termState) getHistory(acctID string) []termRunRecord {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	src := ts.history[acctID]
+	out := make([]termRunRecord, len(src))
+	copy(out, src)
+	return out
+}
+
+func (a *accounts) term() *termState {
+	if a.terms == nil {
+		a.terms = newTermState()
+	}
+	return a.terms
+}
+
+func (a *accounts) runner() termRunner {
+	if a.termExec != nil {
+		return a.termExec
+	}
+	return execTermRunner{}
+}
+
+// sshCapableProvider reports whether an account's service typically backs a cloud VM or SSH-reachable environment.
+func sshCapableProvider(prov string) bool {
+	return prov == providerMuse || prov == grokBot || prov == echo.Name
+}
+
+// chatShellSupported reports whether the agent itself has a sandbox where it can run commands sent in chat.
+func chatShellSupported(prov string) bool {
+	return prov == providerMuse || prov == grokBot
+}
+
+func commandDigest(mode, target, transport, cmd string) string {
+	h := sha256.Sum256([]byte(mode + "\x00" + target + "\x00" + transport + "\x00" + cmd))
+	return hex.EncodeToString(h[:12])
+}
+
+func validateTerminalCommand(raw string) (string, error) {
+	cmd := strings.TrimSpace(raw)
+	if cmd == "" {
+		return "", errors.New("empty")
+	}
+	if len(cmd) > termMaxCommandLen {
+		return "", errors.New("too_long")
+	}
+	if strings.ContainsRune(cmd, 0) {
+		return "", errors.New("nul")
+	}
+	return cmd, nil
+}
+
+// terminalEntrySection adds the Remote terminal entry row on every account detail page.
+func (a *accounts) terminalEntrySection(ctx context.Context, l lang, at string, acct protocol.Account) wire.Section {
+	space, err := a.club.Space(ctx, core.DefaultSpace)
+	var saved core.SSHTarget
+	var hasSSH bool
+	if err == nil {
+		saved, hasSSH, _ = space.AccountSSHTarget(ctx, acct.AccountID)
+	}
+	badge := &wire.Badge{Text: l.t("只读说明", "Info"), Tone: wire.ToneNeutral}
+	sub := l.t("这个服务没有可直接连接的远端终端，点这里查看说明和限制。", "This service has no direct remote shell; open to see status and limits.")
+	switch {
+	case hasSSH:
+		badge = &wire.Badge{Text: l.t("已配 SSH", "SSH ready"), Tone: wire.TonePositive}
+		sub = l.t("已配置 "+saved.Target+"：可做只读状态检查，以及经二次确认执行命令。", "Configured "+saved.Target+": read-only status check and confirmed command runner.")
+	case acct.Provider == providerMuse:
+		badge = &wire.Badge{Text: l.t("可配 SSH", "SSH available"), Tone: wire.TonePositive}
+		sub = l.t("Muse 网页「云电脑」页只是静态快照；可在这里填 SSH 地址或经确认让它在沙箱里执行命令。", "Muse's cloud-computer page is a static snapshot; add SSH here or run confirmed commands via chat.")
+	case acct.Provider == grokBot:
+		badge = &wire.Badge{Text: l.t("云端沙箱", "Cloud sandbox"), Tone: wire.TonePositive}
+		sub = l.t("可只读查看沙箱运行状态、配置 SSH，或经确认让它在沙箱里执行命令。", "Check read-only sandbox state, configure SSH, or run confirmed commands via chat.")
+	case acct.Provider == echo.Name:
+		badge = &wire.Badge{Text: l.t("可配 SSH", "SSH available"), Tone: wire.ToneNeutral}
+		sub = l.t("可配置 SSH 地址以检查只读状态并经确认执行命令。", "Configure an SSH target for read-only checks and confirmed commands.")
+	}
+	return wire.Section{
+		Title: l.t("远端终端与命令行", "Remote terminal & shell"),
+		Items: []wire.Component{{
+			Type:     "row",
+			Key:      "open-terminal",
+			Icon:     "code",
+			Title:    l.t("打开远端终端入口", "Open remote terminal"),
+			Subtitle: sub,
+			Badge:    badge,
+			Action: &wire.Action{
+				ID: "open",
+				Push: &wire.Push{
+					UI:    at,
+					Title: l.t("远端终端", "Remote terminal"),
+					State: ext.EncodeState(pageState{Page: pageTerminal, Account: acct.AccountID}),
+				},
+			},
+		}},
+	}
+}
+
+func (a *accounts) terminalView(ctx context.Context, r *ext.UIRequest, l lang, st *pageState) *wire.View {
+	acct, err := a.account(ctx, st.Account)
+	if err != nil {
+		return &wire.View{Title: l.t("远端终端", "Remote terminal"), Sections: []wire.Section{{Items: []wire.Component{
+			{Type: "empty", Title: l.t("找不到这个账号", "Account not found"), Detail: reason(l, err, "")},
+		}}}}
+	}
+	space, _ := a.club.Space(ctx, core.DefaultSpace)
+	var saved core.SSHTarget
+	var hasSSH bool
+	if space != nil {
+		saved, hasSSH, _ = space.AccountSSHTarget(ctx, acct.AccountID)
+	}
+	clk := a.clock(r)
+	now := a.club.Now()
+	v := &wire.View{Title: accountTitle(l, acct) + l.t(" · 远端终端", " · Terminal")}
+	var sections []wire.Section
+
+	// Section 1: Environment & read-only status.
+	envItems := a.terminalEnvItems(ctx, l, space, acct, saved, hasSSH, clk)
+	sections = append(sections, wire.Section{
+		Title: l.t("环境与只读状态", "Environment & read-only status"),
+		Items: envItems,
+	})
+
+	// Section 2: SSH connection configuration (for cloud-VM / SSH-capable accounts or if already configured).
+	if sshCapableProvider(acct.Provider) || hasSSH {
+		transportVal := core.TransportSSH
+		if hasSSH {
+			transportVal = core.NormalizeTransport(saved.Transport)
+		}
+		sshItems := []wire.Component{
+			{
+				Type:        "field",
+				Name:        fieldTermSSHTarget,
+				Label:       l.t("SSH 目标地址", "SSH target"),
+				Kind:        wire.FieldKindText,
+				Value:       saved.Target,
+				Placeholder: l.t("例如 user@100.x.y.z 或 ~/.ssh/config 别名", "e.g. user@100.x.y.z or ~/.ssh/config alias"),
+			},
+			{
+				Type:  "field",
+				Name:  fieldTermSSHTransport,
+				Label: l.t("连接方式", "Transport"),
+				Kind:  wire.FieldKindChoice,
+				Value: transportVal,
+				Choices: []wire.Choice{
+					{Value: core.TransportSSH, Title: "SSH"},
+					{Value: core.TransportTailscale, Title: "Tailscale"},
+				},
+			},
+			{
+				Type:   "button",
+				Title:  l.t("保存 SSH 目标", "Save SSH target"),
+				Action: &wire.Action{ID: actTermSaveSSH, Submit: true},
+			},
+		}
+		if hasSSH {
+			sshItems = append(sshItems, wire.Component{
+				Type:   "button",
+				Title:  l.t("清除 SSH 目标", "Clear SSH target"),
+				Role:   "destructive",
+				Action: &wire.Action{ID: actTermClearSSH, Confirm: l.t("确定清除已保存的 SSH 目标地址吗？", "Clear the saved SSH target?")},
+			})
+		}
+		sections = append(sections, wire.Section{
+			Title: l.t("SSH 连接设置（不保存密码或私钥）", "SSH target (no passwords or keys stored)"),
+			Footer: l.t("仅保存目标地址（如 user@host 或本机 ~/.ssh/config 里的别名），连接时复用你电脑现有的免密密钥或 Tailscale 认证；绝不接收或保存密码与私钥。",
+				"Only stores the target host (user@host or ~/.ssh/config alias) and uses your existing local SSH keys or Tailscale auth; passwords and private keys are never stored."),
+			Items: sshItems,
+		})
+	}
+
+	// Section 3: Owner-confirmed command runner (SSH path when configured).
+	staged, hasStaged := a.term().getStaged(acct.AccountID, now)
+	if hasSSH {
+		sections = append(sections, a.terminalSSHRunnerSection(l, acct, saved, staged, hasStaged, clk))
+	}
+
+	// Section 4: Chat-assisted sandbox runner for Muse / Grok Bot (works even without SSH).
+	if chatShellSupported(acct.Provider) {
+		sections = append(sections, a.terminalChatRunnerSection(l, acct, staged, hasStaged, now))
+	}
+
+	// Section 5: Recent SSH outputs (if any).
+	if hist := a.term().getHistory(acct.AccountID); len(hist) > 0 {
+		var hItems []wire.Component
+		for idx, rec := range hist {
+			badge := &wire.Badge{Text: fmt.Sprintf(l.t("退出码 %d", "exit %d"), rec.ExitCode), Tone: wire.TonePositive}
+			if rec.ErrMsg != "" || rec.ExitCode != 0 {
+				badge.Tone = wire.ToneDanger
+			}
+			sub := fmt.Sprintf("%s · %dms · %s", rec.Target, rec.DurationMs, clk.at(l, rec.RanAt))
+			hItems = append(hItems, wire.Component{
+				Type:     "row",
+				Key:      fmt.Sprintf("term-hist-%d", idx),
+				Title:    oneLine(rec.Command, 72),
+				Subtitle: sub,
+				Badge:    badge,
+			})
+			outText := rec.Output
+			if rec.ErrMsg != "" {
+				if outText != "" {
+					outText += "\n"
+				}
+				outText += rec.ErrMsg
+			}
+			if outText == "" {
+				outText = l.t("（无标准输出）", "(no output)")
+			}
+			if rec.Truncated {
+				outText += l.t("\n…（输出超过 16 KB，已截断）", "\n…(output truncated at 16 KB)")
+			}
+			hItems = append(hItems, wire.Component{Type: "code", Language: "text", Text: outText})
+		}
+		sections = append(sections, wire.Section{
+			Title: l.t("最近执行记录", "Recent runs"),
+			Items: hItems,
+		})
+	}
+
+	// Section 6: Blockers & Persona core interfaces needed (always visible so limits are transparent).
+	sections = append(sections, wire.Section{
+		Title: l.t("为什么还不能直接打开交互式网页终端", "Why an interactive webshell is not embedded yet"),
+		Footer: l.t("相关进展与接口提案持续跟踪在 nwverse/persona#16741。",
+			"Tracked with interface proposals in nwverse/persona#16741."),
+		Items: []wire.Component{
+			{
+				Type:     "row",
+				Title:    l.t("卡点 1 · 无法直跳 Persona 终端页", "Blocker 1 · No terminal deep link"),
+				Subtitle: l.t("Persona 已有原生电脑终端页，但暂未向扩展开放带确认的跳转入口（例如 /machines/<id>/terminal）。", "Persona already has a native computer terminal tab, but extensions cannot open it via a confirmed deep link yet."),
+			},
+			{
+				Type:     "row",
+				Title:    l.t("卡点 2 · 缺少沙箱内受控命令接口", "Blocker 2 · No owner-gated machines.exec"),
+				Subtitle: l.t("运行在沙箱中的扩展不能直接访问远端主机，需要 Persona 本体提供经主人逐次确认的单次命令执行能力。", "Sandboxed extensions need an owner-confirmed machines.exec capability from Persona core to run commands on a paired computer."),
+			},
+			{
+				Type:     "row",
+				Title:    l.t("卡点 3 · 扩展页不支持实时交互终端组件", "Blocker 3 · No interactive PTY component"),
+				Subtitle: l.t("当前扩展页面是声明式组件，不能承载实时双向终端流（如 vim / top / 动态沙箱隧道）。", "Extension pages are declarative and cannot stream live interactive PTY sessions yet."),
+			},
+		},
+	})
+
+	v.Sections = sections
+	return v
+}
+
+func (a *accounts) terminalEnvItems(ctx context.Context, l lang, space *core.Space, acct protocol.Account, saved core.SSHTarget, hasSSH bool, clk clock) []wire.Component {
+	var items []wire.Component
+	switch acct.Provider {
+	case providerMuse:
+		items = append(items, wire.Component{
+			Type:     "row",
+			Title:    l.t("环境类型", "Environment"),
+			Value:    l.t("Muse 云端电脑", "Muse cloud computer"),
+			Subtitle: l.t("muse.ai 侧栏「云电脑」页只是静态配置快照，不能在上面敲命令。两条真实路径：在下方填入 SSH / Tailscale 地址直接连接，或经确认让 Muse 在沙箱里代为执行。", "Muse's cloud-computer page is a static snapshot, not an interactive shell. Two real paths: configure SSH / Tailscale below, or confirm a chat command for Muse to run in its sandbox."),
+			Badge:    &wire.Badge{Text: l.t("支持 SSH", "SSH capable"), Tone: wire.TonePositive},
+		})
+	case grokBot:
+		items = append(items, wire.Component{
+			Type:     "row",
+			Title:    l.t("环境类型", "Environment"),
+			Value:    l.t("Grok Bot 云端沙箱", "Grok Bot cloud sandbox"),
+			Subtitle: l.t("Grok Bot 桌面端的图形终端通过每个沙箱独立的动态令牌隧道连接（独立终端与图形端口），扩展沙箱外网白名单与声明式页面暂不能直接嵌入该隧道；这里提供只读沙箱状态、SSH 入口与对话委托执行。", "Grok Bot's desktop terminal uses per-sandbox dynamic tunnel tokens and live PTY/noVNC ports that extension pages cannot embed yet; read-only sandbox state, SSH, and confirmed chat execution are available here."),
+			Badge:    &wire.Badge{Text: l.t("云端沙箱", "Cloud sandbox"), Tone: wire.ToneNeutral},
+		})
+		if space != nil {
+			if box, supported, err := space.AccountBoxState(ctx, acct.AccountID); supported {
+				val, tone := boxStateLabel(l, box.State)
+				sub := l.t("只读查询，不会唤醒休眠中的沙箱。", "Read-only check; does not wake a sleeping sandbox.")
+				if box.Image != "" {
+					sub = l.t("镜像：", "Image: ") + box.Image + " · " + sub
+				}
+				if err != nil {
+					val = l.t("暂时读取不到", "Unavailable right now")
+					tone = wire.ToneNeutral
+				}
+				items = append(items, wire.Component{
+					Type:     "row",
+					Title:    l.t("云端沙箱状态（只读）", "Sandbox state (read-only)"),
+					Value:    val,
+					Subtitle: sub,
+					Badge:    &wire.Badge{Text: val, Tone: tone},
+				})
+			}
+		}
+	case echo.Name:
+		items = append(items, wire.Component{
+			Type:     "row",
+			Title:    l.t("环境类型", "Environment"),
+			Value:    l.t("本地演练账号", "Local test account"),
+			Subtitle: l.t("可绑定任意受信任的 SSH 目标测试只读状态检查与二次确认命令执行。", "Bind any trusted SSH target to test read-only probes and confirmed command execution."),
+			Badge:    &wire.Badge{Text: l.t("支持 SSH", "SSH capable"), Tone: wire.ToneNeutral},
+		})
+	default:
+		kind := l.t("托管网页服务（无直接终端）", "Hosted web service (no direct shell)")
+		detail := l.t("这个服务不对外开放 SSH 或交互式命令行入口，因此无法在 Persona 里直接打开终端。", "This service does not expose SSH or an interactive shell, so a direct terminal cannot be opened.")
+		switch acct.Provider {
+		case "claude_duet":
+			detail = l.t("Claude Duet 运行在 Anthropic 托管云端，不对外提供 SSH 或沙箱终端入口。", "Claude Duet runs on Anthropic's hosted service without an SSH or sandbox shell.")
+		case "dots":
+			detail = l.t("ChatGPT 网页版不对外提供 SSH 或持续终端会话入口。", "ChatGPT web does not expose SSH or a persistent shell.")
+		case "gemini_tasks":
+			detail = l.t("Gemini 网页版不对外提供 SSH 或命令行终端入口。", "Gemini web does not expose SSH or a shell.")
+		case cue.Name:
+			kind = l.t("云端任务服务（无直接终端）", "Hosted task service (no direct shell)")
+			detail = l.t("Manus 任务在对方托管沙箱内运行，目前未向外部开放 SSH 连接地址。", "Manus tasks run in a managed sandbox with no external SSH address.")
+		case groq.Name, muse2api.Name:
+			kind = l.t("推理服务（无远端主机）", "Inference service (no remote host)")
+			detail = l.t("这类账号只提供对话推理，背后没有可供你登录的独立电脑环境。", "This account only serves chat inference and has no remote computer to log into.")
+		}
+		items = append(items, wire.Component{
+			Type:     "row",
+			Title:    l.t("环境类型", "Environment"),
+			Value:    kind,
+			Subtitle: detail,
+			Badge:    &wire.Badge{Text: l.t("不支持终端", "No shell"), Tone: wire.ToneNeutral},
+		})
+		if space != nil && basicPlace(acct).Browser {
+			if mlabel := a.browserMachineLabel(ctx, space, acct); mlabel != "" {
+				items = append(items, wire.Component{
+					Type:     "row",
+					Title:    l.t("所在浏览器电脑", "Browser computer"),
+					Value:    mlabel,
+					Subtitle: l.t("此账号通过这台电脑上的浏览器同步；如要操作这台电脑本身，请在 Persona 的「机器」页打开它的终端。", "This account syncs through the browser on that computer; open its terminal from Persona's Machines page if needed."),
+				})
+			}
+		}
+	}
+
+	if takeoverSupported(acct.Provider) && a.hub != nil {
+		if st, ok := a.machineState(ctx, takeoverMachineID(acct)); ok && st.Exists {
+			badgeText, badgeTone := l.t("离线", "Offline"), wire.ToneDanger
+			if st.Pending {
+				badgeText, badgeTone = l.t("待确认", "Pending"), wire.ToneCaution
+			} else if st.Online {
+				badgeText, badgeTone = l.t("在线", "Online"), wire.TonePositive
+			}
+			items = append(items, wire.Component{
+				Type:     "row",
+				Title:    l.t("已接入的 Persona 机器", "Paired Persona machine"),
+				Value:    st.MachineID,
+				Subtitle: l.t("可直接前往 Persona「机器」页打开这台电脑的原生交互终端。", "Open this computer's native interactive terminal from Persona's Machines page."),
+				Badge:    &wire.Badge{Text: badgeText, Tone: badgeTone},
+			})
+		}
+	}
+
+	if hasSSH {
+		items = append(items, wire.Component{
+			Type:     "row",
+			Title:    l.t("已保存的 SSH 目标", "Saved SSH target"),
+			Value:    saved.Target,
+			Subtitle: l.t("连接方式：", "Transport: ") + transportLabel(saved.Transport),
+			Badge:    &wire.Badge{Text: transportLabel(saved.Transport), Tone: wire.TonePositive},
+		})
+		items = append(items, wire.Component{
+			Type:   "button",
+			Title:  l.t("检查远端状态（只读）", "Check remote status (read-only)"),
+			Action: &wire.Action{ID: actTermProbe},
+		})
+		if probe, ok := a.term().getProbe(acct.AccountID); ok && probe.Target == saved.Target {
+			badge := &wire.Badge{Text: l.t("连通", "Reachable"), Tone: wire.TonePositive}
+			if !probe.OK {
+				badge = &wire.Badge{Text: l.t("连接失败", "Unreachable"), Tone: wire.ToneDanger}
+			}
+			items = append(items, wire.Component{
+				Type:     "row",
+				Title:    l.t("最近一次只读检查", "Last read-only check"),
+				Value:    fmt.Sprintf("%dms", probe.DurationMs),
+				Subtitle: l.t("检查时间：", "Checked ") + clk.at(l, probe.CheckedAt),
+				Badge:    badge,
+			})
+			txt := probe.Output
+			if probe.ErrMsg != "" {
+				if txt != "" {
+					txt += "\n"
+				}
+				txt += probe.ErrMsg
+			}
+			if txt != "" {
+				items = append(items, wire.Component{Type: "code", Language: "text", Text: txt})
+			}
+		}
+	}
+	return items
+}
+
+func (a *accounts) terminalSSHRunnerSection(l lang, acct protocol.Account, saved core.SSHTarget, staged stagedCommand, hasStaged bool, _ clock) wire.Section {
+	var items []wire.Component
+	if hasStaged && staged.Mode == termModeSSH {
+		items = append(items,
+			wire.Component{
+				Type:     "row",
+				Key:      "term-staged-banner",
+				Icon:     "warning",
+				Title:    l.t("待你确认执行的命令", "Command waiting for your confirmation"),
+				Subtitle: l.t("目标："+staged.Target+"（"+transportLabel(staged.Transport)+"）。请核对下方命令，点「确认执行」后才会真正发往远端。", "Target: "+staged.Target+" ("+transportLabel(staged.Transport)+"). Review the exact command below before confirming."),
+				Badge:    &wire.Badge{Text: l.t("待确认", "Confirm"), Tone: wire.ToneCaution},
+			},
+			wire.Component{Type: "code", Language: "sh", Text: staged.Command},
+			wire.Component{
+				Type:  "button",
+				Title: l.t("确认执行", "Confirm and run"),
+				Action: &wire.Action{
+					ID:     actTermExec,
+					Values: map[string]string{valTermDigest: staged.Digest},
+					Confirm: l.t("确认在 "+staged.Target+" 上执行这条命令？\n\n"+staged.Command,
+						"Run this command on "+staged.Target+"?\n\n"+staged.Command),
+				},
+			},
+			wire.Component{
+				Type:   "button",
+				Title:  l.t("取消待执行命令", "Cancel staged command"),
+				Action: &wire.Action{ID: actTermCancel},
+			},
+		)
+	}
+	items = append(items,
+		wire.Component{
+			Type:        "field",
+			Name:        fieldTermCmd,
+			Label:       l.t("要执行的命令", "Command to run"),
+			Kind:        wire.FieldKindText,
+			Placeholder: l.t("例如 uptime、df -h 或 ls -la", "e.g. uptime, df -h, ls -la"),
+		},
+		wire.Component{
+			Type:   "button",
+			Title:  l.t("准备执行（下一步确认）", "Stage command (confirm next)"),
+			Action: &wire.Action{ID: actTermStage, Submit: true},
+		},
+		wire.Component{
+			Type:   "button",
+			Title:  l.t("快速预填：查看负载与磁盘（只读）", "Quick stage: load & disk (read-only)"),
+			Action: &wire.Action{ID: actTermPreset, Values: map[string]string{valTermPreset: "uptime && df -h"}},
+		},
+	)
+	return wire.Section{
+		Title: l.t("经确认执行命令（SSH）", "Confirmed command execution (SSH)"),
+		Footer: l.t("所有命令必须先「准备执行」核对内容，再经「确认执行」二次确认才会发往 "+saved.Target+"；单次超时 20 秒，输出上限 16 KB。",
+			"Every command must be staged and explicitly confirmed before running on "+saved.Target+"; 20 s timeout, 16 KB output cap."),
+		Items: items,
+	}
+}
+
+func (a *accounts) terminalChatRunnerSection(l lang, acct protocol.Account, staged stagedCommand, hasStaged bool, now time.Time) wire.Section {
+	var items []wire.Component
+	exhaustedNote := ""
+	if blocked, _ := quotaExhaustedActive(acct.Quota, now.UnixMilli()); blocked {
+		exhaustedNote = l.t("注意：这个账号当前额度已用完，发送前会被提示拦截。", "Note: this account is currently out of allowance and sending will be blocked. ")
+		items = append(items, wire.Component{
+			Type:     "row",
+			Icon:     "warning",
+			Title:    l.t("当前额度已用完", "Allowance used up"),
+			Subtitle: l.t("通过对话委托执行会消耗额度，当前会被拦截；请等恢复后或改用上面的 SSH 入口。", "Chat-assisted execution uses account allowance and is currently blocked; wait for reset or use SSH above."),
+			Badge:    &wire.Badge{Text: l.t("额度用完", "Used up"), Tone: wire.ToneDanger},
+		})
+	}
+	if hasStaged && staged.Mode == termModeChat {
+		items = append(items,
+			wire.Component{
+				Type:     "row",
+				Icon:     "warning",
+				Title:    l.t("待确认发送给助手执行的命令", "Command ready to send to agent chat"),
+				Subtitle: l.t("确认后会发到它的主对话，请它在其沙箱里执行并贴回输出。", "Confirming sends this request to its main chat so it runs the command in its sandbox and replies."),
+				Badge:    &wire.Badge{Text: l.t("待确认", "Confirm"), Tone: wire.ToneCaution},
+			},
+			wire.Component{Type: "code", Language: "sh", Text: staged.Command},
+			wire.Component{
+				Type:  "button",
+				Title: l.t("确认发给助手执行", "Confirm and send to chat"),
+				Action: &wire.Action{
+					ID:     actTermChatSend,
+					Values: map[string]string{valTermDigest: staged.Digest},
+					Confirm: exhaustedNote + l.t("确认把这条命令发到「"+accountTitle(l, acct)+"」的主对话里让它执行？\n\n"+staged.Command,
+						"Send this command to "+accountTitle(l, acct)+"'s main chat to run in its sandbox?\n\n"+staged.Command),
+				},
+			},
+			wire.Component{
+				Type:   "button",
+				Title:  l.t("取消", "Cancel"),
+				Action: &wire.Action{ID: actTermCancel},
+			},
+		)
+	}
+	items = append(items,
+		wire.Component{
+			Type:        "field",
+			Name:        fieldTermChatCmd,
+			Label:       l.t("让助手在沙箱里执行的命令", "Command for agent sandbox"),
+			Kind:        wire.FieldKindText,
+			Placeholder: l.t("例如 uname -a && df -h", "e.g. uname -a && df -h"),
+		},
+		wire.Component{
+			Type:   "button",
+			Title:  l.t("准备发给助手（下一步确认）", "Stage for agent chat (confirm next)"),
+			Action: &wire.Action{ID: actTermChatStage, Submit: true},
+		},
+	)
+	return wire.Section{
+		Title: l.t("通过对话在沙箱执行（无需 SSH）", "Run in sandbox via chat (no SSH needed)"),
+		Footer: l.t("如果没有配 SSH，也可以经确认后把命令发到这个助手的主对话，由它在自己的沙箱里执行后回复输出。",
+			"Without SSH, you can still confirm and send a command to this agent's main chat to run inside its sandbox."),
+		Items: items,
+	}
+}
+
+func (a *accounts) handleTerminalAction(ctx context.Context, r *ext.UIRequest, l lang, st pageState, done, refuse func(string) (*wire.ActionResult, error), failed func(error, string) (*wire.ActionResult, error)) (*wire.ActionResult, error) {
+	space, err := a.club.Space(ctx, core.DefaultSpace)
+	if err != nil {
+		return failed(err, "")
+	}
+	acct, err := a.account(ctx, st.Account)
+	if err != nil {
+		return failed(err, "")
+	}
+	now := a.club.Now()
+	switch r.Action {
+	case actTermSaveSSH:
+		target := strings.TrimSpace(r.Values[fieldTermSSHTarget])
+		if target == "" {
+			return refuse(l.t("还没填 SSH 目标：输入 user@host 或本机别名再保存。", "Enter an SSH target (user@host or host alias) first."))
+		}
+		transport := core.NormalizeTransport(r.Values[fieldTermSSHTransport])
+		if transport == core.TransportTailscale {
+			if _, port, perr := core.SplitSSHTarget(target); perr == nil && port != "" {
+				return refuse(l.t("Tailscale SSH 不使用自定义端口，请去掉末尾的 :"+port+"，或切换为普通 SSH。", "Tailscale SSH does not take a custom port; remove :"+port+" or switch transport to SSH."))
+			}
+		}
+		if err := space.SetAccountSSHTarget(ctx, acct.AccountID, core.SSHTarget{Target: target, Transport: transport}); err != nil {
+			return refuse(l.t("SSH 目标格式不对：请只填 user@host[:端口] 或主机别名，不要带空格、引号或参数。", "Invalid SSH target: enter only user@host[:port] or a host alias with no spaces, quotes, or flags."))
+		}
+		a.term().clearStaged(acct.AccountID)
+		return done(l.t("已保存 SSH 目标："+target, "Saved SSH target: "+target))
+
+	case actTermClearSSH:
+		if err := space.SetAccountSSHTarget(ctx, acct.AccountID, core.SSHTarget{}); err != nil {
+			return failed(err, "")
+		}
+		a.term().clearStaged(acct.AccountID)
+		return done(l.t("已清除 SSH 目标", "Cleared SSH target"))
+
+	case actTermProbe:
+		saved, ok, err := space.AccountSSHTarget(ctx, acct.AccountID)
+		if err != nil {
+			return failed(err, "")
+		}
+		if !ok {
+			return refuse(l.t("还没有保存 SSH 目标：先在下面填好并保存。", "No SSH target saved yet; save one below first."))
+		}
+		pctx, cancel := context.WithTimeout(ctx, termProbeTimeout)
+		defer cancel()
+		out, rerr := a.runner().Run(pctx, saved, termProbeCommand)
+		rec := termProbeRecord{
+			Target:     saved.Target,
+			Transport:  saved.Transport,
+			CheckedAt:  now.UnixMilli(),
+			OK:         rerr == nil && out.ExitCode == 0,
+			ExitCode:   out.ExitCode,
+			DurationMs: out.DurationMs,
+			Output:     out.Output,
+		}
+		if rerr != nil {
+			rec.ErrMsg = describeTermError(l, saved.Transport, rerr)
+		} else if out.ExitCode != 0 {
+			rec.ErrMsg = fmt.Sprintf(l.t("远端命令返回退出码 %d（请确认免密认证与连通性）", "Remote command exited with code %d (check key auth and reachability)"), out.ExitCode)
+		}
+		a.term().setProbe(acct.AccountID, rec)
+		if rec.OK {
+			return done(l.t("只读状态检查通过", "Read-only status check succeeded"))
+		}
+		return refuse(rec.ErrMsg)
+
+	case actTermStage, actTermPreset:
+		saved, ok, err := space.AccountSSHTarget(ctx, acct.AccountID)
+		if err != nil {
+			return failed(err, "")
+		}
+		if !ok {
+			return refuse(l.t("还没有保存 SSH 目标：先在上面填好并保存。", "No SSH target saved yet; save one above first."))
+		}
+		rawCmd := r.Values[fieldTermCmd]
+		if r.Action == actTermPreset {
+			rawCmd = r.Values[valTermPreset]
+		}
+		cmd, cerr := validateTerminalCommand(rawCmd)
+		if cerr != nil {
+			return refuse(commandValidationWords(l, cerr))
+		}
+		digest := commandDigest(termModeSSH, saved.Target, saved.Transport, cmd)
+		a.term().putStaged(acct.AccountID, stagedCommand{
+			Mode:      termModeSSH,
+			Target:    saved.Target,
+			Transport: saved.Transport,
+			Command:   cmd,
+			Digest:    digest,
+			StagedAt:  now,
+		})
+		return done(l.t("已准备好命令，请核对后点「确认执行」", "Command staged; review it and tap Confirm and run"))
+
+	case actTermExec:
+		saved, ok, err := space.AccountSSHTarget(ctx, acct.AccountID)
+		if err != nil {
+			return failed(err, "")
+		}
+		if !ok {
+			return refuse(l.t("SSH 目标已清除，未执行任何命令。", "SSH target was cleared; nothing was run."))
+		}
+		sc, ok := a.term().popStaged(acct.AccountID, termModeSSH, r.Values[valTermDigest], now)
+		if !ok || sc.Target != saved.Target || sc.Transport != saved.Transport {
+			return refuse(l.t("待确认命令已过期或已变动，请重新准备后再确认执行。", "Staged command expired or changed; stage it again before confirming."))
+		}
+		ectx, cancel := context.WithTimeout(ctx, termExecTimeout)
+		defer cancel()
+		out, rerr := a.runner().Run(ectx, saved, sc.Command)
+		rec := termRunRecord{
+			Target:     saved.Target,
+			Transport:  saved.Transport,
+			Command:    sc.Command,
+			RanAt:      now.UnixMilli(),
+			ExitCode:   out.ExitCode,
+			DurationMs: out.DurationMs,
+			Output:     out.Output,
+			Truncated:  out.Truncated,
+		}
+		if rerr != nil {
+			rec.ErrMsg = describeTermError(l, saved.Transport, rerr)
+		}
+		a.term().addHistory(acct.AccountID, rec)
+		if rerr != nil {
+			return refuse(rec.ErrMsg)
+		}
+		if out.ExitCode != 0 {
+			st.Note = fmt.Sprintf(l.t("命令执行完成，退出码 %d", "Command finished with exit code %d"), out.ExitCode)
+			st.NoteTone = wire.ToneCaution
+			return &wire.ActionResult{View: a.view(ctx, r, st), Toast: st.Note}, nil
+		}
+		return done(l.t("命令已执行完成（退出码 0）", "Command finished (exit 0)"))
+
+	case actTermChatStage:
+		if !chatShellSupported(acct.Provider) {
+			return refuse(l.t("这个服务不支持在对话里执行沙箱命令。", "This service does not support running sandbox commands via chat."))
+		}
+		cmd, cerr := validateTerminalCommand(r.Values[fieldTermChatCmd])
+		if cerr != nil {
+			return refuse(commandValidationWords(l, cerr))
+		}
+		digest := commandDigest(termModeChat, acct.AccountID, "", cmd)
+		a.term().putStaged(acct.AccountID, stagedCommand{
+			Mode:     termModeChat,
+			Target:   acct.AccountID,
+			Command:  cmd,
+			Digest:   digest,
+			StagedAt: now,
+		})
+		return done(l.t("已准备好命令，请核对后点「确认发给助手执行」", "Command staged; review it and tap Confirm and send to chat"))
+
+	case actTermChatSend:
+		if !chatShellSupported(acct.Provider) {
+			return refuse(l.t("这个服务不支持在对话里执行沙箱命令。", "This service does not support running sandbox commands via chat."))
+		}
+		if err := exhausted(acct.Quota, now.UnixMilli()); err != nil {
+			return failed(err, "")
+		}
+		sc, ok := a.term().popStaged(acct.AccountID, termModeChat, r.Values[valTermDigest], now)
+		if !ok {
+			return refuse(l.t("待确认命令已过期或已变动，请重新准备后再确认发送。", "Staged command expired or changed; stage it again before confirming."))
+		}
+		sessionKey, err := takeoverSessionKey(ctx, space, acct.AccountID)
+		if err != nil {
+			return failed(err, "")
+		}
+		prompt := "请在你的沙箱终端里执行下面这条命令，并原样返回退出码与输出（不要擅自改动命令）：\n```sh\n" + sc.Command + "\n```"
+		msg, err := space.Send(ctx, protocol.SendParams{
+			SessionKey: sessionKey,
+			ClientID:   uuid.NewString(),
+			Text:       prompt,
+		})
+		if err != nil {
+			return failed(err, "")
+		}
+		if msg.Local != nil {
+			switch msg.Local.Status {
+			case protocol.LocalFailed:
+				words := l.t("没有发出去", "Not sent")
+				if msg.Local.Error != "" {
+					words += l.t("：", ": ") + (&tools{club: a.club, browser: a.browser}).problemWords(ctx, space, acct.AccountID, msg.Local.Error)
+				}
+				return refuse(words)
+			case protocol.LocalUnconfirmed:
+				st.Note = l.t("命令可能已经发给助手，但尚未得到对方确认；请先到对话里查看，不要直接重发。",
+					"Command may have been delivered but was not confirmed; check the chat before retrying.")
+				st.NoteTone = wire.ToneCaution
+				return &wire.ActionResult{View: a.view(ctx, r, st), Toast: st.Note}, nil
+			}
+		}
+		return done(l.t("已发到主对话让它执行，稍后在对话里查看输出", "Sent to the agent's main chat; check the chat for its output"))
+
+	case actTermCancel:
+		a.term().clearStaged(acct.AccountID)
+		return done(l.t("已取消待执行命令", "Canceled staged command"))
+	}
+	return nil, nil
+}
+
+func commandValidationWords(l lang, err error) string {
+	switch err.Error() {
+	case "empty":
+		return l.t("还没输入要执行的命令。", "Enter a command first.")
+	case "too_long":
+		return l.t(fmt.Sprintf("命令太长了（最多 %d 个字符），请精简后再试。", termMaxCommandLen),
+			fmt.Sprintf("Command is too long (at most %d characters).", termMaxCommandLen))
+	default:
+		return l.t("命令里包含不支持的控制字符，请检查后再试。", "Command contains unsupported control characters.")
+	}
+}
+
+func describeTermError(l lang, transport string, err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return l.t("执行超时（未在规定时间内返回），请确认远端在线且命令不会一直等待输入。",
+			"Timed out before the remote command returned; check reachability and ensure the command is non-interactive.")
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		if transport == core.TransportTailscale {
+			return l.t("当前环境里找不到 tailscale 命令：如果扩展运行在受限沙箱中，或本机未安装 Tailscale CLI，可改用普通 SSH，或等待 Persona 本体开放机器执行接口（nwverse/persona#16741）。",
+				"tailscale binary was not found in this environment; switch to plain SSH or wait for Persona core's machines.exec capability (nwverse/persona#16741).")
+		}
+		return l.t("当前环境里找不到 ssh 命令（可能被扩展沙箱限制）：需要 Persona 本体开放机器执行接口后才能代为运行（nwverse/persona#16741）。",
+			"ssh binary is unavailable in this environment (likely restricted by the extension sandbox); Persona core's machines.exec is needed (nwverse/persona#16741).")
+	}
+	return l.t("无法启动远端连接："+err.Error(), "Failed to start remote connection: "+err.Error())
+}
+
+func transportLabel(t string) string {
+	if core.NormalizeTransport(t) == core.TransportTailscale {
+		return "Tailscale SSH"
+	}
+	return "SSH"
+}
+
+func boxStateLabel(l lang, state string) (string, string) {
+	switch state {
+	case "running":
+		return l.t("运行中", "Running"), wire.TonePositive
+	case "starting":
+		return l.t("启动中", "Starting"), wire.ToneCaution
+	case "paused":
+		return l.t("已休眠", "Paused"), wire.ToneNeutral
+	case "stopped":
+		return l.t("已停止", "Stopped"), wire.ToneNeutral
+	default:
+		return l.t("状态未知", "Unknown"), wire.ToneNeutral
+	}
+}
+
+func (a *accounts) machineState(ctx context.Context, mid string) (machineStatusResult, bool) {
+	if a.hub == nil {
+		return machineStatusResult{}, false
+	}
+	hub := a.hub.Load()
+	if hub == nil {
+		return machineStatusResult{}, false
+	}
+	var st machineStatusResult
+	if err := hub.Call(ctx, methodMachinesStatus, machineStatusParams{MachineID: mid}, &st); err != nil {
+		return machineStatusResult{}, false
+	}
+	return st, true
+}
+
+func (a *accounts) browserMachineLabel(ctx context.Context, space *core.Space, acct protocol.Account) string {
+	id, _ := space.AccountMachine(ctx, acct.AccountID)
+	if id == "" {
+		return ""
+	}
+	w := basicPlace(acct)
+	placerFor(ctx, space, a.browser).name(ctx, &w, id)
+	if w.Machine != "" {
+		return w.Machine
+	}
+	return id
+}
