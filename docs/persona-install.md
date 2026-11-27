@@ -25,6 +25,24 @@ shasum -a 256 -c personal-agent-club-<version>.tar.gz.sha256   # or: sha256sum -
 To hold the program to the hub's own checks without a hub (manifest and package as at install, handshake, error
 codes, every page drawable), run `scripts/persona-test.sh` with a `personad` on `PATH` (or `PERSONAD=/path/to/personad`).
 
+## What 0.7.6 adds
+
+Repositories for Claude Duet, from Persona:
+- A Claude Duet account's page has **仓库**: every channel's mounted repositories (the main chat's too; a channel can
+  have several), the repositories the Claude GitHub App was granted, and a form to mount repositories on a channel.
+  **检查** only reads; **挂载（只挂已授权的）** adds the granted ones to the channel, keeping what it has, and reads it back.
+- **去 GitHub 授权并挂载** adds repositories the app was not granted on github.com, in the computer's own browser: only
+  the ones named (the others stay selected, a grant is never switched to "All repositories"), then reads the page
+  again and mounts them. When GitHub asks you to sign in, confirm access (password, 2FA, passkey), get an organization
+  owner's approval or pass a captcha, it stops, changes nothing, and shows the page's direct link, the repositories to
+  tick and **重新检测并挂载** to go on afterwards. It never answers those prompts or asks for a password.
+- The Persona assistant gets `club_agent_repos_list` (read) and `club_agent_repo_bind` / `club_agent_repo_authorize`
+  (writes, each confirmed on the phone with the account, channel, repositories and what changes).
+
+The GitHub step drives github.com through `browser.run`, which Persona does not yet limit by site:
+[nwverse/persona#16943](https://github.com/nwverse/persona/issues/16943) asks for declared sites and phone-confirmed
+access to settings pages. No new permission, network entry or setting.
+
 ## What 0.7.5 adds
 
 Remote terminal & shell entry for each account:
@@ -218,7 +236,8 @@ Every change says what it changed (*重新检查* reads the account back and say
 ## The assistant's tools
 
 The connector `club` (**让 Persona 助手使用 Ensemble** in Settings › Connectors) gives the assistant `club_agents_list`, `club_agent_read`,
-`club_agent_send`, `club_agent_start` and `club_agent_interrupt`:
+`club_agent_send`, `club_agent_start` and `club_agent_interrupt`, and for an agent with repositories (Claude Duet)
+`club_agent_repos_list`, `club_agent_repo_bind` and `club_agent_repo_authorize`:
 
 - An account the assistant may use is chosen on its page under **助手指挥** (assistant control): *关闭* (off, the
   default for every account: the assistant does not see it), *只读* (read: list and read) or *可代发（逐次确认）*
@@ -227,6 +246,9 @@ The connector `club` (**让 Persona 助手使用 Ensemble** in Settings › Conn
   `confirm_always`. A scheduled task or background follow-up, with nobody there to confirm, can only read.
 - Starting a new session and interrupting a turn depend on the provider; where they are not available the tool says
   so before anything is asked.
+- The repository writes need *可代发* like a message. `club_agent_repo_bind` only mounts repositories the Claude GitHub
+  App was granted; `club_agent_repo_authorize` also adds the missing ones on GitHub (only those). Either answers
+  `needs_github` with the direct link and the repositories to tick when GitHub needs the user.
 
 ## Sandbox and network
 

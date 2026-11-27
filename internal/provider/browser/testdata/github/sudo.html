@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en" class="html-auth" data-color-mode="auto" data-light-theme="light" data-dark-theme="dark" data-a11y-animated-images="system" data-a11y-link-underlines="true" data-css-features="site_disable_smooth_scrolling" data-turbo-loaded=""><head>
+  <title>Confirm access</title>
+  </head>
+  <body class="logged-in env-production page-responsive session-authentication text-rendering-optimize-speed">
+    <div class="logged-in env-production page-responsive session-authentication text-rendering-optimize-speed">
+      <div></div>
+    <div class="position-relative header-wrapper js-header-wrapper ">
+      <a href="#start-of-content" class="tmp-p-3 color-bg-accent-emphasis color-fg-on-emphasis show-on-focus js-skip-to-content">Skip to content</a>
+      <span class="progress-pjax-loader Progress position-fixed width-full">
+    <span class="Progress-item progress-pjax-loader-bar left-0 top-0 color-bg-accent-emphasis"></span>
+</span>      
+<react-partial partial-name="keyboard-shortcuts-dialog" class="loaded">
+  <div><div class="d-none"></div></div>
+</react-partial>
+            <div class="authentication-header-page" role="banner">
+</div>
+        <div hidden="hidden" class="js-stale-session-flash stale-session-flash flash flash-warn flash-full">
+          <span class="js-stale-session-flash-signed-in" hidden="">You signed in with another tab or window. <a class="Link--inTextBlock" href="">Reload</a> to refresh your session.</span>
+          <span class="js-stale-session-flash-signed-out" hidden="">You signed out in another tab or window. <a class="Link--inTextBlock" href="">Reload</a> to refresh your session.</span>
+          <span class="js-stale-session-flash-switched" hidden="">You switched accounts on another tab or window. <a class="Link--inTextBlock" href="">Reload</a> to refresh your session.</span>
+    <button aria-labelledby="tooltip-x" type="button" class="Button Button--iconOnly Button--invisible Button--medium flash-close js-flash-close">  
+</button><tool-tip for="icon-button-x" popover="manual" class="sr-only position-absolute" aria-hidden="true" role="tooltip">Dismiss alert</tool-tip>
+</div>
+    </div>
+  <div class="show-on-focus"></div>
+  <notification-shelf-watcher class="js-socket-channel"></notification-shelf-watcher>
+  <div hidden=""></div>
+  <div class="application-main ">
+      <main>
+<div class="auth-form tmp-px-3">
+  <div class="auth-form-header p-0">
+    <h1>Confirm access</h1>
+  </div>
+  <div class="flash-container">
+</div>
+  <div class="Box tmp-mb-3">
+  <div class="Box-row d-flex flex-items-center">
+    <div class="tmp-mr-3">
+    </div>
+    <div class="Truncate flex-column">
+      <p class="m-0">
+        Signed in as
+        <span class="m-0 Truncate-text"><strong>@octo-user</strong></span>
+      </p>
+    </div>
+  </div>
+</div>
+<sudo-credential-options initial-state="webauthn" webauthn-available="true" github-mobile-available="true" github-mobile-prompt-url="/sessions/sudo/mobile" github-mobile-generic-error-message="There was an error requesting GitHub Mobile authentication." totp-app-available="true" totp-email-available="true" totp-email-initiate-url="/sessions/sudo/email" generic-error-message="An unexpected error occurred.">
+  <input type="hidden" value="REDACTED">
+  <input type="hidden" value="REDACTED">
+  <div hidden="" class="flash flash-error mt-2 tmp-mt-2">
+    <span class="js-sudo-error"></span>
+</div>
+    <div>
+  <!-- '"` --><!-- </textarea></xmp> --><form class="js-webauthn-form" action="https://github.com/sessions/sudo" accept-charset="UTF-8" method="post"><input type="hidden" name="authenticity_token" value="REDACTED">    <input type="hidden" name="id" value="REDACTED" autocomplete="off" class="form-control">
+<input type="hidden" name="sudo_return_to" value="REDACTED" autocomplete="off" class="form-control">
+    <input type="hidden" name="credential_type" value="REDACTED">
+    <div class="Box tmp-mt-3 color-bg-subtle">
+  <div class="Box-header d-flex flex-justify-center flex-items-center flex-column border-bottom-0 pb-0 tmp-pb-0">
+        <h2 class="mt-2 f3 text-normal text-center">Passkey</h2>
+</div>
+  <div class="Box-body mt-0 tmp-mt-0">
+        <div class="tmp-mb-3">When you are ready, authenticate using the button below.</div>
+<webauthn-get>
+    <x-banner>
+  <div hidden="hidden" class="tmp-mb-3 Banner flash Banner--warning flash-warn text-left p-0 tmp-p-0">
+      <div class="Banner-visual">
+      </div>
+    <div class="Banner-message">
+      <p class="Banner-title">
+      This browser or device is reporting partial passkey support.
+</p>
+</div></div></x-banner>
+  <x-banner>
+  <div hidden="hidden" class="tmp-mb-3 Banner flash Banner--warning flash-warn text-left p-0 tmp-p-0">
+      <div class="Banner-visual">
+      </div>
+    <div class="Banner-message">
+      <p class="Banner-title">
+    Webauthn isn't supported. Use a different browser or device to use your passkey.
+</p>
+</div></div></x-banner>
+  <x-banner>
+  <div hidden="" class="tmp-mb-3 Banner flash Banner--error flash-error text-left p-0 tmp-p-0">
+      <div class="Banner-visual">
+      </div>
+    <div class="Banner-message">
+      <p class="Banner-title">
+    <span role="alert"></span>
+</p>
+</div></div></x-banner>
+  <p class="tmp-my-3 text-center color-fg-muted" hidden="">
+    <span>
+      <span class="sr-only">Loading</span>
+</span>
+    Waiting for input from browser interaction...
+  </p>
+  <button type="button" class="js-webauthn-confirm-button btn btn-block Button--primary Button--medium Button mt-0 tmp-mt-0">  <span class="Button-content">
+    <span class="Button-label"><span>Use passkey</span></span>
+  </span>
+</button>
+</webauthn-get>
+        <input type="hidden" name="webauthn_response" class="js-webauthn-response" value="REDACTED">
+</div>
+</div></form></div>
+    <div hidden="" class="Box tmp-mt-3 color-bg-subtle">
+  <div class="Box-body">
+    <div class="tmp-mb-3">When your phone is ready, click the button below.</div>
+      <button type="button" class="btn-primary btn btn-block">    Use GitHub Mobile
+</button>
+</div>
+</div>
+<div hidden="" class="Box color-bg-subtle">
+  <div class="Box-header d-flex flex-justify-center flex-items-center flex-column border-bottom-0 pb-0 tmp-pb-0">
+    <h3 class="tmp-mt-3">GitHub Mobile</h3>
+</div>
+  <div class="Box-body">
+    <div>
+      <p>Creating a verification request for your GitHub Mobile app.</p>
+      <include-fragment aria-label="Loading">
+        <span>
+      <span class="sr-only">Loading</span>
+</span>
+  <div hidden="">
+    <div class="Box">
+  <div class="blankslate-container">
+    <div class="blankslate blankslate-spacious color-bg-default rounded-2">
+      <h3 class="blankslate-heading">        Uh oh!
+</h3>
+      <p class="blankslate-description">        </p><p class="color-fg-muted my-2 mb-2 ws-normal">There was an error while loading. <a class="Link--inTextBlock" href="" aria-label="Please reload this page">Please reload this page</a>.</p>
+<p></p>
+</div>  </div>
+</div>  </div>
+</include-fragment>    </div>
+</div>
+</div>
+<div hidden="">
+  <!-- '"` --><!-- </textarea></xmp> --><form class="" action="https://github.com/sessions/sudo" accept-charset="UTF-8" method="post"><input type="hidden" name="authenticity_token" value="REDACTED">    <input type="hidden" name="id" value="REDACTED" autocomplete="off" class="form-control">
+<input type="hidden" name="sudo_return_to" value="REDACTED" autocomplete="off" class="form-control">
+    <input type="hidden" name="credential_type" value="REDACTED">
+</form>  
+<div class="Box tmp-mt-3 color-bg-subtle">
+  <div class="Box-header d-flex flex-justify-center flex-items-center flex-column border-bottom-0 pb-0 tmp-pb-0">
+    <h2 class="mt-2 f3 text-normal text-center">GitHub Mobile</h2>
+</div>
+  <div class="Box-body">
+    <div class="js-poll-github-mobile-sudo-authenticate d-flex flex-column flex-items-center">
+      <p> We sent you a verification request on your GitHub Mobile app. Approve the request to enter sudo mode. </p>
+      <p hidden=""> We sent you a verification request on your GitHub Mobile app. Enter the digits shown below to enter sudo mode. </p>
+      <h3 class="tmp-mt-3 lh-default f1-light" hidden="">
+      </h3>
+    </div>
+    <div hidden="" class="d-flex flex-column flex-items-center" timeout-flash="Verification request timed out." error-flash="Verification request failed.">
+      <p> We could not verify your identity </p>
+        <a href="" class="btn-primary btn btn-block">    Retry
+</a>    </div>
+    <!-- '"` --><!-- </textarea></xmp> --><form action="/sessions/sudo/mobile_poll" accept-charset="UTF-8" method="post"><input type="hidden" name="authenticity_token" value="REDACTED">
+      <input type="hidden" value="REDACTED" class="js-data-url-csrf">
+</form>    <a href="" hidden=""></a>
+</div>
+</div>
+</div>
+    <div hidden="">
+  <!-- '"` --><!-- </textarea></xmp> --><form class="" action="https://github.com/sessions/sudo" accept-charset="UTF-8" method="post"><input type="hidden" name="authenticity_token" value="REDACTED">    <input type="hidden" name="id" value="REDACTED" autocomplete="off" class="form-control">
+<input type="hidden" name="sudo_return_to" value="REDACTED" autocomplete="off" class="form-control">
+  <div class="width-full">
+<div class="flash flash-error flash-full" hidden=""></div>
+<label class="sr-only" for="app_totp">Enter the verification code</label>
+<input type="text" name="sudo_app_otp" value="" aria-labelledby="session-otp-input-label" autocomplete="off" autofocus="autofocus" class="form-control width-full mb-2 js-verification-code-input-auto-submit input-code-verification-2fa app_totp" inputmode="numeric" pattern="([0-9]{6})|([0-9a-fA-F]{5}-?[0-9a-fA-F]{5})" placeholder="XXXXXX">
+  <button type="submit" class="btn-primary btn btn-block">    Verify
+</button>
+  </div>
+</form></div>
+    <div hidden="">
+  <div>
+    <div class="Box tmp-mt-3 color-bg-subtle">
+  <div class="Box-body mt-0 tmp-mt-0">
+        <p>
+          When you are ready, trigger a mailer to verify your identity.
+        </p>
+        <button type="button" class="tmp-mt-3 Button--primary Button--medium Button Button--fullWidth">  <span class="Button-content">
+    <span class="Button-label">Verify via email</span>
+  </span>
+</button>
+</div>
+</div>  </div>
+  <div hidden="">
+    <!-- '"` --><!-- </textarea></xmp> --><form class="" action="https://github.com/sessions/sudo" accept-charset="UTF-8" method="post"><input type="hidden" name="authenticity_token" value="REDACTED">
+      <input type="hidden" name="id" value="REDACTED" autocomplete="off" class="form-control">
+<input type="hidden" name="sudo_return_to" value="REDACTED" autocomplete="off" class="form-control">
+      <input type="hidden" name="credential_type" value="REDACTED">
+      <div class="Box tmp-mt-3 color-bg-subtle">
+  <div class="Box-body mt-0 tmp-mt-0">
+          <x-banner>
+  <div hidden="hidden" class="js-sudo-error Banner flash Banner--error flash-error d-block">
+      <div class="Banner-visual">
+      </div>
+    <div class="Banner-message">
+      <p class="Banner-title"></p>
+</div></div></x-banner>
+          <p>
+            Enter the verification code sent to o*******@example.com.
+            If it doesn’t appear within a few minutes, check your spam folder.
+          </p>
+          <input type="text" name="sudo_email_otp" class="form-control input-block mb-2" arial_label="Enter the 8-digit verification code sent to your email" inputmode="numeric" pattern="([0-9]{8})" placeholder="XXXXXXXX">
+          <button type="submit" class="tmp-mt-3 Button--primary Button--medium Button Button--fullWidth">  <span class="Button-content">
+    <span class="Button-label">Verify</span>
+  </span>
+</button>
+</div>
+</div></form>  </div>
+</div>
+    <div class="Box tmp-mt-3">
+  <div class="Box-body p-3 tmp-p-3">
+        <h2 class="h5 mb-2">Having problems?</h2>
+        <ul class="tmp-ml-3" aria-labelledby="problems-options">
+            <li hidden="">
+                <button type="button" class="btn-link">    Use your passkey
+</button>
+            </li>
+            <li>
+                <button type="button" class="btn-link">    Use GitHub Mobile
+</button>
+            </li>
+            <li>
+                <button type="button" class="btn-link">    Use your authenticator app
+</button>
+            </li>
+            <li>
+              <button type="button" class="Button--link Button--medium Button text-normal">  <span class="Button-content">
+    <span class="Button-label">Send a code via email</span>
+  </span>
+</button>
+            </li>
+        </ul>
+</div>
+</div></sudo-credential-options>
+  <p class="note tmp-px-3 tmp-my-3 text-center">
+    <strong>Tip:</strong>
+      You are entering
+      <a class="Link--inTextBlock" href="https://docs.github.com/articles/sudo-mode">sudo mode</a>.
+      After you've performed a sudo-protected action, you'll only be asked to re-authenticate again after a few hours of inactivity.
+  </p>
+</div>
+      </main>
+  </div>
+            <div class="footer-session-authentication" role="contentinfo">
+    <ul class="footer-session-authentication-links">
+        <li>
+          <a href="https://docs.github.com/site-policy/github-terms/github-terms-of-service" class="Link--secondary Link">Terms</a>
+        </li>
+        <li>
+          <a href="https://docs.github.com/site-policy/privacy-policies/github-privacy-statement" class="Link--secondary Link">Privacy</a>
+        </li>
+        <li>
+          <a href="https://docs.github.com" class="Link--secondary Link">Docs</a>
+        </li>
+        <li>
+            <a href="https://support.github.com" class="Link--secondary Link">Contact GitHub Support</a>
+        </li>
+<li class="mx-2">
+  <cookie-consent-link>
+    <button type="button" class="Link--secondary underline-on-hover border-0 p-0 color-bg-transparent">
+      Manage cookies
+    </button>
+  </cookie-consent-link>
+</li>
+  <li class="mx-2">
+    <cookie-consent-link>
+      <button type="button" class="Link--secondary underline-on-hover border-0 p-0 color-bg-transparent text-left">
+        Do not share my personal information
+      </button>
+    </cookie-consent-link>
+  </li>
+    </ul>
+  </div>
+    <ghcc-consent class="position-fixed bottom-0 left-0"></ghcc-consent>
+  <div class="ajax-error-message flash flash-error" hidden="">
+    <button type="button" class="flash-close js-ajax-error-dismiss" aria-label="Dismiss error">
+    </button>
+    You can’t perform that action at this time.
+  </div>
+    <div class="Popover js-hovercard-content position-absolute">
+  <div class="Popover-message Popover-message--bottom-left Popover-message--large Box color-shadow-large"></div>
+</div>
+    </div>
+    <div class="sr-only mt-n1" aria-live="polite" aria-atomic="true"></div>
+    <div class="sr-only mt-n1" aria-live="assertive" aria-atomic="true"></div>
+</body></html>

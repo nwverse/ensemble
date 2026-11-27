@@ -233,6 +233,8 @@ func (t *tools) call(ctx context.Context, p wire.ConnectorCallParams) (wire.Conn
 			return wire.ConnectorCallResult{}, err
 		}
 		return t.read(ctx, a)
+	case toolReposList:
+		return t.repoList(ctx, p.Args)
 	}
 	return wire.ConnectorCallResult{}, ext.UnknownMethod(p.Name)
 }
@@ -411,6 +413,8 @@ func supported(method string) bool { return !slices.Contains(protocol.ClubStubMe
 
 func (t *tools) describe(ctx context.Context, p wire.ConnectorCallParams) (wire.ConnectorDescribeResult, error) {
 	switch p.Name {
+	case toolRepoBind, toolRepoAuthorize:
+		return t.repoDescribe(ctx, p)
 	case toolSend:
 		var a sendArgs
 		if err := args(p.Args, &a); err != nil {
@@ -552,6 +556,8 @@ func (t *tools) account(ctx context.Context, id string, op core.Operation) (prot
 func (t *tools) do(ctx context.Context, p wire.ConnectorDoParams) (wire.ConnectorCallResult, error) {
 	// The checks again: the level may have changed between the card and the user's yes.
 	switch p.Name {
+	case toolRepoBind, toolRepoAuthorize:
+		return t.repoDo(ctx, p)
 	case toolSend:
 		var a sendArgs
 		if err := args(p.Args, &a); err != nil {

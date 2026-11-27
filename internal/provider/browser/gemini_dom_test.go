@@ -207,11 +207,23 @@ func matchCompound(n *html.Node, c string) bool {
 
 func matchAttr(n *html.Node, spec string) bool {
 	name, value, hasValue := strings.Cut(spec, "=")
-	v, ok := attrOK(n, strings.TrimSpace(name))
+	name = strings.TrimSpace(name)
+	op := byte(0) // *= (contains) and ^= (starts with), besides =
+	if l := len(name); l > 0 && (name[l-1] == '*' || name[l-1] == '^') {
+		op, name = name[l-1], name[:l-1]
+	}
+	v, ok := attrOK(n, name)
 	if !hasValue {
 		return ok
 	}
 	value = strings.TrimSpace(value)
+	if op != 0 {
+		value = strings.Trim(value, `"'`)
+		if op == '*' {
+			return ok && strings.Contains(v, value)
+		}
+		return ok && strings.HasPrefix(v, value)
+	}
 	fold := false
 	if strings.HasSuffix(value, " i") {
 		fold, value = true, strings.TrimSpace(strings.TrimSuffix(value, " i"))

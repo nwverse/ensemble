@@ -148,6 +148,9 @@ type pageState struct {
 	LoginURL string `json:"u,omitempty"`
 	Note     string `json:"n,omitempty"`
 	NoteTone string `json:"t,omitempty"`
+	// Chan and Repos are the 仓库 page's channel and repositories (repos_page.go), for 重新检测并挂载.
+	Chan  string `json:"c,omitempty"`
+	Repos string `json:"r,omitempty"`
 }
 
 // Providers paired by pasting a key on the accounts page. Grok Bot signs in through its own page instead, and
@@ -249,6 +252,8 @@ func (a *accounts) view(ctx context.Context, r *ext.UIRequest, st pageState) *wi
 		v = a.accountView(ctx, r, l, &st)
 	case st.Page == pageTerminal:
 		v = a.terminalView(ctx, r, l, &st)
+	case st.Page == pageRepos:
+		v = a.reposView(ctx, r, l, &st)
 	case st.Page == pagePair:
 		v = a.pairView(l, st)
 	case st.Page == pageGrok:
@@ -954,6 +959,9 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 	sections = append(sections, syncing)
 	sections = append(sections, quotaDisplaySection(l, acct, a.clock(r)))
 	sections = append(sections, a.terminalEntrySection(ctx, l, at, acct))
+	if space.MountsRepos(ctx, acct.AccountID) {
+		sections = append(sections, reposEntry(l, at, acct))
+	}
 	if takeoverSupported(acct.Provider) && a.hub != nil {
 		sec, pending := a.machineSection(ctx, l, acct)
 		sections = append(sections, sec)
@@ -1282,6 +1290,8 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 		return call(ctx, a.club, protocol.MethodClubAccountsUpdate, patch, nil)
 	}
 	switch r.Action {
+	case actRepoCheck, actRepoBind, actRepoAuthorize, actRepoResume, actRepoRefresh:
+		return a.repoAction(ctx, r, l, st)
 	case actSync:
 		// club.accounts.sync answers ok whether or not the sync worked (a failure is kept on the account), so the
 		// outcome is read back from the account.
