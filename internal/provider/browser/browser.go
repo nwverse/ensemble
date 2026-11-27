@@ -346,13 +346,13 @@ func (a *Adapter) ListSessions(ctx context.Context, credential string) ([]provid
 		return a.site.impl.listSessions(ctx, a, credential)
 	}
 	if a.site.SingleSession {
+		// No list, so no time: LastActivityMs stays 0 and only the chat's messages move its rank.
 		return []provider.RemoteSession{{
-			ExternalID:     "main",
-			Title:          a.site.Label,
-			Kind:           protocol.KindMain,
-			LastActivityMs: time.Now().UnixMilli(),
-			CanSend:        true,
-			Ref:            map[string]string{"url": a.site.AppURL},
+			ExternalID: "main",
+			Title:      a.site.Label,
+			Kind:       protocol.KindMain,
+			CanSend:    true,
+			Ref:        map[string]string{"url": a.site.AppURL},
 		}}, nil
 	}
 	script := openJS(a.site.AppURL, exactURL(a.site.AppURL)) + `
@@ -382,16 +382,16 @@ return { sessions: items };
 	if err := a.run(ctx, credential, script, &r); err != nil {
 		return nil, err
 	}
-	now := time.Now().UnixMilli()
+	// The links carry no time: every row's LastActivityMs stays 0 (never the time of the read, which ranked every
+	// chat on top at every sync), and only the chats' messages move their rank.
 	out := make([]provider.RemoteSession, 0, len(r.Sessions)+1)
 	if len(r.Sessions) == 0 {
 		out = append(out, provider.RemoteSession{
-			ExternalID:     "main",
-			Title:          a.site.Label,
-			Kind:           protocol.KindMain,
-			LastActivityMs: now,
-			CanSend:        true,
-			Ref:            map[string]string{"url": a.site.AppURL},
+			ExternalID: "main",
+			Title:      a.site.Label,
+			Kind:       protocol.KindMain,
+			CanSend:    true,
+			Ref:        map[string]string{"url": a.site.AppURL},
 		})
 		return out, nil
 	}
@@ -401,12 +401,11 @@ return { sessions: items };
 			kind = protocol.KindMain
 		}
 		out = append(out, provider.RemoteSession{
-			ExternalID:     s.ID,
-			Title:          s.Title,
-			Kind:           kind,
-			LastActivityMs: now,
-			CanSend:        true,
-			Ref:            map[string]string{"url": s.URL},
+			ExternalID: s.ID,
+			Title:      s.Title,
+			Kind:       kind,
+			CanSend:    true,
+			Ref:        map[string]string{"url": s.URL},
 		})
 	}
 	return out, nil

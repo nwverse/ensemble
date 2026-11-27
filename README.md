@@ -264,6 +264,11 @@ Rules the core keeps:
 - **Sync** follows the gateway's schedule: at most 20 sessions per round (those that moved, those active in the last
   30 minutes, then the three read least recently); a refused credential is retried every 15 minutes, after one
   refresh where the provider has one.
+- **Rank** (`rankTimeMs`) is the time of a conversation's newest message, or the time its service's list gives as
+  its last activity; never the time of a sync. A list without a time (Muse's main chat, a site read from its links)
+  passes 0, a coarse relative one (Muse's side chats: "2h", "今天") only places a conversation seen for the first
+  time, and a message without a time of its own keeps the time it was first seen: a sync with nothing new moves no
+  conversation, its preview or its unread count.
 - **Credentials** go in and never come out: no method returns one, nothing logs one.
 - **Quota** combines real provider readings (Groq's `x-ratelimit-*` headers, Grok Bot's `DashboardService/GetSandUsageStatus` and `GetCurrentPeriodUsage`, Claude Duet's `/api/organizations/<id>/usage` including `five_hour`, `seven_day`, and `maple_sundial` Duet credit, ChatGPT Dots' `/backend-api/wham/usage`, Muse's Settings › General › Usage server action / dialog, Gemini's `/usage?hl=en` via an isolated temporary tab, optional Manus/muse2api rate-limit headers, and any 429) with honest local 5h/24h send-count estimates (`account.usage`) before the first reading or for services that do not publish real-time quota (Cue, muse2api). `state` is `ok` (more than 20% left), `low` (20% or less) or `exhausted` (none left, provider refusal flag, or a 429 until `Retry-After` or five minutes); the tightest dimension is on top, all windows in `buckets`; `stale` after 15 minutes without an answer; `show` mirrors the account's `show_quota`. Unknown is no `quota` at all. A change of state or staleness is announced with `agentsrc.updated`. Sends to an account freshly known to be exhausted are refused before hitting the provider (`conflict`, `QUOTA_EXHAUSTED`) with the reset time so callers warn instead of failing silently; manual sync (`club.accounts.sync`) refreshes the reading immediately.
 - **Assistant control** per account (`off`, `read`, `confirm`, `auto`; `off` by default, and for every imported

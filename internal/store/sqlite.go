@@ -531,7 +531,7 @@ func putMessage(ctx context.Context, q querier, key string, m Message, now int64
 		return false, err
 	}
 	if m.CreateTimeMs == 0 {
-		m.CreateTimeMs = now
+		m.CreateTimeMs = firstSeen(m.FirstSeenMs, now)
 		if exists {
 			m.CreateTimeMs = old.CreateTimeMs
 		}

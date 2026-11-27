@@ -588,3 +588,45 @@ func TestCountUserMessagesSince(t *testing.T) {
 		}
 	})
 }
+
+// A message without a time of its own is recorded at the caller's first-seen estimate when it is new, and keeps that
+// time however often it is read again with another estimate (a coarse list time, or the time of the read): rewriting
+// it ranked an idle session anew at every sync and counted its replies unread again.
+func TestFirstSeenEstimateOnlyForNewMessages(t *testing.T) {
+	each(t, func(t *testing.T, s Store) {
+		seed(t, s)
+		at := now + 60_000
+		timeless := func(id, role, txt string, est int64) Message {
+			return Message{ExternalID: id, Role: role, Blocks: []protocol.Block{protocol.TextBlock(txt)}, FirstSeenMs: est}
+		}
+		must2(t, s, key, []Message{timeless("t1", "assistant", "旧回复", at-30_000)}, at)
+		before := session(t, s, key)
+		if before.RankTimeMs != at-30_000 || before.PreviewText != "旧回复" || before.PreviewIsMine {
+			t.Fatalf("a new message takes its estimate: %+v", before)
+		}
+		must(t, s.MarkRead(ctx, key, at))
+		before = session(t, s, key)
+		for round := 1; round <= 5; round++ {
+			later := at + int64(round)*3_600_000
+			n, err := s.UpsertMessages(ctx, key, []Message{timeless("t1", "assistant", "旧回复", later)}, later)
+			must(t, err)
+			if n != 0 {
+				t.Fatalf("round %d: %d messages rewritten by a new estimate", round, n)
+			}
+			if x := session(t, s, key); x.RankTimeMs != before.RankTimeMs || x.UnreadCount != 0 || x.UpdatedAt != before.UpdatedAt {
+				t.Fatalf("round %d: an idle session moved: %+v, was %+v", round, x, before)
+			}
+		}
+		page, _, err := s.Messages(ctx, key, 1, nil)
+		must(t, err)
+		if page[0].ExternalID != "t1" || page[0].CreateTimeMs != at-30_000 || page[0].FirstSeenMs != 0 {
+			t.Fatalf("stored message = %+v", page[0])
+		}
+		// An estimate after the write is not believed: the time of the write is.
+		late := at + 10*3_600_000
+		must2(t, s, key, []Message{timeless("t2", "user", "新问题", late+5_000)}, late)
+		if x := session(t, s, key); x.RankTimeMs != late || x.PreviewText != "新问题" || !x.PreviewIsMine {
+			t.Fatalf("a new message moves the rank to its time: %+v", x)
+		}
+	})
+}

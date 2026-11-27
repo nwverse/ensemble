@@ -37,12 +37,15 @@ func TestMuseSite(t *testing.T) {
 		t.Fatalf("ListSessions = %+v, err=%v", sessions, err)
 	}
 	// The main chat keeps the identity it had before side chats were listed.
-	if m := sessions[0]; m.ExternalID != "main" || m.Kind != protocol.KindMain || m.Ref["url"] != "https://muse.ai/" || !m.CanSend {
+	// The main chat's row has no date: it must not be stamped with the time of the read, which ranked it on top at
+	// every sync.
+	if m := sessions[0]; m.ExternalID != "main" || m.Kind != protocol.KindMain || m.Ref["url"] != "https://muse.ai/" || !m.CanSend ||
+		m.LastActivityMs != 0 || m.ActivityApprox {
 		t.Fatalf("main session = %+v", m)
 	}
 	side := sessions[1]
 	if side.ExternalID != museSideID || side.Title != "联系商家打电话" || side.Kind != protocol.KindSide || side.ParentExternalID != "main" ||
-		side.Ref["url"] != "https://muse.ai/thread/"+museSideID || !side.CanSend || side.LastActivityMs <= 0 {
+		side.Ref["url"] != "https://muse.ai/thread/"+museSideID || !side.CanSend || side.LastActivityMs <= 0 || !side.ActivityApprox {
 		t.Fatalf("side session = %+v", side)
 	}
 	if s := sessions[2]; s.ExternalID != "664f4567-e43b-497d-a2d4-aa827e02a801" || s.Title != "未命名旁聊" {

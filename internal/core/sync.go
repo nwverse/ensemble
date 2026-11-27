@@ -156,7 +156,7 @@ func (s *Space) runSync(ctx context.Context, id, only string, refreshed, forceQu
 			if !s.syncable(ctx, id) {
 				return nil
 			}
-			if listChanged, err = s.store.UpsertSessions(ctx, sessionRows(acct, remote), s.now()); err != nil {
+			if listChanged, err = s.store.UpsertSessions(ctx, knownRanks(sessionRows(acct, remote), remote, before), s.now()); err != nil {
 				return storeError{err}
 			}
 			if sessions, err = s.store.AccountSessions(ctx, id); err != nil {
@@ -177,7 +177,7 @@ func (s *Space) runSync(ctx context.Context, id, only string, refreshed, forceQu
 					pollSessions = append(pollSessions, x)
 				}
 			}
-			if due, err = s.sessionsDue(ctx, acct, before, pollSessions); err != nil {
+			if due, err = s.sessionsDue(ctx, acct, before, pollSessions, activity); err != nil {
 				return storeError{err}
 			}
 		}
@@ -316,17 +316,36 @@ func sessionRows(acct store.Account, remote []provider.RemoteSession) []store.Se
 	return rows
 }
 
+// knownRanks keeps a coarse activity reading (RemoteSession.ActivityApprox) from raising the rank of a session the
+// club already has: such a reading moves with the clock while nothing happens ("2h" read an hour later, "今天" read
+// as now), and ranking by it put an idle chat back on top at every sync. It still places a session seen for the first
+// time, and sessionsDue still reads it to tell which sessions to read.
+func knownRanks(rows []store.Session, remote []provider.RemoteSession, before []store.Session) []store.Session {
+	known := make(map[string]bool, len(before))
+	for _, x := range before {
+		known[x.SessionKey] = true
+	}
+	for i := range rows {
+		if remote[i].ActivityApprox && known[rows[i].SessionKey] {
+			rows[i].RankTimeMs = 0
+		}
+	}
+	return rows
+}
+
 // sessionsDue are the sessions a sync reads, at most 20, in priority order: sessions whose activity time moved (or
 // new ones), sessions with a message or send in the last 30 minutes (a bot's profile time does not move when it
-// posts), then the three read least recently.
-func (s *Space) sessionsDue(ctx context.Context, acct store.Account, before, sessions []store.Session) ([]store.Session, error) {
+// posts), then the three read least recently. activity is the time each session's list row gave (by external id),
+// which counts even when it is too coarse to rank by.
+func (s *Space) sessionsDue(ctx context.Context, acct store.Account, before, sessions []store.Session, activity map[string]int64) ([]store.Session, error) {
 	known := map[string]bool{}
 	for _, x := range before {
 		known[x.ExternalID] = true
 	}
 	var changed []store.Session
 	for _, x := range sessions {
-		if acct.LastSyncedAt == 0 || x.RankTimeMs >= acct.LastSyncedAt || !known[x.ExternalID] {
+		if acct.LastSyncedAt == 0 || x.RankTimeMs >= acct.LastSyncedAt || activity[x.ExternalID] >= acct.LastSyncedAt ||
+			!known[x.ExternalID] {
 			changed = append(changed, x)
 		}
 	}

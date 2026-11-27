@@ -205,13 +205,14 @@ return await page.evaluate((ARGS) => {
 		return nil, err
 	}
 	now := time.Now()
+	// The main chat's row carries no date: its LastActivityMs is 0, so a sync never ranks it by the time of the
+	// read (that put it on top of the list at every sync); its messages, first seen or sent, move it.
 	out := []provider.RemoteSession{{
-		ExternalID:     "main",
-		Title:          a.site.Label,
-		Kind:           protocol.KindMain,
-		LastActivityMs: now.UnixMilli(),
-		CanSend:        true,
-		Ref:            map[string]string{"url": a.site.AppURL},
+		ExternalID: "main",
+		Title:      a.site.Label,
+		Kind:       protocol.KindMain,
+		CanSend:    true,
+		Ref:        map[string]string{"url": a.site.AppURL},
 	}}
 	for _, t := range r.Threads {
 		id := strings.ToLower(strings.TrimSpace(t.ID))
@@ -228,6 +229,7 @@ return await page.evaluate((ARGS) => {
 			Kind:             protocol.KindSide,
 			ParentExternalID: "main",
 			LastActivityMs:   museActivityMs(t.When, now),
+			ActivityApprox:   true,
 			CanSend:          true,
 			Ref:              map[string]string{"url": "https://muse.ai/thread/" + id},
 		})

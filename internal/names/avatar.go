@@ -22,7 +22,7 @@ import (
 // on the Agents page the hub fetches it as it does any conversation's avatarUrl. The address carries nothing of the
 // owner's accounts. No icon artwork is in this repository.
 
-// icons are the products' official icons: a PNG or ICO the product itself publishes (its own site, its maker's
+// icons are the products' official icons: a PNG the product itself publishes (its own site, its maker's
 // branding path named by the product, its own app's App Store artwork, or the image its own page shows), for the
 // product the provider's code talks to (see each provider's package). An address's query, when it has one, is only
 // the image server's fixed size, fit, ground and format.
@@ -32,7 +32,11 @@ import (
 //   - muse2api: the owner's own relay, which drives muse.ai but is not the Muse app; it draws its letters, so it is
 //     not mistaken for Muse (web) next to it.
 var icons = map[string]string{
-	"muse": "https://muse.ai/favicon.ico",           // muse.ai, the site the provider drives
+	// Muse (muse.ai, the site the provider drives): the 180x180 "maskable" PNG its own web app manifest
+	// (muse.ai/manifest.json) lists, drawn inside the manifest's safe zone so a circle shows all of it. Not
+	// muse.ai/favicon.ico: an ICO (image/vnd.microsoft.icon) that the hub's image decoding, iOS's UIImage and some
+	// browsers' <img> handle unevenly, and whose largest frame is 128px. The query is the manifest's own version.
+	"muse": "https://muse.ai/images/pwa_icons/maskable/180.png?v=3",
 	"cue":  "https://manus.im/apple-icon.png",       // Manus: api.manus.ai, tasks at manus.im/app
 	"groq": "https://groq.com/apple-touch-icon.png", // Groq: api.groq.com
 	// Claude Duet (claude.ai/duet, the page the provider drives): the artwork of its own app in the App Store (Claude

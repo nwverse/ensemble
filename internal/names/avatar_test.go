@@ -2,6 +2,10 @@ package names
 
 import (
 	"bytes"
+	"image"
+	_ "image/png"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -9,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // productHosts are the hosts each product's icon may come from: the site the provider's code talks to (its API,
@@ -68,8 +73,10 @@ func TestAvatarOrderPerService(t *testing.T) {
 		if !ok {
 			t.Errorf("%s: icon %q is not on one of the product's own hosts %v", p, icon, productHosts[p])
 		}
-		if ext := strings.ToLower(filepath.Ext(u.Path)); ext != ".png" && ext != ".ico" {
-			t.Errorf("%s: icon %q is not a PNG or ICO", p, icon)
+		// PNG only: the hub keeps an avatarUrl only when it answers image/*, and an ICO (image/vnd.microsoft.icon,
+		// image/x-icon) is drawn unevenly by iOS's UIImage and the browsers' <img>, so every app could not show it.
+		if ext := strings.ToLower(filepath.Ext(u.Path)); ext != ".png" {
+			t.Errorf("%s: icon %q is not a PNG", p, icon)
 		}
 	}
 }
@@ -81,6 +88,7 @@ var imageQueryValues = map[string]*regexp.Regexp{
 	"fit": regexp.MustCompile(`^(pad|fill|scale|crop|thumb)$`),
 	"bg":  regexp.MustCompile(`^rgb:[0-9a-f]{6}$`),
 	"fm":  regexp.MustCompile(`^(png|jpg|webp)$`),
+	"v":   regexp.MustCompile(`^[0-9]{1,4}$`), // the asset version the product's own manifest names (Muse's ?v=3)
 }
 
 // imageQuery says whether an icon's query is only an image server's fixed size, fit, ground and format (empty for
@@ -205,5 +213,35 @@ func TestNoPictureButTheTiles(t *testing.T) {
 			bytes.Contains(data[i:min(len(data), i+400)], []byte("iVBOR")) {
 			t.Errorf("%s embeds a picture", f)
 		}
+	}
+}
+
+// TestLiveIconsAreImages fetches every official icon, as the hub fetches a conversation's avatarUrl (no credentials),
+// and checks it answers 200 with a PNG: Content-Type image/png and PNG bytes, at least 96px wide. It reaches the
+// products' servers, so it runs only with PAC_LIVE_ICONS=1.
+func TestLiveIconsAreImages(t *testing.T) {
+	if os.Getenv("PAC_LIVE_ICONS") == "" {
+		t.Skip("set PAC_LIVE_ICONS=1 to fetch the products' icons")
+	}
+	client := &http.Client{Timeout: 20 * time.Second}
+	for p, icon := range icons {
+		resp, err := client.Get(icon)
+		if err != nil {
+			t.Errorf("%s: %v", p, err)
+			continue
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		_ = resp.Body.Close()
+		ct := resp.Header.Get("Content-Type")
+		if err != nil || resp.StatusCode != http.StatusOK || !strings.HasPrefix(ct, "image/png") {
+			t.Errorf("%s: %s answered %d %q (%v)", p, icon, resp.StatusCode, ct, err)
+			continue
+		}
+		cfg, format, err := image.DecodeConfig(bytes.NewReader(body))
+		if err != nil || format != "png" || cfg.Width < 96 || cfg.Height < 96 {
+			t.Errorf("%s: %s is not a PNG of at least 96px: %s %dx%d %v", p, icon, format, cfg.Width, cfg.Height, err)
+			continue
+		}
+		t.Logf("%s: %d %s %dx%d %d bytes", p, resp.StatusCode, ct, cfg.Width, cfg.Height, len(body))
 	}
 }
