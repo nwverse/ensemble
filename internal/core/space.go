@@ -47,6 +47,7 @@ type Space struct {
 	syncing        map[string]*flight[struct{}]
 	refreshing     map[string]*flight[string]
 	fetchedAt      map[string]int64
+	readOnce       map[string]bool // sessions whose messages a sync has read, since the club started
 	watching       map[string]context.CancelFunc
 	live           map[string]*liveEntry
 	logins         map[string]*login
@@ -56,7 +57,7 @@ type Space struct {
 
 func newSpace(name string, c *Club, st store.Store, v vault.Vault) *Space {
 	return &Space{name: name, club: c, store: st, vault: v, syncing: map[string]*flight[struct{}]{},
-		refreshing: map[string]*flight[string]{}, fetchedAt: map[string]int64{}, watching: map[string]context.CancelFunc{},
+		refreshing: map[string]*flight[string]{}, fetchedAt: map[string]int64{}, readOnce: map[string]bool{}, watching: map[string]context.CancelFunc{},
 		live: map[string]*liveEntry{}, logins: map[string]*login{}, quota: map[string]*quotaState{},
 		quotaCheckedAt: map[string]int64{}}
 }

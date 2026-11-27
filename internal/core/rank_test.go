@@ -45,6 +45,10 @@ func (p *timeless) ListSessions(context.Context, string) ([]provider.RemoteSessi
 	return out, nil
 }
 func (p *timeless) ListMessages(_ context.Context, _ string, ref provider.SessionRef, _ provider.ListOptions) (provider.RemotePage, error) {
+	// A page takes a second to read: the club's clock moves between finding a chat and storing what it read.
+	p.clk.mu.Lock()
+	p.clk.t = p.clk.t.Add(time.Second)
+	p.clk.mu.Unlock()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return provider.RemotePage{Messages: append([]provider.RemoteMessage(nil), p.msgs[ref.ExternalID]...)}, nil
@@ -74,6 +78,10 @@ func TestIdleSyncsKeepRankAndNewMessagesMoveIt(t *testing.T) {
 		"side":  {say("s1", protocol.RoleAssistant, "旁聊回复", 0)},
 		"greet": {say("g1", protocol.RoleAssistant, "你好，我是 Muse", 0), say("g2", protocol.RoleAssistant, "有什么可以帮你？", 0)},
 	}}
+	for i := range 20 {
+		id := fmt.Sprintf("today-%02d", i)
+		p.msgs[id] = []provider.RemoteMessage{say(id+"-a", protocol.RoleAssistant, "今天的回复 "+id, 0)}
+	}
 	club := New(Options{Version: "test", Registry: provider.NewRegistry(p), Now: clk.Now, FollowUps: []time.Duration{}, WatchLimit: -1})
 	t.Cleanup(club.Close)
 	ctx := context.Background()
@@ -113,10 +121,16 @@ func TestIdleSyncsKeepRankAndNewMessagesMoveIt(t *testing.T) {
 		clk.t = clk.t.Add(d)
 		return clk.t.UnixMilli()
 	}
-	// 23 chats, 20 reads a sync: two rounds read them all.
-	space.SyncAll(ctx)
+	// 23 chats, 20 reads a sync: pairing read 20 of them, a sync an hour later the rest. A chat first read in the
+	// second round shows its history as of when it was found, not as news of the second round.
+	second := advance(time.Hour)
 	space.SyncAll(ctx)
 	first := list()
+	for k, s := range first {
+		if s.PreviewText == "" || s.UnreadCount != 0 || s.RankTimeMs >= second {
+			t.Fatalf("after the first reads %s: %+v (second round at %d)", k, s, second)
+		}
+	}
 	if g := first[SessionKey("muse", acct.AccountID, "greet")]; g.UnreadCount != 0 || g.PreviewText != "有什么可以帮你？" {
 		t.Fatalf("a chat found with only the agent's messages counts them unread: %+v", g)
 	}
@@ -154,7 +168,7 @@ func TestIdleSyncsKeepRankAndNewMessagesMoveIt(t *testing.T) {
 	p.add("main", say("a2", protocol.RoleAssistant, "新回复", 0))
 	space.SyncAll(ctx)
 	got := list()[mainKey]
-	if got.RankTimeMs < seen || got.RankTimeMs > seen+1000 || got.PreviewText != "新回复" || got.PreviewIsMine || got.UnreadCount != 1 {
+	if got.RankTimeMs < seen || got.RankTimeMs > seen+60_000 || got.PreviewText != "新回复" || got.PreviewIsMine || got.UnreadCount != 1 {
 		t.Fatalf("new reply: %+v (seen at %d)", got, seen)
 	}
 	if o := order(); o[0] != mainKey {
@@ -198,5 +212,42 @@ func TestApproxActivityPlacesNewSessions(t *testing.T) {
 		sessionRows(store.Account{Provider: "muse", AccountID: "a1"}, []provider.RemoteSession{{ExternalID: "old"}, {ExternalID: "exact"}}))
 	if rows[0].RankTimeMs != 0 || rows[1].RankTimeMs != 6000 || rows[2].RankTimeMs != 7000 {
 		t.Fatalf("ranks %d %d %d, want 0 6000 7000", rows[0].RankTimeMs, rows[1].RankTimeMs, rows[2].RankTimeMs)
+	}
+}
+
+// A session whose list time moved after its last read stays due until a sync reads it, even when the sync that saw
+// it move had more due than it reads: its time is then older than the account's last sync, but not than its read.
+func TestMovedSessionStaysDueUntilRead(t *testing.T) {
+	fx := setup(t)
+	ctx := context.Background()
+	const lastSync = int64(1_900_000_000_000)
+	acct := store.Account{AccountID: fx.acct.AccountID, Provider: "fake", LastSyncedAt: lastSync}
+	var sessions, before []store.Session
+	listed, activity := map[string]bool{}, map[string]int64{}
+	for i := range 8 {
+		id := fmt.Sprintf("s%d", i)
+		x := store.Session{SessionKey: SessionKey("fake", acct.AccountID, id), AccountID: acct.AccountID, ExternalID: id,
+			RankTimeMs: lastSync - 1_000_000}
+		sessions, before = append(sessions, x), append(before, x)
+		listed[id], activity[id] = true, lastSync-1_000_000
+	}
+	// s7 was read last (so the rotation does not pick it) at lastSync-100_000, and its list time moved after that read
+	// but before the account's last sync, whose reads were all taken.
+	fx.space.mu.Lock()
+	for i, x := range sessions {
+		fx.space.fetchedAt[x.SessionKey] = lastSync - 500_000 + int64(i)
+	}
+	fx.space.fetchedAt[sessions[7].SessionKey] = lastSync - 100_000
+	fx.space.mu.Unlock()
+	activity["s7"] = lastSync - 50_000
+	due, err := fx.space.sessionsDue(ctx, acct, before, sessions, activity, listed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(due, func(x store.Session) bool { return x.ExternalID == "s7" }) {
+		t.Fatalf("a session that moved since its last read is not due: %v", due)
+	}
+	if len(due) != 1+rotatePerSync {
+		t.Fatalf("due %d sessions, want the moved one and the rotation: %v", len(due), due)
 	}
 }

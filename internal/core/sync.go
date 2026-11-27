@@ -183,10 +183,6 @@ func (s *Space) runSync(ctx context.Context, id, only string, refreshed, forceQu
 				return storeError{err}
 			}
 		}
-		knownBefore := make(map[string]bool, len(before))
-		for _, x := range before {
-			knownBefore[x.SessionKey] = true
-		}
 		succeeded := 0
 		var firstSessionErr error
 		for _, x := range due {
@@ -210,13 +206,18 @@ func (s *Space) runSync(ctx context.Context, id, only string, refreshed, forceQu
 			if !s.syncable(ctx, id) {
 				return nil
 			}
+			fresh, err := s.neverRead(ctx, x.SessionKey)
+			if err != nil {
+				return storeError{err}
+			}
 			n, err := s.store.UpsertMessages(ctx, x.SessionKey, storeMessages(x.SessionKey, page.Messages,
-				firstSeenEstimate(x, knownBefore[x.SessionKey], activity[x.ExternalID], approx[x.ExternalID])), s.now())
+				firstSeenEstimate(x, fresh, activity[x.ExternalID], approx[x.ExternalID])), s.now())
 			if err != nil {
 				return storeError{err}
 			}
 			s.mu.Lock()
 			s.fetchedAt[x.SessionKey] = s.now()
+			s.readOnce[x.SessionKey] = true
 			s.mu.Unlock()
 			if n > 0 {
 				touched = append(touched, x.SessionKey)
@@ -340,14 +341,29 @@ func knownRanks(rows []store.Session, remote []provider.RemoteSession, before []
 	return rows
 }
 
+// neverRead says whether no sync has read the session's messages yet: none read since the club started and none
+// stored. What such a read finds is the session's history, not news.
+func (s *Space) neverRead(ctx context.Context, key string) (bool, error) {
+	s.mu.Lock()
+	read := s.readOnce[key]
+	s.mu.Unlock()
+	if read {
+		return false, nil
+	}
+	page, _, err := s.store.Messages(ctx, key, 1, nil)
+	return len(page) == 0, err
+}
+
 // firstSeenEstimate is the time a message without a time of its own is recorded at when a sync first sees it (0: the
-// time of the write). In a session the club did not have before this sync, that is its history: the list's time
-// for it, else the session's read time, so its old replies are not counted unread. In a known session a new
-// message arrived since the last read: the list's time when it is exact, else (none, or a coarse "2h" that may be
-// earlier than the message) the time of the write.
-func firstSeenEstimate(x store.Session, known bool, activity int64, approx bool) int64 {
+// time of the write). The first read of a session finds its history: the list's time for it, no later than the
+// session's read time (when the club found it; a coarse "今天" read later says now), so it neither jumps to the top nor counts its old replies unread, however many
+// syncs later that read comes. Afterwards a new message arrived since the last read: the list's time when it is
+// exact, else (none, or a coarse "2h" that may be earlier than the message) the time of the write.
+func firstSeenEstimate(x store.Session, fresh bool, activity int64, approx bool) int64 {
 	switch {
-	case !known:
+	case fresh && activity > 0 && x.ReadTimeMs > 0:
+		return min(activity, x.ReadTimeMs)
+	case fresh:
 		return cmp.Or(activity, x.ReadTimeMs)
 	case approx:
 		return 0
@@ -356,26 +372,18 @@ func firstSeenEstimate(x store.Session, known bool, activity int64, approx bool)
 	}
 }
 
-// sessionsDue are the sessions a sync reads, at most 20, in priority order: sessions whose list gives no time (Muse's
-// main chat, a site read from its links: nothing else tells when they change, so they are read at every sync, as
-// when they were listed at the time of the read), sessions whose activity time moved (or new ones), sessions with a
-// message or send in the last 30 minutes (a bot's profile time does not move when it posts), then the three read
-// least recently. activity is the time each session's list row gave (by external id), which counts even when it is
-// too coarse to rank by; listed are the sessions the list named (nil: not a full sync).
+// sessionsDue are the sessions a sync reads, at most 20, in priority order: up to half of them sessions whose list
+// gives no time (Muse's main chat, a site read from its links: nothing else tells when they change, so they are read
+// at every sync, as when they were listed at the time of the read), sessions whose activity moved since the session
+// was last read (or new ones), sessions with a message or send in the last 30 minutes (a bot's profile time does not
+// move when it posts), the three read least recently, then the other timeless ones. Within each group the ones read
+// least recently go first, and a session stays due until it is read, so sessions take turns when more are due than
+// one sync reads (twenty side chats dated "今天" are always due). activity is the time each session's list row gave
+// (by external id), which counts even when it is too coarse to rank by; listed are the sessions the list named.
 func (s *Space) sessionsDue(ctx context.Context, acct store.Account, before, sessions []store.Session, activity map[string]int64, listed map[string]bool) ([]store.Session, error) {
 	known := map[string]bool{}
 	for _, x := range before {
 		known[x.ExternalID] = true
-	}
-	var untimed, changed []store.Session
-	for _, x := range sessions {
-		switch {
-		case listed[x.ExternalID] && activity[x.ExternalID] == 0:
-			untimed = append(untimed, x)
-		case acct.LastSyncedAt == 0 || x.RankTimeMs >= acct.LastSyncedAt || activity[x.ExternalID] >= acct.LastSyncedAt ||
-			!known[x.ExternalID]:
-			changed = append(changed, x)
-		}
 	}
 	activeKeys, err := s.store.ActiveSessionKeys(ctx, acct.AccountID, s.now()-hotWindowMs)
 	if err != nil {
@@ -388,8 +396,19 @@ func (s *Space) sessionsDue(ctx context.Context, acct store.Account, before, ses
 		}
 	}
 	s.mu.Lock()
-	// More sessions due than one sync reads (twenty side chats dated "今天" are always due): the ones read least
-	// recently go first, so they take turns instead of the same ones being read at every sync.
+	var untimed, changed []store.Session
+	for _, x := range sessions {
+		since, read := s.fetchedAt[x.SessionKey]
+		if !read {
+			since = acct.LastSyncedAt
+		}
+		switch {
+		case listed[x.ExternalID] && activity[x.ExternalID] == 0:
+			untimed = append(untimed, x)
+		case acct.LastSyncedAt == 0 || !known[x.ExternalID] || x.RankTimeMs >= since || activity[x.ExternalID] >= since:
+			changed = append(changed, x)
+		}
+	}
 	leastRecent := func(a, b store.Session) int {
 		return cmp.Compare(s.fetchedAt[a.SessionKey], s.fetchedAt[b.SessionKey])
 	}
@@ -401,9 +420,10 @@ func (s *Space) sessionsDue(ctx context.Context, acct store.Account, before, ses
 	})
 	s.mu.Unlock()
 	rotating = rotating[:min(len(rotating), rotatePerSync)]
+	share := min(len(untimed), sessionsPerSync/2)
 	var out []store.Session
 	seen := map[string]bool{}
-	for _, x := range slices.Concat(untimed, changed, hot, rotating) {
+	for _, x := range slices.Concat(untimed[:share], changed, hot, rotating, untimed[share:]) {
 		if !seen[x.SessionKey] && len(out) < sessionsPerSync {
 			seen[x.SessionKey] = true
 			out = append(out, x)
