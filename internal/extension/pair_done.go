@@ -62,17 +62,25 @@ func (a *accounts) doneView(ctx context.Context, l lang, st pageState) *wire.Vie
 	} else {
 		now += l.t("以后也能在这个账号的页面里改。", "You can change it later on the account's page.")
 	}
+	askItems := []wire.Component{
+		{Type: "text", Style: "secondary", Text: l.t("关闭：Persona 助手完全看不到这个账号。", "Off: the Persona assistant does not see this account at all.")},
+		{Type: "text", Style: "secondary", Text: l.t("只读：Persona 助手能读它的对话，帮你总结、提醒，但不会替你发消息。",
+			"Read: the Persona assistant can read its chats to sum up and remind you, and writes nothing.")},
+		{Type: "text", Style: "secondary", Text: l.t("可代发（逐次确认）：还能替你给它发消息，每次发之前都先在手机上问你。",
+			"Confirm: it can also write to it for you, asking on your phone before each message.")},
+		{Type: "text", Style: "secondary", Text: l.t("持续跟进：按账号页开启的对话租约，在指定对话、限定轮数和有效期内连续跟进，其余写操作仍先在手机上问你。",
+			"Follow: it continues turns in chats that have an active follow-up lease on the account page, and asks first elsewhere.")},
+		{Type: "text", Style: "secondary", Text: l.t("直接放行：发消息不再逐次询问（需先二次确认，受额度、未确认发送、突发频率限制及仓库强制确认保护）。",
+			"Auto: it writes without asking each time (requires a second confirmation and is guarded by allowance, unconfirmed-send, burst-limit and repository confirmation rules).")},
+		{Type: "segmented", Name: fieldControl, Choices: controlChoices(l, control), Value: string(control),
+			Action: &wire.Action{ID: actControl}},
+	}
+	if st.ConfirmAuto && control != core.ControlAuto {
+		askItems = append(askItems, autoConfirmItems(l)...)
+	}
 	ask := wire.Section{Title: l.t("要让 Persona 助手用这个账号吗？", "Should the Persona assistant use this account?"),
 		Footer: now,
-		Items: []wire.Component{
-			{Type: "text", Style: "secondary", Text: l.t("关闭：Persona 助手完全看不到这个账号。", "Off: the Persona assistant does not see this account at all.")},
-			{Type: "text", Style: "secondary", Text: l.t("只读：Persona 助手能读它的对话，帮你总结、提醒，但不会替你发消息。",
-				"Read: the Persona assistant can read its chats to sum up and remind you, and writes nothing.")},
-			{Type: "text", Style: "secondary", Text: l.t("可代发（逐次确认）：还能替你给它发消息，每次发之前都先在手机上问你。",
-				"Confirm: it can also write to it for you, asking on your phone before each message.")},
-			{Type: "segmented", Name: fieldControl, Choices: controlChoices(l, control), Value: string(control),
-				Action: &wire.Action{ID: actControl}},
-		}}
+		Items:  askItems}
 	sections := []wire.Section{added, ask}
 
 	if a.runtimeEnabled() && a.canChat(ctx, space, acct) {

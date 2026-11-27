@@ -127,6 +127,12 @@ func (s *Space) callClub(ctx context.Context, method string, params json.RawMess
 		return call(params, func(p protocol.AssistantSessionsParams) (any, error) {
 			return protocol.Empty{}, s.SetAssistantSessionKeys(ctx, p.SessionKeys)
 		})
+	case protocol.MethodClubLeasesList:
+		return call(params, func(p protocol.ListFollowLeasesParams) (any, error) { return s.ListFollowLeases(ctx, p) })
+	case protocol.MethodClubLeasesGrant:
+		return call(params, func(p protocol.GrantFollowLeaseParams) (any, error) { return s.GrantFollowLease(ctx, p) })
+	case protocol.MethodClubLeasesRevoke:
+		return call(params, func(p protocol.RevokeFollowLeaseParams) (any, error) { return s.RevokeFollowLease(ctx, p) })
 	}
 	return nil, protocol.Unsupported(method + " is not implemented yet")
 }

@@ -67,13 +67,16 @@ const (
 	MethodClubLoginsBrowserCancel  = "club.logins.browser.cancel"
 	MethodClubOutboxDismiss        = "club.outbox.dismiss"
 	MethodClubAssistantSessionsSet = "club.assistant_sessions.set"
+	MethodClubLeasesList           = "club.leases.list"
+	MethodClubLeasesGrant          = "club.leases.grant"
+	MethodClubLeasesRevoke         = "club.leases.revoke"
 )
 
 // ClubMethods are the club.* methods this version answers.
 var ClubMethods = []string{MethodClubInfo, MethodClubAccountsAdd, MethodClubAccountsUpdate, MethodClubAccountsRemove,
 	MethodClubAccountsReplaceCred, MethodClubAccountsSync, MethodClubLive, MethodClubSettingsGet, MethodClubSettingsSet,
 	MethodClubImport, MethodClubLoginsGrokBotStart, MethodClubLoginsGrokBotPoll, MethodClubLoginsGrokBotCancel,
-	MethodClubOutboxDismiss, MethodClubAssistantSessionsSet}
+	MethodClubOutboxDismiss, MethodClubAssistantSessionsSet, MethodClubLeasesList, MethodClubLeasesGrant, MethodClubLeasesRevoke}
 
 // ClubStubMethods are the club.* methods the design names that this version answers with unsupported.
 var ClubStubMethods = []string{MethodClubSessionsStart, MethodClubSessionsInterrupt, MethodClubExport,
@@ -158,6 +161,12 @@ const (
 	ReasonAlreadyPaired = "ACCOUNT_ALREADY_PAIRED"
 	// ReasonQuotaExhausted is club's own: the account's allowance is known to be used up (409).
 	ReasonQuotaExhausted = "QUOTA_EXHAUSTED"
+	// ReasonSendUnconfirmed is club's own: a previous send in the session is still unconfirmed (409).
+	ReasonSendUnconfirmed = "SEND_UNCONFIRMED"
+	// ReasonRateLimited is club's own: a session hit the burst rate limit or upstream rate limit (409).
+	ReasonRateLimited = "RATE_LIMITED"
+	// ReasonLeaseNotFound is club's own: no such active follow lease (404).
+	ReasonLeaseNotFound = "LEASE_NOT_FOUND"
 )
 
 // CodeOf is err's protocol code, "" when it has none.
@@ -520,6 +529,60 @@ type StartSessionParams struct {
 // AssistantSessionsParams are club.assistant_sessions.set's: active Persona main-assistant backing sessions.
 type AssistantSessionsParams struct {
 	SessionKeys []string `json:"session_keys"`
+}
+
+// FollowLease is a session-scoped follow-up lease authorizing the assistant to continue turns in one session.
+type FollowLease struct {
+	LeaseID         string `json:"leaseId"`
+	AccountID       string `json:"accountId"`
+	SessionKey      string `json:"sessionKey"`
+	SessionTitle    string `json:"sessionTitle,omitempty"`
+	Status          string `json:"status"`
+	CreatedAt       int64  `json:"createdAt"`
+	ExpiresAt       int64  `json:"expiresAt"`
+	MaxTurns        int    `json:"maxTurns"`
+	UsedTurns       int    `json:"usedTurns"`
+	RemainingTurns  int    `json:"remainingTurns"`
+	AllowBackground bool   `json:"allowBackground"`
+	RevokedAt       int64  `json:"revokedAt,omitempty"`
+	RevokeReason    string `json:"revokeReason,omitempty"`
+	Note            string `json:"note,omitempty"`
+}
+
+// ListFollowLeasesParams are club.leases.list's.
+type ListFollowLeasesParams struct {
+	AccountID  string `json:"account_id"`
+	ActiveOnly bool   `json:"active_only,omitempty"`
+}
+
+// ListFollowLeasesResult is club.leases.list's answer.
+type ListFollowLeasesResult struct {
+	Leases []FollowLease `json:"leases"`
+}
+
+// GrantFollowLeaseParams are club.leases.grant's.
+type GrantFollowLeaseParams struct {
+	AccountID       string `json:"account_id,omitempty"`
+	SessionKey      string `json:"session_key"`
+	TTL             string `json:"ttl,omitempty"`
+	TTLMs           int64  `json:"ttl_ms,omitempty"`
+	MaxTurns        int    `json:"max_turns"`
+	AllowBackground bool   `json:"allow_background,omitempty"`
+	Note            string `json:"note,omitempty"`
+}
+
+// RevokeFollowLeaseParams are club.leases.revoke's. Either LeaseID (single lease) or AccountID (all active leases on
+// the account) is given.
+type RevokeFollowLeaseParams struct {
+	LeaseID   string `json:"lease_id,omitempty"`
+	AccountID string `json:"account_id,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// RevokeFollowLeaseResult is club.leases.revoke's answer.
+type RevokeFollowLeaseResult struct {
+	Revoked int          `json:"revoked"`
+	Lease   *FollowLease `json:"lease,omitempty"`
 }
 
 // ReplaceCredentialParams are club.accounts.replace_credential's.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -406,27 +407,58 @@ func TestCheckAgainSaysWhetherItIsFixed(t *testing.T) {
 	}
 }
 
-// The highest level never claims sends go without asking: club_agent_* is in the manifest's confirm_always.
-func TestAutoLevelStillAsks(t *testing.T) {
-	if !strings.Contains(string(pac.Manifest), `"club_agent_*"`) {
-		t.Fatal("club_agent_* is no longer confirmed always; reword the auto level")
+// Switching to auto requires an explicit secondary confirmation card before saving, and explains the safety guards;
+// repository authorization and binding stay in confirm_always.
+func TestAutoLevelRequiresExplicitConfirmAndExplainsGuards(t *testing.T) {
+	if strings.Contains(string(pac.Manifest), `"club_agent_*"`) ||
+		!strings.Contains(string(pac.Manifest), `"club_agent_repo_authorize"`) ||
+		!strings.Contains(string(pac.Manifest), `"club_agent_repo_bind"`) {
+		t.Fatalf("manifest confirm_always should be narrowed to repo tools: %s", pac.Manifest)
 	}
 	h, club := start(t)
 	act(t, h, pageState{Page: pagePair, Provider: echo.Name}, actPair, map[string]string{fieldCredential: demoCredential})
 	space, _ := club.Space(context.Background(), core.DefaultSpace)
 	status, _ := space.Status(context.Background())
 	id := status.Accounts[0].AccountID
-	setControl(t, club, id, core.ControlAuto)
 	page := pageState{Page: pageAccount, Account: id}
-	for _, v := range []*wire.View{render(t, h, page), render(t, h, pageState{}), act(t, h, page, actControl, map[string]string{fieldControl: "auto"}).View} {
-		if strings.Contains(text(v), "不问") || strings.Contains(text(v), "不再每次问") {
-			t.Errorf("the auto level claims no asking: %s", text(v))
+
+	// Selecting auto on the segmented control does NOT persist immediately: it stages the confirmation card.
+	res := act(t, h, page, actControl, map[string]string{fieldControl: "auto"})
+	if !strings.Contains(res.Toast, "确认卡片") {
+		t.Fatalf("expected staging toast for auto, got %q", res.Toast)
+	}
+	noJargon(t, "auto confirm card", res.View)
+	if got, _ := space.AssistantControl(context.Background(), id); got != core.ControlOff {
+		t.Fatalf("auto was persisted before secondary confirmation: %q", got)
+	}
+	for _, want := range []string{"确认开启「直接放行」？", "风险与安全护栏说明", "确认开启直接放行", "取消，保持当前档位"} {
+		if !strings.Contains(text(res.View), want) {
+			t.Errorf("confirmation card lacks %q: %s", want, text(res.View))
 		}
 	}
-	if res := act(t, h, page, actControl, map[string]string{fieldControl: "auto"}); !strings.Contains(res.Toast, "每次发送仍要先在手机上问你") {
-		t.Errorf("auto: %q", res.Toast)
+
+	// Canceling keeps the previous level.
+	var stagedState pageState
+	_ = json.Unmarshal([]byte(res.View.State), &stagedState)
+	cancelRes := act(t, h, stagedState, actControlAutoCancel, nil)
+	if !strings.Contains(cancelRes.Toast, "已取消") {
+		t.Fatalf("cancel toast: %q", cancelRes.Toast)
 	}
-	if v := render(t, h, pageState{}); !strings.Contains(text(v), "Persona 助手：可代发（每次先问你）") {
+	if got, _ := space.AssistantControl(context.Background(), id); got != core.ControlOff {
+		t.Fatalf("level changed after cancel: %q", got)
+	}
+
+	// Staging again and confirming persists ControlAuto.
+	res = act(t, h, page, actControl, map[string]string{fieldControl: "auto"})
+	_ = json.Unmarshal([]byte(res.View.State), &stagedState)
+	confirmRes := act(t, h, stagedState, actControlAutoConfirm, nil)
+	if !strings.Contains(confirmRes.Toast, "已开启直接放行") || !strings.Contains(confirmRes.Toast, "仓库强制确认") {
+		t.Fatalf("confirm auto toast: %q", confirmRes.Toast)
+	}
+	if got, _ := space.AssistantControl(context.Background(), id); got != core.ControlAuto {
+		t.Fatalf("expected ControlAuto after confirmation, got %q", got)
+	}
+	if v := render(t, h, pageState{}); !strings.Contains(text(v), "Persona 助手：直接放行（自动护栏保护）") {
 		t.Errorf("list: %s", text(v))
 	}
 }
@@ -499,5 +531,287 @@ func TestChineseReasonHasNoEnglish(t *testing.T) {
 	}
 	if got := reason("en", protocol.Invalid("choose a computer"), ""); !strings.Contains(got, "choose a computer") {
 		t.Errorf("en keeps the detail: %q", got)
+	}
+}
+
+func TestFollowLeaseUICreateListRevokeAndListTool(t *testing.T) {
+	h, club := start(t)
+	ctx := context.Background()
+	act(t, h, pageState{Page: pagePair, Provider: echo.Name}, actPair, map[string]string{fieldCredential: demoCredential, fieldName: "跟进测试号"})
+	space, _ := club.Space(ctx, core.DefaultSpace)
+	status, _ := space.Status(ctx)
+	id := status.Accounts[0].AccountID
+	page := pageState{Page: pageAccount, Account: id}
+
+	// Switch account to follow mode via UI.
+	res := act(t, h, page, actControl, map[string]string{fieldControl: "follow"})
+	if !strings.Contains(res.Toast, "已设为持续跟进") {
+		t.Fatalf("set follow toast: %q", res.Toast)
+	}
+	noJargon(t, "account at follow", res.View)
+	rawView, _ := json.Marshal(res.View)
+	if _, err := wire.DecodeCheckedViewJSON(rawView); err != nil {
+		t.Fatalf("DecodeCheckedViewJSON: %v", err)
+	}
+
+	// Create a follow lease via UI (6h, 20 turns, background=on, note="接口回归").
+	grantRes := act(t, h, page, actLeaseGrant, map[string]string{
+		fieldLeaseSession:    "main",
+		fieldLeaseTTL:        "6h",
+		fieldLeaseTurns:      "20",
+		fieldLeaseBackground: "on",
+		fieldLeaseNote:       "接口回归",
+	})
+	if !strings.Contains(grantRes.Toast, "已为「演示对话」新建跟进租约") || !strings.Contains(grantRes.Toast, "20 轮") || !strings.Contains(grantRes.Toast, "6 小时") {
+		t.Fatalf("grant lease toast: %q", grantRes.Toast)
+	}
+	noJargon(t, "account with active lease", grantRes.View)
+	rawGranted, _ := json.Marshal(grantRes.View)
+	if _, err := wire.DecodeCheckedViewJSON(rawGranted); err != nil {
+		t.Fatalf("DecodeCheckedViewJSON after grant: %v", err)
+	}
+	for _, want := range []string{"剩余 20 / 20 轮", "允许后台跟进", "接口回归", "撤销「演示对话」的跟进租约"} {
+		if !strings.Contains(text(grantRes.View), want) {
+			t.Errorf("account view lacks %q: %s", want, text(grantRes.View))
+		}
+	}
+
+	// Verify club_agents_list exposes assistant_control="follow" and active follow_leases without leaking credential.
+	var listRes wire.ConnectorCallResult
+	if err := h.Call("connector.tools.call", wire.ConnectorCallParams{
+		Contribution: Connector,
+		Name:         toolList,
+		Args:         json.RawMessage(`{}`),
+	}, &listRes); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(listRes.Text, demoCredential) {
+		t.Fatalf("club_agents_list leaked credential: %s", listRes.Text)
+	}
+	if !strings.Contains(listRes.Text, `"assistant_control":"follow"`) ||
+		!strings.Contains(listRes.Text, `"follow_leases":[`) ||
+		!strings.Contains(listRes.Text, `"remaining_turns":20`) ||
+		!strings.Contains(listRes.Text, `"allow_background":true`) ||
+		!strings.Contains(listRes.Text, `"note":"接口回归"`) {
+		t.Fatalf("club_agents_list missing follow_leases details: %s", listRes.Text)
+	}
+
+	// Manually revoke the lease via UI.
+	leases, err := space.ListFollowLeases(ctx, protocol.ListFollowLeasesParams{AccountID: id, ActiveOnly: true})
+	if err != nil || len(leases.Leases) != 1 {
+		t.Fatalf("active leases: %+v %v", leases, err)
+	}
+	revRes := act(t, h, page, actLeaseRevoke, map[string]string{valLeaseID: leases.Leases[0].LeaseID})
+	if !strings.Contains(revRes.Toast, "已撤销这条跟进租约") {
+		t.Fatalf("revoke toast: %q", revRes.Toast)
+	}
+	noJargon(t, "account after revoke", revRes.View)
+	if !strings.Contains(text(revRes.View), "现在没有生效中的跟进租约。") {
+		t.Fatalf("expected no active lease after revoke: %s", text(revRes.View))
+	}
+
+	// Re-grant a lease, then downgrade control to confirm via UI: the lease must be automatically revoked.
+	act(t, h, page, actLeaseGrant, map[string]string{
+		fieldLeaseSession:    "main",
+		fieldLeaseTTL:        "2h",
+		fieldLeaseTurns:      "10",
+		fieldLeaseBackground: "off",
+	})
+	if leases, _ := space.ListFollowLeases(ctx, protocol.ListFollowLeasesParams{AccountID: id, ActiveOnly: true}); len(leases.Leases) != 1 {
+		t.Fatalf("expected 1 active lease before downgrade, got %+v", leases)
+	}
+	downRes := act(t, h, page, actControl, map[string]string{fieldControl: "confirm"})
+	if !strings.Contains(downRes.Toast, "已设为可代发") {
+		t.Fatalf("downgrade toast: %q", downRes.Toast)
+	}
+	if leases, _ := space.ListFollowLeases(ctx, protocol.ListFollowLeasesParams{AccountID: id, ActiveOnly: true}); len(leases.Leases) != 0 {
+		t.Fatalf("expected 0 active leases after downgrade to confirm, got %+v", leases)
+	}
+}
+
+func TestFollowAndAutoToolsGuardsAndAudit(t *testing.T) {
+	var nowMs atomic.Int64
+	nowMs.Store(time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC).UnixMilli())
+	now := func() time.Time { return time.UnixMilli(nowMs.Load()) }
+	club := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}, Now: now})
+	h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{"demo_echo":true}`))
+	ctx := context.Background()
+
+	act(t, h, pageState{Page: pagePair, Provider: echo.Name}, actPair, map[string]string{fieldCredential: demoCredential})
+	space, _ := club.Space(ctx, core.DefaultSpace)
+	status, _ := space.Status(ctx)
+	id := status.Accounts[0].AccountID
+	sessions, _ := space.Sessions(ctx)
+	var mainKey string
+	for _, s := range sessions.Sessions {
+		if s.CanSend {
+			mainKey = s.SessionKey
+		}
+	}
+	// Add a second writable session on the same account to verify exact session_key matching.
+	otherKey := core.SessionKey(echo.Name, id, "second")
+	_, err := space.Store().UpsertSessions(ctx, []store.Session{{
+		SessionKey: otherKey,
+		AccountID:  id,
+		Provider:   echo.Name,
+		ExternalID: "second",
+		Title:      "第二对话",
+		Kind:       protocol.KindMain,
+		CanSend:    true,
+		RankTimeMs: nowMs.Load(),
+	}}, nowMs.Load())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	describeTrack := func(name, trackKind string, args any) (wire.ConnectorDescribeResult, error) {
+		raw, _ := json.Marshal(args)
+		var res wire.ConnectorDescribeResult
+		err := h.Call("connector.actions.describe", wire.ConnectorCallParams{
+			Contribution: Connector,
+			Name:         name,
+			Args:         raw,
+			TrackKind:    trackKind,
+		}, &res)
+		return res, err
+	}
+	doTrack := func(name, trackKind, reqID string, args any) (string, error) {
+		raw, _ := json.Marshal(args)
+		var res wire.ConnectorCallResult
+		err := h.Call("connector.actions.do", wire.ConnectorDoParams{
+			Contribution: Connector,
+			Name:         name,
+			Args:         raw,
+			RequestID:    reqID,
+			TrackKind:    trackKind,
+		}, &res)
+		return res.Text, err
+	}
+
+	// 1. Set control to follow and grant a 2-turn lease with allow_background=false on mainKey.
+	setControl(t, club, id, core.ControlFollow)
+	lease, err := space.GrantFollowLease(ctx, protocol.GrantFollowLeaseParams{
+		AccountID:       id,
+		SessionKey:      mainKey,
+		TTL:             "2h",
+		MaxTurns:        2,
+		AllowBackground: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Unattended background call must be rejected because AllowBackground is false.
+	if _, err := describeTrack(toolSend, "background", map[string]any{"session_key": mainKey, "text": "bg-1"}); err == nil {
+		t.Fatal("expected background send rejected when allow_background=false")
+	}
+	if _, err := doTrack(toolSend, "background", "req-bg-1", map[string]any{"session_key": mainKey, "text": "bg-1"}); err == nil {
+		t.Fatal("expected background do rejected when allow_background=false")
+	}
+
+	// Attended call on mainKey consumes turn 1 and turn 2.
+	if d, err := describeTrack(toolSend, "main", map[string]any{"session_key": mainKey, "text": "turn-1"}); err != nil || !strings.Contains(d.Action.Name, "跟进租约生效：剩余 2/2 轮") {
+		t.Fatalf("describe with lease: %+v %v", d, err)
+	}
+	if _, err := doTrack(toolSend, "main", "req-f-1", map[string]any{"session_key": mainKey, "text": "turn-1"}); err != nil {
+		t.Fatalf("do turn 1: %v", err)
+	}
+	if _, err := doTrack(toolSend, "main", "req-f-2", map[string]any{"session_key": mainKey, "text": "turn-2"}); err != nil {
+		t.Fatalf("do turn 2: %v", err)
+	}
+	if got, ok, _ := space.Store().FollowLease(ctx, lease.LeaseID); !ok || got.UsedTurns != 2 || got.Status(nowMs.Load()) != store.LeaseExhausted {
+		t.Fatalf("expected lease exhausted at 2/2, got %+v", got)
+	}
+
+	// Once exhausted, background is denied and attended degrades back to Confirm (no lease badge in describe, audit verdict=confirm).
+	if d, err := describeTrack(toolSend, "main", map[string]any{"session_key": mainKey, "text": "turn-3"}); err != nil || strings.Contains(d.Action.Name, "跟进租约生效") {
+		t.Fatalf("describe after exhaustion should degrade to confirm: %+v %v", d, err)
+	}
+	if _, err := describeTrack(toolSend, "background", map[string]any{"session_key": mainKey, "text": "turn-3"}); err == nil {
+		t.Fatal("background send after exhaustion must be denied")
+	}
+
+	// 2. Grant a background-enabled lease on mainKey (max_turns=1): works for mainKey in background once, denied on otherKey.
+	_, err = space.GrantFollowLease(ctx, protocol.GrantFollowLeaseParams{
+		AccountID:       id,
+		SessionKey:      mainKey,
+		TTL:             "2h",
+		MaxTurns:        1,
+		AllowBackground: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := describeTrack(toolSend, "background", map[string]any{"session_key": otherKey, "text": "wrong-session"}); err == nil {
+		t.Fatal("background send on mismatched session_key must be denied")
+	}
+	if _, err := doTrack(toolSend, "background", "req-bg-ok", map[string]any{"session_key": mainKey, "text": "bg-ok"}); err != nil {
+		t.Fatalf("background send with allow_background=true failed: %v", err)
+	}
+	if _, err := doTrack(toolSend, "background", "req-bg-over", map[string]any{"session_key": mainKey, "text": "bg-over"}); err == nil {
+		t.Fatal("background send exceeding max_turns must be denied")
+	}
+
+	// 3. Switch to ControlAuto and test safety guards: burst rate limit, LocalUnconfirmed, and audit log.
+	setControl(t, club, id, core.ControlAuto)
+	// Advance clock by 2 minutes to clear previous burst window.
+	nowMs.Add(2 * 60_000)
+
+	// Burst rate limit: BurstMaxWrites (5) succeed in 60s, the 6th is blocked with RATE_LIMITED.
+	for i := range core.BurstMaxWrites {
+		reqID := fmt.Sprintf("req-auto-burst-%d", i)
+		if _, err := doTrack(toolSend, "main", reqID, map[string]any{"session_key": mainKey, "text": fmt.Sprintf("auto-%d", i)}); err != nil {
+			t.Fatalf("auto send %d failed: %v", i, err)
+		}
+	}
+	if _, err := describeTrack(toolSend, "main", map[string]any{"session_key": mainKey, "text": "auto-overflow"}); err == nil || !strings.Contains(err.Error(), "突发频率限制") {
+		t.Fatalf("expected burst rate limit on 6th describe, got %v", err)
+	}
+	if _, err := doTrack(toolSend, "main", "req-auto-overflow", map[string]any{"session_key": mainKey, "text": "auto-overflow"}); err == nil || !strings.Contains(err.Error(), "突发频率限制") {
+		t.Fatalf("expected burst rate limit on 6th do, got %v", err)
+	}
+
+	// Advance clock past burst window and trigger LocalUnconfirmed via echo.MarkUnconfirmed ("#unconfirmed").
+	nowMs.Add(2 * 60_000)
+	outUnconf, err := doTrack(toolSend, "main", "req-unconf-1", map[string]any{"session_key": mainKey, "text": "ping " + echo.MarkUnconfirmed})
+	if err != nil || !strings.Contains(outUnconf, "没有得到确认") {
+		t.Fatalf("expected unconfirmed send result, got %q %v", outUnconf, err)
+	}
+	// Next send on the same session must be blocked by LocalUnconfirmed guard!
+	if _, err := describeTrack(toolSend, "main", map[string]any{"session_key": mainKey, "text": "blind-follow-up"}); err == nil || !strings.Contains(err.Error(), "尚未确认是否送达") {
+		t.Fatalf("expected LocalUnconfirmed guard to block describe, got %v", err)
+	}
+	if _, err := doTrack(toolSend, "main", "req-unconf-2", map[string]any{"session_key": mainKey, "text": "blind-follow-up"}); err == nil || !strings.Contains(err.Error(), "尚未确认是否送达") {
+		t.Fatalf("expected LocalUnconfirmed guard to block do, got %v", err)
+	}
+
+	// Unattended background write under ControlAuto is always denied.
+	if _, err := doTrack(toolSend, "background", "req-auto-bg", map[string]any{"session_key": otherKey, "text": "bg-auto"}); err == nil {
+		t.Fatal("unattended write under ControlAuto must be denied")
+	}
+
+	// Verify audit entries recorded follow lease consumption, auto bypass, burst rate limit, and local_unconfirmed without leaking secrets.
+	audits := space.AuditEntries()
+	var sawLease, sawAutoBypass, sawBurstGuard, sawUnconfirmedGuard bool
+	for _, a := range audits {
+		if strings.Contains(a.Reason, demoCredential) || strings.Contains(a.Guard, demoCredential) {
+			t.Fatalf("audit leaked credential: %+v", a)
+		}
+		if a.Level == core.ControlFollow && a.Verdict == core.Allow && a.LeaseID != "" {
+			sawLease = true
+		}
+		if a.Level == core.ControlAuto && a.Verdict == core.Allow && a.Bypass {
+			sawAutoBypass = true
+		}
+		if a.Guard == "burst_rate_limit" && a.Verdict == core.Deny {
+			sawBurstGuard = true
+		}
+		if a.Guard == "local_unconfirmed" && a.Verdict == core.Deny {
+			sawUnconfirmedGuard = true
+		}
+	}
+	if !sawLease || !sawAutoBypass || !sawBurstGuard || !sawUnconfirmedGuard {
+		t.Fatalf("missing expected audit records: lease=%v auto=%v burst=%v unconfirmed=%v",
+			sawLease, sawAutoBypass, sawBurstGuard, sawUnconfirmedGuard)
 	}
 }

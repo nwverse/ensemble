@@ -1,11 +1,13 @@
 package extension
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"fmt"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"unicode/utf16"
@@ -101,23 +103,28 @@ const (
 
 // Actions of the accounts UI.
 const (
-	actSync             = "sync"
-	actPause            = "pause"
-	actResume           = "resume"
-	actRemove           = "remove"
-	actPurge            = "purge"
-	actControl          = "control"
-	actAssistantBackend = "assistant_backend"
-	actQuotaDisplay     = "quota_display"
-	actInbox            = "inbox"
-	actRename           = "rename"
-	actPair             = "pair"
-	actGrokStart        = "grok_start"
-	actGrokCheck        = "grok_check"
-	actGrokStop         = "grok_cancel"
-	actTakeover         = "takeover"
-	actWake             = "wake"
-	actRecheck          = "recheck"
+	actSync               = "sync"
+	actPause              = "pause"
+	actResume             = "resume"
+	actRemove             = "remove"
+	actPurge              = "purge"
+	actControl            = "control"
+	actControlAutoConfirm = "control_auto_confirm"
+	actControlAutoCancel  = "control_auto_cancel"
+	actLeaseGrant         = "lease_grant"
+	actLeaseRevoke        = "lease_revoke"
+	actLeaseRevokeAll     = "lease_revoke_all"
+	actAssistantBackend   = "assistant_backend"
+	actQuotaDisplay       = "quota_display"
+	actInbox              = "inbox"
+	actRename             = "rename"
+	actPair               = "pair"
+	actGrokStart          = "grok_start"
+	actGrokCheck          = "grok_check"
+	actGrokStop           = "grok_cancel"
+	actTakeover           = "takeover"
+	actWake               = "wake"
+	actRecheck            = "recheck"
 )
 
 // Field names on the pages.
@@ -128,6 +135,12 @@ const (
 	fieldAssistantBackend = "assistant_backend"
 	fieldQuotaDisplay     = "quota_display"
 	fieldInbox            = "inbox"
+	fieldLeaseSession     = "lease_session"
+	fieldLeaseTTL         = "lease_ttl"
+	fieldLeaseTurns       = "lease_turns"
+	fieldLeaseBackground  = "lease_background"
+	fieldLeaseNote        = "lease_note"
+	valLeaseID            = "lease_id"
 )
 
 // What the core takes (core/space.go): a credential of 8 to 8192 characters, a name of at most 80 UTF-16 units. The
@@ -141,13 +154,14 @@ const (
 // pageState is the page's state as the apps send it back: which page, about what, and the last action's outcome.
 // Never a credential.
 type pageState struct {
-	Page     string `json:"p,omitempty"`
-	Account  string `json:"a,omitempty"`
-	Provider string `json:"v,omitempty"`
-	Login    string `json:"l,omitempty"`
-	LoginURL string `json:"u,omitempty"`
-	Note     string `json:"n,omitempty"`
-	NoteTone string `json:"t,omitempty"`
+	Page        string `json:"p,omitempty"`
+	Account     string `json:"a,omitempty"`
+	Provider    string `json:"v,omitempty"`
+	Login       string `json:"l,omitempty"`
+	LoginURL    string `json:"u,omitempty"`
+	Note        string `json:"n,omitempty"`
+	NoteTone    string `json:"t,omitempty"`
+	ConfirmAuto bool   `json:"ca,omitempty"`
 	// Chan and Repos are the 仓库 page's channel and repositories (repos_page.go), for 重新检测并挂载.
 	Chan  string `json:"c,omitempty"`
 	Repos string `json:"r,omitempty"`
@@ -321,7 +335,7 @@ func overviewOf(accts []protocol.Account) overview {
 		switch core.Control(acct.AssistantControl) {
 		case core.ControlRead:
 			o.read++
-		case core.ControlConfirm, core.ControlAuto:
+		case core.ControlConfirm, core.ControlFollow, core.ControlAuto:
 			o.send++
 		}
 		if acct.AssistantBackend {
@@ -764,8 +778,10 @@ func controlWords(l lang, c core.Control) string {
 		return l.t("Persona 助手：只读", "assistant: read")
 	case core.ControlConfirm:
 		return l.t("Persona 助手：可代发（每次先问你）", "assistant: may send, asking first")
+	case core.ControlFollow:
+		return l.t("Persona 助手：持续跟进（按对话租约）", "assistant: follow-up by lease")
 	case core.ControlAuto:
-		return l.t("Persona 助手：可代发（每次先问你）", "assistant: may send, asking first")
+		return l.t("Persona 助手：直接放行（自动护栏保护）", "assistant: auto with safety guards")
 	}
 	return l.t("Persona 助手：不能用", "assistant: off")
 }
@@ -943,7 +959,14 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 			{Type: "button", Title: l.t("改名", "Rename"), Action: &wire.Action{ID: actRename, Submit: true}},
 		}}
 
-	sections := []wire.Section{info, rename, assistantSection(l, acct, control), a.inboxSection(l, acct), a.mainAssistantSection(l, acct)}
+	sections := []wire.Section{
+		info,
+		rename,
+		assistantSection(l, acct, control, st.ConfirmAuto),
+		a.followLeaseSection(ctx, space, l, acct, a.clock(r)),
+		a.inboxSection(l, acct),
+		a.mainAssistantSection(l, acct),
+	}
 
 	pause := wire.Component{Type: "button", Title: l.t("暂停同步", "Pause"), Action: &wire.Action{ID: actPause,
 		Confirm: l.t("暂停后不再拉取它的新对话，也不能给它发消息，随时可以恢复。", "While paused, no new chats are fetched and nothing can be sent; resume any time.")}}
@@ -998,13 +1021,235 @@ func stateWords(l lang, acct protocol.Account) string {
 }
 
 // assistantSection is 助手指挥: how far the Persona assistant may use the account. The name is the one the assistant's
-// guide (tools.go) sends the user to.
-func assistantSection(l lang, acct protocol.Account, control core.Control) wire.Section {
+// guide (tools.go) sends the user to. Switching to ControlAuto requires an explicit confirmation step first.
+func assistantSection(l lang, acct protocol.Account, control core.Control, confirmAuto bool) wire.Section {
+	items := []wire.Component{{Type: "segmented", Name: fieldControl, Choices: controlChoices(l, control), Value: string(control),
+		Action: &wire.Action{ID: actControl}}}
+	if confirmAuto && control != core.ControlAuto {
+		items = append(items, autoConfirmItems(l)...)
+	}
 	return wire.Section{Title: l.t("助手指挥：Persona 助手能不能用这个账号", "Assistant control: may the Persona assistant use this account"),
-		Footer: l.t("关闭：Persona 助手完全看不到它（新账号默认这样）。只读：Persona 助手能读它的对话，帮你总结、提醒。可代发：还能替你给它发消息，每次发之前都先在手机上问你。",
-			"Off: the Persona assistant does not see it (new accounts start so). Read: it can read the chats to sum up and remind you. Confirm: it can also write for you, asking on your phone before each message."),
-		Items: []wire.Component{{Type: "segmented", Name: fieldControl, Choices: controlChoices(l, control), Value: string(control),
-			Action: &wire.Action{ID: actControl}}}}
+		Footer: l.t("关闭：Persona 助手完全看不到它（新账号默认这样）。只读：Persona 助手能读它的对话，帮你总结、提醒。可代发：还能替你给它发消息，每次发之前都先在手机上问你。持续跟进：按下面开启的对话租约，在指定对话、限定轮数和有效期内连续跟进，其余写操作仍先在手机上问你。直接放行：发消息不再逐次询问（需先二次确认，受额度、未确认发送、突发频率限制及仓库强制确认保护）。",
+			"Off: the Persona assistant does not see it (new accounts start so). Read: it can read the chats to sum up and remind you. Confirm: it can also write for you, asking on your phone before each message. Follow: it continues turns in chats that have an active follow-up lease below, and asks first elsewhere. Auto: it writes without asking each time (requires a second confirmation and is guarded by allowance, unconfirmed-send, burst-limit and repository confirmation rules)."),
+		Items: items}
+}
+
+// autoConfirmItems renders the explicit secondary confirmation card and buttons before saving ControlAuto.
+func autoConfirmItems(l lang) []wire.Component {
+	return []wire.Component{
+		{
+			Type:  "row",
+			Key:   "confirm-auto-card",
+			Icon:  "warning",
+			Title: l.t("确认开启「直接放行」？", "Turn on Auto (direct bypass)?"),
+			Subtitle: l.t("风险与安全护栏说明：开启后，Persona 助手在这个账号里发消息、新开对话或打断时不再每次先在手机上问你。以下护栏全程生效：额度用完或对方限流时自动拦截、上一条消息未确认送达时暂停连发、单对话高频突发自动限流，且挂载或授权仓库仍每次强制手机确认，账号配对与权限管理仅限你自己操作。",
+				"Risk & safety guards: once on, the Persona assistant sends, starts chats and interrupts on this account without asking each time. Guards stay active: sends pause when out of allowance or when a previous send is unconfirmed, per-chat burst limits prevent loops, repository mounts always require phone confirmation, and account management stays owner-only."),
+			Badge: &wire.Badge{Text: l.t("需二次确认", "Confirm required"), Tone: wire.ToneCaution},
+		},
+		{
+			Type:  "button",
+			Key:   "confirm-auto-yes",
+			Title: l.t("确认开启直接放行", "Confirm turning on Auto"),
+			Role:  "destructive",
+			Action: &wire.Action{
+				ID: actControlAutoConfirm,
+				Confirm: l.t("确认将这个账号设为「直接放行」？开启后助手发消息不再逐次询问，仍受额度、未确认发送、突发频率限制和仓库强制确认保护。",
+					"Confirm setting this account to Auto? The assistant will send without asking each time, still guarded by allowance, unconfirmed-send, burst-limit and repository confirmation rules."),
+			},
+		},
+		{
+			Type:   "button",
+			Key:    "confirm-auto-no",
+			Title:  l.t("取消，保持当前档位", "Cancel and keep current level"),
+			Action: &wire.Action{ID: actControlAutoCancel},
+		},
+	}
+}
+
+func sessionDisplayTitle(l lang, prov, title string) string {
+	title = strings.TrimSpace(title)
+	if prov == echo.Name && strings.EqualFold(title, "Echo") {
+		return l.t("演示对话", "Echo")
+	}
+	if title == "" {
+		return l.t("默认对话", "Main chat")
+	}
+	return title
+}
+
+func ttlWords(l lang, ttl string) string {
+	switch strings.TrimSpace(ttl) {
+	case core.FollowTTL6h:
+		return l.t("6 小时", "6 hours")
+	case core.FollowTTL24h:
+		return l.t("24 小时", "24 hours")
+	default:
+		return l.t("2 小时", "2 hours")
+	}
+}
+
+// followLeaseSection renders the FollowLease management section on the account page: active leases with remaining turns,
+// expiration time, background switch and revoke actions, plus the form to create a new lease for a chat.
+func (a *accounts) followLeaseSection(ctx context.Context, space *core.Space, l lang, acct protocol.Account, c clock) wire.Section {
+	var items []wire.Component
+	activeAssistantKeys, _ := space.AssistantSessionKeys(ctx)
+	leasesRes, leaseErr := space.ListFollowLeases(ctx, protocol.ListFollowLeasesParams{AccountID: acct.AccountID, ActiveOnly: true})
+	if leaseErr != nil {
+		items = append(items, wire.Component{
+			Type:  "text",
+			Style: "secondary",
+			Text:  reason(l, leaseErr, ""),
+		})
+	} else if len(leasesRes.Leases) == 0 {
+		items = append(items, wire.Component{
+			Type:  "text",
+			Style: "secondary",
+			Text:  l.t("现在没有生效中的跟进租约。", "No active follow-up leases right now."),
+		})
+	} else {
+		for _, fl := range leasesRes.Leases {
+			if activeAssistantKeys[fl.SessionKey] {
+				continue
+			}
+			chatTitle := sessionDisplayTitle(l, acct.Provider, fl.SessionTitle)
+			bgWords := l.t("仅在线跟进", "attended only")
+			if fl.AllowBackground {
+				bgWords = l.t("允许后台跟进（同受轮数与时长封顶）", "background allowed (same turn & time caps)")
+			}
+			sub := l.t(fmt.Sprintf("剩余 %d / %d 轮（已用 %d 轮） · %s到期 · %s",
+				fl.RemainingTurns, fl.MaxTurns, fl.UsedTurns, c.at(l, fl.ExpiresAt), bgWords),
+				fmt.Sprintf("%d / %d turns left (%d used) · expires %s · %s",
+					fl.RemainingTurns, fl.MaxTurns, fl.UsedTurns, c.at(l, fl.ExpiresAt), bgWords))
+			if fl.Note != "" {
+				sub += " · " + fl.Note
+			}
+			items = append(items,
+				wire.Component{
+					Type:     "row",
+					Key:      "lease-" + fl.LeaseID,
+					Icon:     "clock",
+					Title:    chatTitle,
+					Subtitle: sub,
+					Badge: &wire.Badge{
+						Text: l.t(fmt.Sprintf("剩 %d 轮", fl.RemainingTurns), fmt.Sprintf("%d left", fl.RemainingTurns)),
+						Tone: wire.TonePositive,
+					},
+				},
+				wire.Component{
+					Type:  "button",
+					Key:   "revoke-" + fl.LeaseID,
+					Title: l.t("撤销「"+chatTitle+"」的跟进租约", "Revoke lease for \""+chatTitle+"\""),
+					Role:  "destructive",
+					Action: &wire.Action{
+						ID:     actLeaseRevoke,
+						Values: map[string]string{valLeaseID: fl.LeaseID},
+						Confirm: l.t("撤销后，Persona 助手在这个对话里发消息会恢复为每次先在手机上问你。确认撤销吗？",
+							"Once revoked, the Persona assistant will ask on your phone before each message in this chat again. Revoke?"),
+					},
+				},
+			)
+		}
+		if len(leasesRes.Leases) > 1 {
+			items = append(items, wire.Component{
+				Type:  "button",
+				Key:   "revoke-all-leases",
+				Title: l.t("撤销全部跟进租约", "Revoke all follow-up leases"),
+				Role:  "destructive",
+				Action: &wire.Action{
+					ID: actLeaseRevokeAll,
+					Confirm: l.t("撤销这个账号下的全部跟进租约？",
+						"Revoke all follow-up leases for this account?"),
+				},
+			})
+		}
+	}
+
+	sessions, _ := space.Store().AccountSessions(ctx, acct.AccountID)
+	var sessionChoices []wire.Choice
+	for _, sess := range sessions {
+		if !sess.CanSend || sess.IsHidden || activeAssistantKeys[sess.SessionKey] {
+			continue
+		}
+		choiceVal := sess.ExternalID
+		if choiceVal == "" {
+			choiceVal = sess.SessionKey
+		}
+		sessionChoices = append(sessionChoices, wire.Choice{
+			Value: choiceVal,
+			Title: sessionDisplayTitle(l, acct.Provider, sess.Title),
+		})
+	}
+	if len(sessionChoices) > 0 {
+		items = append(items,
+			wire.Component{
+				Type:    "field",
+				Name:    fieldLeaseSession,
+				Label:   l.t("要跟进的对话", "Chat to follow"),
+				Kind:    wire.FieldKindChoice,
+				Choices: sessionChoices,
+				Value:   sessionChoices[0].Value,
+			},
+			wire.Component{
+				Type:  "field",
+				Name:  fieldLeaseTTL,
+				Label: l.t("有效时长", "Duration"),
+				Kind:  wire.FieldKindChoice,
+				Choices: []wire.Choice{
+					{Value: core.FollowTTL2h, Title: l.t("2 小时", "2 hours")},
+					{Value: core.FollowTTL6h, Title: l.t("6 小时", "6 hours")},
+					{Value: core.FollowTTL24h, Title: l.t("24 小时", "24 hours")},
+				},
+				Value: core.FollowTTL2h,
+			},
+			wire.Component{
+				Type:  "field",
+				Name:  fieldLeaseTurns,
+				Label: l.t("最多跟进轮数", "Max turns"),
+				Kind:  wire.FieldKindChoice,
+				Choices: []wire.Choice{
+					{Value: "10", Title: l.t("10 轮", "10 turns")},
+					{Value: "20", Title: l.t("20 轮", "20 turns")},
+					{Value: "50", Title: l.t("50 轮", "50 turns")},
+				},
+				Value: "10",
+			},
+			wire.Component{
+				Type:  "field",
+				Name:  fieldLeaseBackground,
+				Label: l.t("后台跟进", "Background follow-up"),
+				Kind:  wire.FieldKindChoice,
+				Choices: []wire.Choice{
+					{Value: "off", Title: l.t("关闭（只在线跟进）", "Off (attended only)")},
+					{Value: "on", Title: l.t("开启（同受轮数和时长封顶）", "On (same turn & time caps)")},
+				},
+				Value: "off",
+			},
+			wire.Component{
+				Type:        "field",
+				Name:        fieldLeaseNote,
+				Label:       l.t("备注（可不填）", "Note (optional)"),
+				Kind:        wire.FieldKindText,
+				Placeholder: l.t("例如：跟进测试进展", "e.g. Follow up on test run"),
+			},
+			wire.Component{
+				Type:   "button",
+				Title:  l.t("新建跟进租约", "Create follow-up lease"),
+				Action: &wire.Action{ID: actLeaseGrant, Submit: true},
+			},
+		)
+	} else {
+		items = append(items, wire.Component{
+			Type:  "text",
+			Style: "secondary",
+			Text:  l.t("这个账号目前没有可发消息的对话；同步出可发消息的对话后，就可以在这里为指定对话新建跟进租约。", "This account has no writable chats yet; sync a writable chat first to create a follow-up lease here."),
+		})
+	}
+	return wire.Section{
+		Title: l.t("持续跟进租约：按对话授权助手跟进", "Follow-up leases: authorize the assistant per chat"),
+		Footer: l.t("在「助手指挥」设为「持续跟进」时生效：拿到租约的那个对话在有效时长和轮数上限内可连续跟进（可选开启后台跟进，同样受轮数和时长双重封顶）；超限、到期或没设租约的对话自动退回逐次手机确认。把助手指挥降为关闭、只读或逐次确认，或移除账号时，所有租约会自动撤销。",
+			"Active when Assistant control is set to Follow: the chosen chat may continue turns within the duration and turn cap (and in the background when switched on, under the same caps); expired, exhausted or other chats fall back to per-message confirmation. Stepping down to Off, Read or Confirm, or removing the account, revokes all leases automatically."),
+		Items: items,
+	}
 }
 
 // inboxSection is 对话进收件箱: whether this account's chats are rows in Persona's Inbox. The extension's own switch
@@ -1027,15 +1272,15 @@ func (a *accounts) inboxSection(l lang, acct protocol.Account) wire.Section {
 			Action: &wire.Action{ID: actInbox}}}}
 }
 
-// controlChoices are the 助手指挥 levels to choose from; the automatic one only for an account that already has it.
-func controlChoices(l lang, control core.Control) []wire.Choice {
-	choices := []wire.Choice{{Value: string(core.ControlOff), Title: l.t("关闭", "Off")},
+// controlChoices are the 5 助手指挥 levels to choose from: off, read, confirm, follow and auto.
+func controlChoices(l lang, _ core.Control) []wire.Choice {
+	return []wire.Choice{
+		{Value: string(core.ControlOff), Title: l.t("关闭", "Off")},
 		{Value: string(core.ControlRead), Title: l.t("只读", "Read")},
-		{Value: string(core.ControlConfirm), Title: l.t("可代发（逐次确认）", "Confirm")}}
-	if control == core.ControlAuto {
-		choices = append(choices, wire.Choice{Value: string(core.ControlAuto), Title: l.t("可代发（自动档）", "Auto")})
+		{Value: string(core.ControlConfirm), Title: l.t("可代发（逐次确认）", "Confirm")},
+		{Value: string(core.ControlFollow), Title: l.t("持续跟进", "Follow")},
+		{Value: string(core.ControlAuto), Title: l.t("直接放行", "Auto")},
 	}
-	return choices
 }
 
 // controlChoiceTitle is a level's name as the choices have it.
@@ -1277,7 +1522,7 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 	l := lang(r.Locale)
 	var st pageState
 	_ = r.DecodeState(&st)
-	st.Note, st.NoteTone = "", ""
+	st.Note, st.NoteTone, st.ConfirmAuto = "", "", false
 	done := func(note string) (*wire.ActionResult, error) {
 		st.Note, st.NoteTone = note, wire.TonePositive
 		return &wire.ActionResult{View: a.view(ctx, r, st), Toast: note}, nil
@@ -1332,6 +1577,17 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 		if err != nil || r.Values[fieldControl] == "" {
 			return refuse(l.t("没认出选的是哪一项，请重新选一次", "That choice was not recognized; choose again"))
 		}
+		if level == core.ControlAuto {
+			cur, _ := a.account(ctx, st.Account)
+			if core.Control(cur.AssistantControl) != core.ControlAuto {
+				st.ConfirmAuto = true
+				st.Note = l.t("开启「直接放行」前，请先在下面的确认卡片里查看风险与安全护栏，再点「确认开启直接放行」",
+					"Before turning on Auto, please review the risks and safety guards on the card below, then tap Confirm turning on Auto")
+				st.NoteTone = wire.ToneCaution
+				return &wire.ActionResult{View: a.view(ctx, r, st), Toast: st.Note}, nil
+			}
+		}
+		st.ConfirmAuto = false
 		if err := update(map[string]any{"assistant_control": level}); err != nil {
 			return failed(err, "")
 		}
@@ -1340,10 +1596,92 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 			return done(l.t("已设为只读：Persona 助手现在能读这个账号的对话，但不会替你发消息", "Set to Read: the Persona assistant can now read this account's chats, not write"))
 		case core.ControlConfirm:
 			return done(l.t("已设为可代发：Persona 助手能读，也能替你发消息，每次发之前先在手机上问你", "Set to Confirm: the Persona assistant can read and write, asking you each time"))
+		case core.ControlFollow:
+			return done(l.t("已设为持续跟进：持有生效租约的对话在限定轮数和有效期内可连续跟进，其余写操作仍每次先在手机上问你", "Set to Follow: chats with an active lease can continue within their turn and time limits; other writes still ask you each time"))
 		case core.ControlAuto:
-			return done(l.t("已设为可代发（自动档）：Persona 助手能读也能替你发消息；这个扩展规定每次发送仍要先在手机上问你", "Set to Auto: the Persona assistant can read and write; this extension still has every send confirmed on your phone"))
+			return done(l.t("已开启直接放行：Persona 助手发消息不再逐次询问，额度预检、未确认发送保护、单对话频率限制与仓库强制确认护栏已生效", "Set to Auto: the Persona assistant can write without asking each time; allowance, unconfirmed-send, burst-limit and repository confirmation guards are active"))
 		}
 		return done(l.t("已关闭：Persona 助手现在看不到这个账号", "Off: the Persona assistant no longer sees this account"))
+	case actControlAutoConfirm:
+		st.ConfirmAuto = false
+		if err := update(map[string]any{"assistant_control": core.ControlAuto}); err != nil {
+			return failed(err, "")
+		}
+		return done(l.t("已开启直接放行：Persona 助手发消息不再逐次询问，额度预检、未确认发送保护、单对话频率限制与仓库强制确认护栏已生效", "Set to Auto: the Persona assistant can write without asking each time; allowance, unconfirmed-send, burst-limit and repository confirmation guards are active"))
+	case actControlAutoCancel:
+		st.ConfirmAuto = false
+		return done(l.t("已取消开启直接放行，保持当前档位", "Canceled turning on Auto; kept the current level"))
+	case actLeaseGrant:
+		sessKey := strings.TrimSpace(r.Values[fieldLeaseSession])
+		if sessKey == "" {
+			return refuse(l.t("还没选对话：请先选一个要跟进的对话", "No chat chosen: pick a chat to follow first"))
+		}
+		if space, err := a.club.Space(ctx, core.DefaultSpace); err == nil {
+			if sessions, err := space.Store().AccountSessions(ctx, st.Account); err == nil {
+				for _, sess := range sessions {
+					if sess.SessionKey == sessKey || sess.ExternalID == sessKey {
+						sessKey = sess.SessionKey
+						break
+					}
+				}
+			}
+		}
+		ttl := cmp.Or(strings.TrimSpace(r.Values[fieldLeaseTTL]), core.FollowTTL2h)
+		maxTurns := core.DefaultFollowMaxTurns
+		if rawTurns := strings.TrimSpace(r.Values[fieldLeaseTurns]); rawTurns != "" {
+			n, err := strconv.Atoi(rawTurns)
+			if err != nil || n < 1 || n > core.MaxFollowMaxTurns {
+				return refuse(l.t("轮数上限填得不对，请选 10、20 或 50 轮", "Invalid turn limit; choose 10, 20 or 50 turns"))
+			}
+			maxTurns = n
+		}
+		allowBg := strings.TrimSpace(r.Values[fieldLeaseBackground]) == "on"
+		note := strings.TrimSpace(r.Values[fieldLeaseNote])
+		if len(utf16.Encode([]rune(note))) > 200 {
+			return refuse(l.t("备注太长了：最多 200 个字，请删短一点", "The note is too long: at most 200 characters"))
+		}
+		var granted protocol.FollowLease
+		if err := call(ctx, a.club, protocol.MethodClubLeasesGrant, protocol.GrantFollowLeaseParams{
+			AccountID:       st.Account,
+			SessionKey:      sessKey,
+			TTL:             ttl,
+			MaxTurns:        maxTurns,
+			AllowBackground: allowBg,
+			Note:            note,
+		}, &granted); err != nil {
+			return failed(err, "")
+		}
+		acct, _ := a.account(ctx, st.Account)
+		chatTitle := sessionDisplayTitle(l, acct.Provider, granted.SessionTitle)
+		msg := l.t(fmt.Sprintf("已为「%s」新建跟进租约（最多 %d 轮，有效期 %s）", chatTitle, granted.MaxTurns, ttlWords(l, ttl)),
+			fmt.Sprintf("Created follow-up lease for %q (up to %d turns, valid for %s)", chatTitle, granted.MaxTurns, ttlWords(l, ttl)))
+		if core.Control(acct.AssistantControl) != core.ControlFollow {
+			msg += l.t("；将上面的「助手指挥」设为「持续跟进」后生效", "; set Assistant control above to Follow for it to take effect")
+		}
+		return done(msg)
+	case actLeaseRevoke:
+		leaseID := strings.TrimSpace(r.Values[valLeaseID])
+		if leaseID == "" {
+			return refuse(l.t("没找到要撤销的租约，请刷新页面再试", "No lease specified; refresh and try again"))
+		}
+		var revRes protocol.RevokeFollowLeaseResult
+		if err := call(ctx, a.club, protocol.MethodClubLeasesRevoke, protocol.RevokeFollowLeaseParams{
+			AccountID: st.Account,
+			LeaseID:   leaseID,
+			Reason:    "owner_ui",
+		}, &revRes); err != nil {
+			return failed(err, "")
+		}
+		return done(l.t("已撤销这条跟进租约：助手在这个对话发消息已恢复为每次先在手机上问你", "Follow-up lease revoked: the assistant will ask on your phone before each message in this chat again"))
+	case actLeaseRevokeAll:
+		var revRes protocol.RevokeFollowLeaseResult
+		if err := call(ctx, a.club, protocol.MethodClubLeasesRevoke, protocol.RevokeFollowLeaseParams{
+			AccountID: st.Account,
+			Reason:    "owner_ui_all",
+		}, &revRes); err != nil {
+			return failed(err, "")
+		}
+		return done(l.t("已撤销这个账号下的全部跟进租约", "Revoked all follow-up leases for this account"))
 	case actAssistantBackend:
 		on := strings.TrimSpace(r.Values[fieldAssistantBackend]) == "on"
 		if on && !a.runtimeEnabled() {

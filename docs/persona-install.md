@@ -313,8 +313,7 @@ An account's page starts with its state (and, when it needs you, what to do, *�
 Bot account, *重新登录* / sign in again), then:
 
 - the name field (**名字**): rename it (shown only in Persona);
-- **助手指挥** (assistant control): *关闭* (off, the default), *只读* (read) or *可代发（逐次确认）* (confirm). An account set to *auto* shows *可代发（自动档）*;
-  its sends are still confirmed on the phone every time, since the manifest lists `club_agent_*` in `confirm_always`;
+- **助手指挥** (assistant control): *关闭* (off, the default), *只读* (read), *可代发（逐次确认）* (confirm), *持续跟进* (follow: chats with an active follow-up lease below can continue turns within their turn and time caps) or *直接放行* (auto: requires an explicit secondary confirmation card and is guarded by allowance pre-check, unconfirmed-send protection, per-chat burst limits, and mandatory phone confirmation for repository tools);
 - **主助手** (main assistant): the account itself answering as a Persona main assistant. With
   `assistant_runtime` off the page says to switch that on instead of offering a switch that does nothing;
 - syncing (sync now, pause, resume; for a Grok Bot account that works, *重新登录* waits here with a line saying it is
@@ -335,10 +334,10 @@ The connector `club` (**让 Persona 助手使用 Ensemble** in Settings › Conn
 `club_agent_repos_list`, `club_agent_repo_bind` and `club_agent_repo_authorize`:
 
 - An account the assistant may use is chosen on its page under **助手指挥** (assistant control): *关闭* (off, the
-  default for every account: the assistant does not see it), *只读* (read: list and read) or *可代发（逐次确认）*
-  (confirm: also write).
-- Every write is confirmed on your phone, every time, whatever your gate rules say: the manifest lists the writes in
-  `confirm_always`. A scheduled task or background follow-up, with nobody there to confirm, can only read.
+  default for every account: the assistant does not see it), *只读* (read: list and read), *可代发（逐次确认）*
+  (confirm: writes ask on your phone first), *持续跟进* (follow: continues turns in a chat holding an active `FollowLease` within its turn and TTL caps, degrading to confirm elsewhere), or *直接放行* (auto: writes without asking each time, subject to safety guards; see `docs/permission-model.md`).
+- Repository authorization and binding (`club_agent_repo_authorize`, `club_agent_repo_bind`) are listed in the manifest's
+  `confirm_always`, so they are always confirmed on your phone whatever the control level or gate rules say.
 - Starting a new session and interrupting a turn depend on the provider; where they are not available the tool says
   so before anything is asked.
 - The repository writes need *可代发* like a message. `club_agent_repo_bind` only mounts repositories the Claude GitHub

@@ -359,8 +359,13 @@ func TestEveryPageHoldsToCheckView(t *testing.T) {
 			{Page: pagePair, Provider: "muse2api"}, {Page: pagePair, Provider: "echo"}, {Page: pageBrowserPair, Provider: "dots"},
 			{Note: "一条很长的提示，" + strings.Repeat("说明", 30), NoteTone: wire.ToneCaution}}
 		for _, id := range ids {
-			sts = append(sts, pageState{Page: pageAccount, Account: id}, pageState{Page: pageTerminal, Account: id},
-				pageState{Page: pageRepos, Account: id})
+			sts = append(sts,
+				pageState{Page: pageAccount, Account: id},
+				pageState{Page: pageAccount, Account: id, ConfirmAuto: true},
+				pageState{Page: pageDone, Account: id, ConfirmAuto: true},
+				pageState{Page: pageTerminal, Account: id},
+				pageState{Page: pageRepos, Account: id},
+			)
 		}
 		return sts
 	}
@@ -391,6 +396,21 @@ func TestEveryPageHoldsToCheckView(t *testing.T) {
 	dots := renderPage(t, h, HomeUI, "zh-Hans", pageState{Page: pageAccount, Account: ids[0]})
 	if !strings.Contains(text(dots), `"title":"5小时 91%"`) || !strings.Contains(text(dots), "每 5 小时的时段额度 91%") {
 		t.Errorf("dots page has not read 5h 91%%: %s", text(dots))
+	}
+	// Grant active follow leases on the first account (one attended-only, one background-enabled) and verify all pages
+	// with active leases hold to wire.DecodeCheckedViewJSON and segmentedFits in both locales.
+	if sessions, err := space.Store().AccountSessions(ctx, ids[0]); err == nil && len(sessions) > 0 {
+		_, err := space.GrantFollowLease(ctx, protocol.GrantFollowLeaseParams{
+			AccountID:       ids[0],
+			SessionKey:      sessions[0].SessionKey,
+			TTL:             "6h",
+			MaxTurns:        20,
+			AllowBackground: true,
+			Note:            "持续跟进验证",
+		})
+		if err != nil {
+			t.Fatalf("grant follow lease in viewcheck: %v", err)
+		}
 	}
 	sweep("real readings", ids)
 
