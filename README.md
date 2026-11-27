@@ -161,6 +161,25 @@ every send confirmed on the phone, are unchanged). Each account's page has its o
   short closing lines such as "leave it for now"), the row is marked Needs You and its detail page (`ui` `inbox-chat`) draws each
   choice as a button. A tap asks first, then sends that text as the owner's next message through the chat's outbox
   (`internal/extension/options.go`).
+- **Sign-in and authorization requests** (`internal/extension/auth.go`): a reply that asks the owner to sign in or approve
+  an authorization also marks the row Needs You, even in a chat that cannot be replied to. Recognised: a sentence that
+  puts it to the owner ("请", "需要你", "please", "you", an instruction) and tells them to act on a sign-in link or to enter
+  a device code, the ask being allowed to stand in the sentence before a bare link; or, in a message of at most 700
+  characters, a request in words alone ("请你先登录", "please log in", "you need to sign in"). A sign-in link is a sign-in
+  path of a known host, an OAuth `…/authorize` endpoint, or a device page (`/activate`, `/device`). Left alone: the AI
+  saying it must or did sign in itself, conditions and advice ("if…", "once…", how-tos), instructions for other people,
+  "no need to log in", approvals that are not a sign-in ("please approve the PR"), code blocks, quoted lines and phrases,
+  and links that merely have "oauth" or "device" in their path. It prefers missing a request to a false alert, and real
+  prompts worded another way will be missed. Nothing in the text is opened or followed.
+- **Phone alerts** (`inbox_push`, on; `internal/extension/inbox_push.go`): the Inbox does not push an alert for a
+  connector's row by itself (only its count changes), so a reply that waits for the owner (choices, or a sign-in request)
+  is also sent to the hub's `POST /api/v1/notify`, at push level P0. One goroutine sends them, a round after each change
+  and again a minute later while an alert failed or more than 5 were due. Each reply is alerted once: what was alerted is
+  kept in the space's settings and read back after a restart (if an alert goes out and the program dies before that is
+  written, the hub replaces the earlier alert with the same id). Never for a row read, answered, or older than 6 hours;
+  the rows are read again before every send. What already waits when alerts start (an upgrade, the switch turned on) is
+  remembered and not alerted. It uses the token this run's hub gave it and only with the scope `notify`; without it nothing is sent or retried. The alert names
+  the account and its service: no chat title and nothing the AI wrote.
 - **Replying**: `inbox_reply` (on) lets the owner answer from the Inbox; the Send press is the confirmation, as for every Inbox
   source, and it goes out through the same outbox as any send (one client id per reply, so a retry sends once). Switched off, rows
   are read-only and a reply has to go through the assistant, which asks on the phone each time.

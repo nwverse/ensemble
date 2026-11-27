@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +24,7 @@ import (
 	"github.com/nwverse/ensemble/internal/provider"
 	"github.com/nwverse/ensemble/internal/provider/echo"
 	"github.com/nwverse/ensemble/internal/store"
+	"github.com/nwverse/ensemble/internal/vault"
 )
 
 // inboxProvider is a fake service whose chats and replies the test scripts, counting every call that reaches it.
@@ -91,6 +95,78 @@ type inboxEnv struct {
 	prov  *inboxProvider
 	now   *atomic.Int64
 	ids   []string // account ids
+
+	pmu      sync.Mutex
+	pushes   []notification
+	pushFail int // the next this many alerts fail
+	rounds   atomic.Int64
+	mark     int64 // rounds at the last sync
+}
+
+// push is the alert sender of the test program: it records what the hub would have been asked to send.
+func (e *inboxEnv) push(_ context.Context, n notification) error {
+	e.pmu.Lock()
+	defer e.pmu.Unlock()
+	if e.pushFail > 0 {
+		e.pushFail--
+		return errors.New("hub unreachable")
+	}
+	e.pushes = append(e.pushes, n)
+	return nil
+}
+
+func (e *inboxEnv) alerts() []notification {
+	e.pmu.Lock()
+	defer e.pmu.Unlock()
+	return append([]notification(nil), e.pushes...)
+}
+
+func (e *inboxEnv) round() { e.rounds.Add(1) }
+
+// settle waits until the program's rounds of alerts have stopped coming: at least one after the last sync when one
+// is expected (the Inbox and its alerts are on), then none for a while. The alerts are sent by the program's own
+// goroutine, so a test can only wait for it; the guards themselves are tested directly, without waiting.
+func (e *inboxEnv) settle(expectRound bool) {
+	e.t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for expectRound && e.rounds.Load() <= e.mark && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	for last, quiet := e.rounds.Load(), 0; quiet < 12 && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+		if now := e.rounds.Load(); now != last {
+			last, quiet = now, 0
+		} else {
+			quiet++
+		}
+	}
+}
+
+// waitAlerts waits until n alerts have been sent, or fails.
+func (e *inboxEnv) waitAlerts(n int) []notification {
+	e.t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := e.alerts(); len(got) >= n {
+			e.settle(false)
+			if got = e.alerts(); len(got) != n {
+				e.t.Fatalf("want %d alerts, got %+v", n, got)
+			}
+			return got
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	e.t.Fatalf("want %d alerts, got %+v", n, e.alerts())
+	return nil
+}
+
+// noAlerts checks that none was sent once the program's rounds after the last sync are over.
+func (e *inboxEnv) noAlerts(expectRound bool) {
+	e.t.Helper()
+	e.settle(expectRound)
+	if got := e.alerts(); len(got) != 0 {
+		e.t.Fatalf("unexpected alerts: %+v", got)
+	}
 }
 
 func (e *inboxEnv) clock() time.Time { return time.UnixMilli(e.now.Load()) }
@@ -102,7 +178,7 @@ func newInboxEnv(t *testing.T, cfg string) *inboxEnv {
 	e.now.Store(time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC).UnixMilli())
 	e.prov.Provider.Now = e.clock
 	e.club = core.New(core.Options{Registry: provider.NewRegistry(e.prov), FollowUps: []time.Duration{}, Now: e.clock})
-	e.h = startHost(t, pac.Manifest, exttest.Serve(t, Program(e.club, pac.Version())), json.RawMessage(cfg))
+	e.h = startHost(t, pac.Manifest, exttest.Serve(t, program(e.club, pac.Version(), e.push, e.round)), json.RawMessage(cfg))
 	ctx := context.Background()
 	var err error
 	if e.space, err = e.club.Space(ctx, core.DefaultSpace); err != nil {
@@ -136,6 +212,7 @@ func (e *inboxEnv) reply(p wire.ConnectorInboxReply) error {
 
 func (e *inboxEnv) sync() {
 	e.t.Helper()
+	e.mark = e.rounds.Load()
 	for _, id := range e.ids {
 		if err := e.space.SyncAccount(context.Background(), id); err != nil {
 			e.t.Fatal(err)
@@ -824,5 +901,490 @@ func TestInboxPickSendIDFollowsTheText(t *testing.T) {
 	sent := e.prov.sent()
 	if len(sent) != 2 || sent[0].Text != "A：run the tests" || sent[1].Text != "A：delete the branch" {
 		t.Fatalf("two different confirmed texts must be two sends: %+v", sent)
+	}
+}
+
+const tailscaleAsk = "这台机器要先加入网络。请打开 https://login.tailscale.com/a/0a1b2c3d4e5f 批准一下。"
+
+// direct is a notifier of the test's own over given rows, with a log that already exists (so nothing is seeded): the
+// guards and the bookkeeping are tested on it without waiting for the program's goroutine.
+func (e *inboxEnv) direct(rows *[]cachedRow) *notifier {
+	e.t.Helper()
+	if err := e.space.Store().PutSetting(context.Background(), pushLogKey, "{}"); err != nil {
+		e.t.Fatal(err)
+	}
+	n := newNotifier(newInbox(e.club, nil, func() inboxConfig { return Config{InboxConversations: true}.inbox() }), func() *ext.Hub { return nil }, e.push)
+	n.rows = func(context.Context) ([]cachedRow, error) { return *rows, nil }
+	return n
+}
+
+func waitingRow(i int, attn string, at time.Time) cachedRow {
+	return cachedRow{attn: attn, thing: wire.ConnectorInboxThing{Thread: fmt.Sprintf("agent:echo:x:row%d", i), Last: "m:1", Sender: "账号",
+		Label: "演示账号", At: at, Tags: []wire.ConnectorTag{{Key: "chat", Name: "对话标题"}}}}
+}
+
+const inboxOff = `{"demo_echo":true}` // the program's own alerts stay out of a test that drives a notifier itself
+
+func TestInboxAuthRequestIsNeedsYouAndPushedOnce(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	now := e.now.Load()
+	e.prov.say("main", protocol.RoleAssistant, "m1", tailscaleAsk, now-1000)
+	e.sync()
+	key := e.sessionKey(0, "main")
+	row := thingOfThread(e.collect(), key)
+	if row == nil || row.Tier != wire.ConnectorTierAction || row.Why == "" || row.Read {
+		t.Fatalf("a sign-in request is for the owner: %+v", row)
+	}
+	got := e.waitAlerts(2) // the fake service gives both accounts the same scripted chat
+	var n notification
+	for _, g := range got {
+		if g.ID == pushID(key, "m:m1") {
+			n = g
+		}
+	}
+	if n.PushLevel != "P0" || n.Level != "time-sensitive" || n.ID == "" || len(n.ID) > 56 {
+		t.Fatalf("alert: %+v", got)
+	}
+	if !strings.Contains(n.Title, row.Sender) || !strings.Contains(n.Body, row.Label) {
+		t.Fatalf("alert should say whose it is: %+v", n)
+	}
+	for _, leak := range []string{"tailscale", "批准一下", "0a1b2c3d", "Echo"} { // the reply, its link, the chat's title
+		if strings.Contains(n.Title+n.Body, leak) {
+			t.Fatalf("the alert carries %q of the conversation: %+v", leak, n)
+		}
+	}
+	// more rounds do not alert the same reply again
+	e.now.Add(1000)
+	e.sync()
+	_ = e.space.SetInboxAccount(context.Background(), e.ids[1], true) // any club event runs a round
+	e.settle(true)
+	if got := e.alerts(); len(got) != 2 {
+		t.Fatalf("alerted again: %+v", got)
+	}
+	// nor does a program started again on the same data
+	again := newNotifier(newInbox(e.club, nil, func() inboxConfig { return Config{InboxConversations: true}.inbox() }), func() *ext.Hub { return nil }, e.push)
+	if more := again.pushAttention(context.Background()); more {
+		t.Fatal("nothing should be left to alert")
+	}
+	if got := e.alerts(); len(got) != 2 {
+		t.Fatalf("a restarted program alerted again: %+v", got)
+	}
+}
+
+func TestInboxChoicesAreAlertedToo(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	e.prov.say("main", protocol.RoleAssistant, "m1", "接下来怎么办？\nA：现在就重跑\nB：先查原因\n先放着", e.now.Load()-1000)
+	e.sync()
+	n := e.waitAlerts(2)[0]
+	if n.PushLevel != "P0" || n.Level != "active" || !strings.Contains(n.Title, "在等你选") {
+		t.Fatalf("alert: %+v", n)
+	}
+	if strings.Contains(n.Title+n.Body, "重跑") {
+		t.Fatalf("the alert repeats the reply: %+v", n)
+	}
+}
+
+func TestInboxAuthInAChatYouCannotReplyTo(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	e.prov.say("notes", protocol.RoleAssistant, "n1", "Please log in again to continue.", e.now.Load()-1000)
+	e.sync()
+	row := thingOfThread(e.collect(), e.sessionKey(0, "notes"))
+	if row == nil || row.CanReply || row.Tier != wire.ConnectorTierAction {
+		t.Fatalf("signing in is the owner's to do even where they cannot reply: %+v", row)
+	}
+	e.waitAlerts(2)
+}
+
+func TestInboxOrdinaryRepliesAreNotAlerted(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	now := e.now.Load()
+	e.prov.say("main", protocol.RoleAssistant, "m1", "已经处理好了，不需要你做什么。", now-3000)
+	e.prov.say("notes", protocol.RoleAssistant, "n1", "我已经登录好了，可以继续。", now-2000)
+	e.sync()
+	for _, th := range e.collect() {
+		if th.Tier != "" {
+			t.Fatalf("an ordinary reply was marked for the owner: %+v", th)
+		}
+	}
+	e.noAlerts(true)
+}
+
+func TestInboxNoAlertForOldOrAnsweredReplies(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	now := e.now.Load()
+	// quiet when the switch went on: comes in read, so no alert
+	e.prov.say("main", protocol.RoleAssistant, "old", tailscaleAsk, now-48*3600_000)
+	// within a day but past the alert window
+	e.prov.say("notes", protocol.RoleAssistant, "stale", tailscaleAsk, now-7*3600_000)
+	e.sync()
+	e.noAlerts(true)
+	// an answered request: the owner's own message is the newest
+	e.now.Add(60_000)
+	e.prov.say("main", protocol.RoleAssistant, "ask", tailscaleAsk, e.now.Load())
+	e.prov.say("main", protocol.RoleUser, "done", "批准了", e.now.Load()+1)
+	e.sync()
+	e.noAlerts(true)
+}
+
+func TestInboxAlertsCanBeSwitchedOff(t *testing.T) {
+	e := newInboxEnv(t, `{"demo_echo":true,"inbox_conversations":true,"inbox_push":false}`)
+	e.prov.say("main", protocol.RoleAssistant, "m1", tailscaleAsk, e.now.Load()-1000)
+	e.sync()
+	row := thingOfThread(e.collect(), e.sessionKey(0, "main"))
+	if row == nil || row.Tier != wire.ConnectorTierAction {
+		t.Fatalf("the row is still for the owner: %+v", row)
+	}
+	e.noAlerts(false)
+	off := newInboxEnv(t, inboxOff)
+	off.prov.say("main", protocol.RoleAssistant, "m1", tailscaleAsk, off.now.Load()-1000)
+	off.sync()
+	off.noAlerts(false)
+}
+
+// What already waits when alerts start (an upgrade, the switch turned on) was in the Inbox before: it is remembered,
+// not alerted, and only what comes later is.
+func TestInboxNoBurstOfAlertsWhenAlertsStart(t *testing.T) {
+	e := newInboxEnv(t, inboxOff)
+	now := e.club.Now()
+	rows := []cachedRow{waitingRow(0, attnAuth, now), waitingRow(1, attnChoice, now)}
+	n := newNotifier(newInbox(e.club, nil, func() inboxConfig { return Config{InboxConversations: true}.inbox() }), func() *ext.Hub { return nil }, e.push)
+	n.rows = func(context.Context) ([]cachedRow, error) { return rows, nil }
+	n.seed(context.Background()) // as the program does when it starts
+	if more := n.pushAttention(context.Background()); more || len(e.alerts()) != 0 {
+		t.Fatalf("rows waiting at the start were alerted: %+v", e.alerts())
+	}
+	rows = append(rows, waitingRow(2, attnAuth, now))
+	n.pushAttention(context.Background())
+	if got := e.alerts(); len(got) != 1 || got[0].ID != pushID(rows[2].thing.Thread, "m:1") {
+		t.Fatalf("only the new one should be alerted: %+v", got)
+	}
+	// a round is the seed too, when the start's own could not be done
+	e2 := newInboxEnv(t, inboxOff)
+	n2 := newNotifier(newInbox(e2.club, nil, func() inboxConfig { return Config{InboxConversations: true}.inbox() }), func() *ext.Hub { return nil }, e2.push)
+	n2.rows = func(context.Context) ([]cachedRow, error) { return rows, nil }
+	n2.pushAttention(context.Background())
+	if got := e2.alerts(); len(got) != 0 {
+		t.Fatalf("an unseeded first round alerted: %+v", got)
+	}
+}
+
+func TestInboxFailedAlertIsTriedAgain(t *testing.T) {
+	e := newInboxEnv(t, inboxOff)
+	rows := []cachedRow{waitingRow(0, attnAuth, e.club.Now())}
+	n := e.direct(&rows)
+	e.pmu.Lock()
+	e.pushFail = 1
+	e.pmu.Unlock()
+	if more := n.pushAttention(context.Background()); !more || len(e.alerts()) != 0 {
+		t.Fatalf("a failed alert leaves work for a later round: more=%v %+v", more, e.alerts())
+	}
+	if more := n.pushAttention(context.Background()); more || len(e.alerts()) != 1 {
+		t.Fatalf("the next round sends it: more=%v %+v", more, e.alerts())
+	}
+	n.pushAttention(context.Background())
+	if got := e.alerts(); len(got) != 1 {
+		t.Fatalf("and it is sent once: %+v", got)
+	}
+}
+
+// run comes back by itself after a failure, with no new event from the club.
+func TestInboxAlertRetriesWithoutANewEvent(t *testing.T) {
+	e := newInboxEnv(t, inboxOff)
+	rows := []cachedRow{waitingRow(0, attnAuth, e.club.Now())}
+	n := e.direct(&rows)
+	n.retry = 20 * time.Millisecond
+	e.pmu.Lock()
+	e.pushFail = 2
+	e.pmu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	go n.run(ctx)
+	n.kick <- struct{}{}
+	deadline := time.Now().Add(3 * time.Second)
+	for len(e.alerts()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-n.done
+	if got := e.alerts(); len(got) != 1 {
+		t.Fatalf("want the alert after two failed tries, got %+v", got)
+	}
+}
+
+func TestInboxAlertsAreCappedPerRound(t *testing.T) {
+	e := newInboxEnv(t, inboxOff)
+	var rows []cachedRow
+	for i := range 9 {
+		rows = append(rows, waitingRow(i, attnAuth, e.club.Now()))
+	}
+	n := e.direct(&rows)
+	if more := n.pushAttention(context.Background()); !more || len(e.alerts()) != pushMaxEach {
+		t.Fatalf("%d alerts in one round (more=%v), want %d and more to come", len(e.alerts()), more, pushMaxEach)
+	}
+	if more := n.pushAttention(context.Background()); more || len(e.alerts()) != 9 {
+		t.Fatalf("%d alerts after two rounds (more=%v), want 9", len(e.alerts()), more)
+	}
+}
+
+// A row the owner read or answered while an earlier alert of the round was on its way is not alerted: the rows are
+// read again before every send.
+func TestInboxRowAnsweredDuringARoundIsNotAlerted(t *testing.T) {
+	e := newInboxEnv(t, inboxOff)
+	rows := []cachedRow{waitingRow(0, attnAuth, e.club.Now()), waitingRow(1, attnAuth, e.club.Now())}
+	n := e.direct(&rows)
+	first := true
+	n.push = func(ctx context.Context, a notification) error {
+		if first { // while the first alert goes out, the owner answers the second chat
+			first = false
+			rows[1].thing.Done = wire.ConnectorDoneReplied
+		}
+		return e.push(ctx, a)
+	}
+	n.pushAttention(context.Background())
+	if got := e.alerts(); len(got) != 1 || got[0].ID != pushID(rows[0].thing.Thread, "m:1") {
+		t.Fatalf("the answered row was alerted: %+v", got)
+	}
+}
+
+// However many events come while the hub is slow, each waiting reply is alerted once and the kicks do not pile up
+// (they are one slot; there is one sending goroutine by construction).
+func TestInboxManyEventsAlertEachReplyOnce(t *testing.T) {
+	e := newInboxEnv(t, inboxOff)
+	var rows []cachedRow
+	for i := range 4 {
+		rows = append(rows, waitingRow(i, attnChoice, e.club.Now()))
+	}
+	n := e.direct(&rows)
+	var inFlight, worst atomic.Int32
+	n.push = func(ctx context.Context, a notification) error {
+		if c := inFlight.Add(1); c > worst.Load() {
+			worst.Store(c)
+		}
+		time.Sleep(20 * time.Millisecond)
+		inFlight.Add(-1)
+		return e.push(ctx, a)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go n.run(ctx)
+	for range 50 {
+		n.poke(ctx)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for len(e.alerts()) < 4 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-n.done
+	if got := e.alerts(); len(got) != 4 || worst.Load() != 1 {
+		t.Fatalf("%d alerts, %d at once; want 4, one at a time", len(got), worst.Load())
+	}
+}
+
+// failingStore fails reads of the alert log (or writes), as a database in trouble would.
+type failingStore struct {
+	store.Store
+	failRead, failWrite bool
+}
+
+func (f *failingStore) Setting(ctx context.Context, key string) (string, bool, error) {
+	if f.failRead && key == pushLogKey {
+		return "", false, errors.New("database is locked")
+	}
+	return f.Store.Setting(ctx, key)
+}
+
+func (f *failingStore) PutSetting(ctx context.Context, key, value string) error {
+	if f.failWrite && key == pushLogKey {
+		return errors.New("database is locked")
+	}
+	return f.Store.PutSetting(ctx, key, value)
+}
+
+// While the log of what was alerted cannot be read, nothing is alerted (it could be a repeat); it is tried again.
+// A log that cannot be written still keeps this run from repeating itself.
+func TestInboxAlertLogInTrouble(t *testing.T) {
+	ctx := context.Background()
+	fs := &failingStore{Store: store.NewMemory(), failRead: true}
+	club := core.New(core.Options{Registry: provider.NewRegistry(echo.New()), FollowUps: []time.Duration{},
+		OpenSpace: func(string) (store.Store, vault.Vault, error) { return fs, vault.NewMemory(), nil }})
+	t.Cleanup(club.Close)
+	var sent []notification
+	rows := []cachedRow{waitingRow(0, attnAuth, club.Now())}
+	n := newNotifier(newInbox(club, nil, func() inboxConfig { return Config{InboxConversations: true}.inbox() }), func() *ext.Hub { return nil },
+		func(_ context.Context, a notification) error { sent = append(sent, a); return nil })
+	n.rows = func(context.Context) ([]cachedRow, error) { return rows, nil }
+	if more := n.pushAttention(ctx); !more || len(sent) != 0 {
+		t.Fatalf("alerted without knowing what was alerted before: more=%v %+v", more, sent)
+	}
+	fs.failRead = false
+	_ = fs.Store.PutSetting(ctx, pushLogKey, "{}")
+	fs.failWrite = true
+	n.pushAttention(ctx)
+	n.pushAttention(ctx)
+	if len(sent) != 1 {
+		t.Fatalf("want one alert, not repeated while the log cannot be written: %+v", sent)
+	}
+}
+
+// When the program ends in the middle of a round, the alerts not yet started are not sent.
+func TestInboxNoAlertAfterTheProgramEnds(t *testing.T) {
+	e := newInboxEnv(t, inboxOff)
+	rows := []cachedRow{waitingRow(0, attnAuth, e.club.Now()), waitingRow(1, attnAuth, e.club.Now())}
+	n := e.direct(&rows)
+	ctx, cancel := context.WithCancel(context.Background())
+	n.push = func(c context.Context, a notification) error {
+		cancel() // the program ends while the first alert is on its way
+		return e.push(c, a)
+	}
+	if more := n.pushAttention(ctx); more || len(e.alerts()) != 1 {
+		t.Fatalf("want the one alert that was under way and no more: more=%v %+v", more, e.alerts())
+	}
+}
+
+// Without the hub's notify scope nothing can be sent in this run: the round stops and asks for no retry.
+func TestInboxNoRetryWithoutTheNotifyScope(t *testing.T) {
+	e := newInboxEnv(t, inboxOff)
+	rows := []cachedRow{waitingRow(0, attnAuth, e.club.Now()), waitingRow(1, attnAuth, e.club.Now())}
+	n := e.direct(&rows)
+	tries := 0
+	real := hubPush(HTTPClient(), func() hubAPI { return hubAPI{} }) // what the program has when the scope was not granted
+	n.push = func(c context.Context, a notification) error { tries++; return real(c, a) }
+	if more := n.pushAttention(context.Background()); more || tries != 1 {
+		t.Fatalf("more=%v after %d tries; want one try and no retry", more, tries)
+	}
+}
+
+// A hub that fails every time costs a round a bounded number of tries.
+func TestInboxFailuresAreCappedPerRound(t *testing.T) {
+	e := newInboxEnv(t, inboxOff)
+	var rows []cachedRow
+	for i := range 12 {
+		rows = append(rows, waitingRow(i, attnAuth, e.club.Now()))
+	}
+	n := e.direct(&rows)
+	tries := 0
+	n.push = func(context.Context, notification) error { tries++; return errors.New("hub unreachable") }
+	if more := n.pushAttention(context.Background()); !more || tries != pushMaxEach {
+		t.Fatalf("more=%v after %d tries; want %d and a retry", more, tries, pushMaxEach)
+	}
+}
+
+// If the seed at the start could not be done, the round that makes up for it remembers only what waited at the
+// start: a reply that came since is alerted.
+func TestInboxLateSeedDoesNotSwallowNews(t *testing.T) {
+	e := newInboxEnv(t, inboxOff)
+	start := e.club.Now()
+	rows := []cachedRow{waitingRow(0, attnAuth, start.Add(-time.Minute))}
+	n := newNotifier(newInbox(e.club, nil, func() inboxConfig { return Config{InboxConversations: true}.inbox() }), func() *ext.Hub { return nil }, e.push)
+	fail := true
+	n.rows = func(context.Context) ([]cachedRow, error) {
+		if fail {
+			return nil, errors.New("store busy")
+		}
+		return rows, nil
+	}
+	n.seed(context.Background()) // fails: the log stays unseeded
+	fail = false
+	e.now.Add(120_000)
+	rows = append(rows, waitingRow(1, attnAuth, e.club.Now())) // came after the start
+	n.pushAttention(context.Background())
+	if got := e.alerts(); len(got) != 1 || got[0].ID != pushID(rows[1].thing.Thread, "m:1") {
+		t.Fatalf("want only the reply that came after the start alerted: %+v", got)
+	}
+}
+
+// hubPush asks the hub's notify route, with the program's own token, and never repeats it in an error.
+func TestHubPushCallsTheNotifyRoute(t *testing.T) {
+	const token = "pext_fixture_token_value"
+	var gotAuth, gotPath string
+	var gotBody notification
+	status := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth, gotPath = r.Header.Get("Authorization"), r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"sent":true}`))
+	}))
+	defer srv.Close()
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("HTTPS_PROXY", "")
+	send := hubPush(HTTPClient(), func() hubAPI { return hubAPI{URL: srv.URL + "/", Token: token} }) // the program's own client
+	n := notification{ID: "ensemble-abc", Title: "T", Body: "B", Level: "active", PushLevel: "P0"}
+	if err := send(context.Background(), n); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/api/v1/notify" || gotAuth != "Bearer "+token || gotBody != n {
+		t.Fatalf("request: %s %q %+v", gotPath, gotAuth, gotBody)
+	}
+	status = http.StatusForbidden
+	err := send(context.Background(), n)
+	if err == nil || strings.Contains(err.Error(), token) || strings.Contains(err.Error(), srv.URL) {
+		t.Fatalf("a refusal is an error that does not carry the token or the address: %v", err)
+	}
+	if err := hubPush(HTTPClient(), func() hubAPI { return hubAPI{} })(context.Background(), n); err == nil {
+		t.Fatal("with no hub address or token nothing can be sent")
+	}
+	srv.Close()
+	if err := send(context.Background(), n); err == nil || strings.Contains(err.Error(), token) || strings.Contains(err.Error(), "127.0.0.1") {
+		t.Fatalf("a failed request: %v", err)
+	}
+}
+
+func TestManifestAsksForNotifyAndTheHubBuild(t *testing.T) {
+	var m struct {
+		Version string `json:"version"`
+		Engines struct {
+			Persona  string `json:"persona"`
+			Protocol int    `json:"extension_protocol"`
+		} `json:"engines"`
+		Permissions struct {
+			Hub []string `json:"hub"`
+		} `json:"permissions"`
+		Configuration struct {
+			Properties map[string]struct {
+				Default any `json:"default"`
+			} `json:"properties"`
+		} `json:"configuration"`
+	}
+	if err := json.Unmarshal(pac.Manifest, &m); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(m.Permissions.Hub, "notify") {
+		t.Errorf("alerts need the notify scope: %v", m.Permissions.Hub)
+	}
+	for _, keep := range []string{"machines.read", "browser.run"} {
+		if !slices.Contains(m.Permissions.Hub, keep) {
+			t.Errorf("lost scope %q: %v", keep, m.Permissions.Hub)
+		}
+	}
+	// v0.6.0 (build 202611160608) is the first stable hub with the catalog capability, fallback, inbox_item pages
+	// and push_level; checked against the hub's release index and git history when this was written.
+	if m.Engines.Persona != ">=202611160608" || m.Engines.Protocol != 1 {
+		t.Errorf("engines: %+v", m.Engines)
+	}
+	if d := m.Configuration.Properties["inbox_push"].Default; d != true {
+		t.Errorf("inbox_push default: %v", d)
+	}
+	if pac.Version() != "0.7.1" {
+		t.Errorf("version %s", pac.Version())
+	}
+}
+
+// pushAttention keeps its own guards, whatever built the rows: nothing is alerted for a row already read, answered,
+// without anything waiting, or too old.
+func TestPushAttentionGuards(t *testing.T) {
+	e := newInboxEnv(t, inboxOff)
+	now := e.club.Now()
+	rows := []cachedRow{waitingRow(0, attnAuth, now), waitingRow(1, attnAuth, now), waitingRow(2, "", now),
+		waitingRow(3, attnAuth, now.Add(-pushWindow-time.Minute))}
+	rows[0].thing.Read = true
+	rows[1].thing.Done = wire.ConnectorDoneReplied
+	n := e.direct(&rows)
+	if more := n.pushAttention(context.Background()); more || len(e.alerts()) != 0 {
+		t.Fatalf("alerted for a row that needs nothing: %+v", e.alerts())
+	}
+	rows = append(rows, waitingRow(4, attnChoice, now))
+	n.pushAttention(context.Background())
+	if got := e.alerts(); len(got) != 1 {
+		t.Fatalf("the one that waits should be alerted: %+v", got)
 	}
 }

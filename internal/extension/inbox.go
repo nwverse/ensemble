@@ -47,12 +47,13 @@ type inboxConfig struct {
 	On    bool   // inbox_conversations
 	Reply bool   // inbox_reply
 	ViaSB bool   // inbox_via_subscription: the rows are read through a subscription, not by the Inbox itself
+	Push  bool   // inbox_push: a phone alert when a reply waits for the owner
 	Rules string // triage_rules
 }
 
 func (c Config) inbox() inboxConfig {
 	return inboxConfig{On: c.InboxConversations, Reply: c.InboxReply == nil || *c.InboxReply,
-		ViaSB: c.InboxViaSubscription, Rules: strings.TrimSpace(c.TriageRules)}
+		ViaSB: c.InboxViaSubscription, Push: c.InboxPush == nil || *c.InboxPush, Rules: strings.TrimSpace(c.TriageRules)}
 }
 
 type inbox struct {
@@ -68,7 +69,14 @@ type cachedRow struct {
 	fp    string
 	thing wire.ConnectorInboxThing
 	opts  []option
+	attn  string // attnChoice or attnAuth when the newest reply waits for the owner, else ""
 }
+
+// What a reply can be waiting for the owner to do: pick one of its choices, or sign in / approve an authorization.
+const (
+	attnChoice = "choice"
+	attnAuth   = "auth"
+)
 
 func newInbox(club *core.Club, drv browser.Driver, cfg func() inboxConfig) *inbox {
 	return &inbox{club: club, browser: drv, cfg: cfg, cache: map[string]cachedRow{}}
@@ -161,13 +169,13 @@ func (h *inbox) status(ctx context.Context, _ wire.ConnectorParams) (wire.Connec
 	return wire.ConnectorStatus{State: wire.ConnectorStateOk, Account: fmt.Sprintf("%d 个账号的对话", n)}, nil
 }
 
-// things are the Inbox rows now; the slice is never nil.
-func (h *inbox) things(ctx context.Context, withKind bool) ([]wire.ConnectorInboxThing, error) {
+// rows are the Inbox rows now with what each waits for; the slice is never nil.
+func (h *inbox) rows(ctx context.Context, withKind bool) ([]cachedRow, error) {
 	space, chats, since, err := h.chats(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := []wire.ConnectorInboxThing{}
+	out := []cachedRow{}
 	if space == nil {
 		return out, nil
 	}
@@ -180,9 +188,19 @@ func (h *inbox) things(ctx context.Context, withKind bool) ([]wire.ConnectorInbo
 		if withKind {
 			r.thing.Kind = kindAgentReply
 		}
-		out = append(out, r.thing)
+		out = append(out, r)
 	}
 	return out, nil
+}
+
+// things are the Inbox rows now; the slice is never nil.
+func (h *inbox) things(ctx context.Context, withKind bool) ([]wire.ConnectorInboxThing, error) {
+	rows, err := h.rows(ctx, withKind)
+	out := make([]wire.ConnectorInboxThing, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.thing)
+	}
+	return out, err
 }
 
 func (h *inbox) collect(ctx context.Context, _ wire.ConnectorParams) (wire.ConnectorCollectResult, error) {
@@ -251,7 +269,7 @@ func (h *inbox) row(ctx context.Context, space *core.Space, c chat, since int64,
 		return cachedRow{}, err
 	}
 	r := cachedRow{fp: fp}
-	r.thing, r.opts = thingOf(c, page.Messages, since, cfg)
+	r.thing, r.opts, r.attn = thingOf(c, page.Messages, since, cfg)
 	h.mu.Lock()
 	h.cache[s.SessionKey] = r
 	h.mu.Unlock()
@@ -260,7 +278,7 @@ func (h *inbox) row(ctx context.Context, space *core.Space, c chat, since int64,
 
 // thingOf is the row of a chat: msgs are its newest messages, oldest first, with the sends not echoed yet (Local) at
 // the end. The second answer is the choices the newest reply ends with (the extension's Inbox page draws them).
-func thingOf(c chat, msgs []protocol.Message, since int64, cfg inboxConfig) (wire.ConnectorInboxThing, []option) {
+func thingOf(c chat, msgs []protocol.Message, since int64, cfg inboxConfig) (wire.ConnectorInboxThing, []option, string) {
 	s, acct := c.sess, c.acct
 	name := accountName(acct)
 	chatName := cmp.Or(strings.TrimSpace(s.Title), "未命名对话")
@@ -288,9 +306,11 @@ func thingOf(c chat, msgs []protocol.Message, since int64, cfg inboxConfig) (wir
 	}
 	canReply := cfg.Reply && s.CanSend && acct.Status == protocol.AccountActive
 	var opts []option
-	if canReply && len(real) > 0 && real[len(real)-1].Role != protocol.RoleUser {
+	waiting := len(real) > 0 && real[len(real)-1].Role != protocol.RoleUser // the newest message is the AI's
+	if canReply && waiting {
 		opts = parseOptions(latestReply)
 	}
+	auth := waiting && asksForAuth(latestReply) // the owner's to do, so also in a chat they cannot reply to
 	read := s.UnreadCount == 0 || (since > 0 && at.UnixMilli() < since-inboxFlood.Milliseconds())
 
 	var b strings.Builder
@@ -319,10 +339,17 @@ func thingOf(c chat, msgs []protocol.Message, since int64, cfg inboxConfig) (wir
 		t.CanReply = true
 		t.ReplyTo = "以你的身份发到" + providerName("zh", s.Provider) + "「" + chatName + "」（只有你和这个 AI 账号能看到）"
 	}
-	if len(opts) > 0 && !read {
+	attn := ""
+	switch {
+	case read:
+	case auth:
+		attn = attnAuth
+		t.Tier, t.Why = wire.ConnectorTierAction, "它在请你登录或批准授权"
+	case len(opts) > 0:
+		attn = attnChoice
 		t.Tier, t.Why = wire.ConnectorTierAction, "它在末尾给了几个选项，等你选"
 	}
-	return t, opts
+	return t, opts, attn
 }
 
 // inboxClientID is the outbox id of one Inbox reply: the same for the same reply again, so a retry sends it once.
@@ -394,7 +421,16 @@ func (h *inbox) send(ctx context.Context, thread, text, clientID string) error {
 type notifier struct {
 	in    *inbox
 	hub   func() *ext.Hub
+	push  pushFunc // nil: no alerts
+	log   pushLog
 	every time.Duration
+	retry time.Duration
+
+	kick    chan struct{} // a round of alerts is wanted
+	done    chan struct{} // closed when run has ended
+	onRound func()        // after each round of alerts (tests)
+	rows    func(ctx context.Context) ([]cachedRow, error)
+	startAt time.Time // when the program started; under log.mu
 
 	mu      sync.Mutex
 	digest  string
@@ -402,33 +438,43 @@ type notifier struct {
 	pending bool
 }
 
-func newNotifier(in *inbox, hub func() *ext.Hub) *notifier {
-	return &notifier{in: in, hub: hub, every: notifyEvery}
+func newNotifier(in *inbox, hub func() *ext.Hub, push pushFunc) *notifier {
+	return &notifier{in: in, hub: hub, push: push, every: notifyEvery, retry: pushRetry, kick: make(chan struct{}, 1),
+		done: make(chan struct{}), rows: func(ctx context.Context) ([]cachedRow, error) { return in.rows(ctx, true) }}
 }
 
-func (n *notifier) digestOf(ctx context.Context) (string, error) {
-	things, err := n.in.things(ctx, true)
-	if err != nil {
-		return "", err
-	}
-	lines := make([]string, 0, len(things))
-	for _, t := range things {
+func digestOf(rows []cachedRow) string {
+	lines := make([]string, 0, len(rows))
+	for _, r := range rows {
+		t := r.thing
 		lines = append(lines, fmt.Sprint(t.Thread, "|", t.Last, "|", t.Read, "|", t.Done, "|", t.Tier, "|", t.CanReply))
 	}
 	slices.Sort(lines)
 	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
-	return hex.EncodeToString(sum[:8]), nil
+	return hex.EncodeToString(sum[:8])
 }
 
-// poke is called after the club's changes: it sends connector.changed when the rows differ from the last ones told.
+// poke is called after the club's changes. It alerts the phone to replies that wait for the owner, and sends
+// connector.changed when the rows differ from the last ones told (not when a subscription reads them).
 func (n *notifier) poke(ctx context.Context) {
-	if !n.in.cfg().On || n.in.cfg().ViaSB {
+	cfg := n.in.cfg()
+	if !cfg.On {
 		return
 	}
-	d, err := n.digestOf(ctx)
+	rows, err := n.in.rows(ctx, true)
 	if err != nil {
 		return
 	}
+	if cfg.Push && n.push != nil {
+		select { // the hub may be slow: the alerts are run's, never this caller's
+		case n.kick <- struct{}{}:
+		default: // a round is already wanted
+		}
+	}
+	if cfg.ViaSB {
+		return
+	}
+	d := digestOf(rows)
 	n.mu.Lock()
 	if d == n.digest {
 		n.mu.Unlock()

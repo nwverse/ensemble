@@ -55,6 +55,7 @@ type Config struct {
 	InboxConversations   bool   `json:"inbox_conversations"`
 	InboxReply           *bool  `json:"inbox_reply"`
 	InboxViaSubscription bool   `json:"inbox_via_subscription"`
+	InboxPush            *bool  `json:"inbox_push"`
 	TriageRules          string `json:"triage_rules"`
 }
 
@@ -78,7 +79,16 @@ func resolveRuntimeSocket() string {
 }
 
 // Program is the extension program serving club. The club is closed when the program ends.
-func Program(club *core.Club, version string) ext.Program {
+func Program(club *core.Club, version string) ext.Program { return program(club, version, nil, nil) }
+
+// program is Program with the phone-alert sender given (tests); nil sends through the hub's notify route with the
+// token the hub gave this run. onRound, if any, is called after each round of alerts.
+func program(club *core.Club, version string, push pushFunc, onRound func()) ext.Program {
+	var hubAPIPtr atomic.Pointer[hubAPI]
+	hubAPIPtr.Store(&hubAPI{})
+	if push == nil {
+		push = hubPush(HTTPClient(), func() hubAPI { return *hubAPIPtr.Load() })
+	}
 	var hubPtr atomic.Pointer[ext.Hub]
 	driver := browser.NewPersonaHubDriver(&hubPtr)
 	var runtimeOn atomic.Bool
@@ -87,7 +97,8 @@ func Program(club *core.Club, version string) ext.Program {
 	cfgPtr.Store(&Config{})
 	inboxCfg := func() inboxConfig { return cfgPtr.Load().inbox() }
 	in := newInbox(club, driver, inboxCfg)
-	note := newNotifier(in, hubPtr.Load)
+	note := newNotifier(in, hubPtr.Load, push)
+	note.onRound = onRound
 	page := accountsPage(club, &hubPtr, driver, &runtimeOn, inboxCfg)
 	tool := toolsHandler(club, driver)
 	return ext.Program{
@@ -102,6 +113,9 @@ func Program(club *core.Club, version string) ext.Program {
 			}
 			runtimeOn.Store(cfg.assistantRuntimeEnabled())
 			cfgPtr.Store(&cfg)
+			if slices.Contains(init.Hub.Scopes, "notify") { // only when the owner granted it
+				hubAPIPtr.Store(&hubAPI{URL: init.Hub.URL, Token: init.Hub.Token})
+			}
 			if cfg.browserProvidersEnabled() {
 				for _, site := range []browser.Site{browser.SiteMuse, browser.SiteClaudeDuet, browser.SiteGeminiTasks, browser.SiteDots} {
 					if _, ok := club.Registry().Get(site.Provider); !ok {
@@ -154,6 +168,8 @@ func Program(club *core.Club, version string) ext.Program {
 				}
 			}
 			sub := club.Subscribe(core.DefaultSpace)
+			note.seed(ctx) // the log of alerts starts now: what waits already is remembered, not alerted
+			go note.run(ctx)
 			go forward(ctx, sub, hub, club, bridgeDone, note)
 			// The connector as the manifest has it: the hub wants the program to say it has it.
 			var m struct {
@@ -199,6 +215,7 @@ func forward(ctx context.Context, sub *core.Subscription, hub *ext.Hub, club *co
 			if bridgeDone != nil {
 				<-bridgeDone
 			}
+			<-note.done // the alerts stop before the club closes under them
 			return
 		case <-sub.Ready():
 			for _, e := range sub.Take() {
