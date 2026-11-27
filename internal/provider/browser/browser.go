@@ -514,7 +514,7 @@ var (
 )
 
 // ReadQuota reads real usage/quota readings from the signed-in web app when the site exposes one (Claude Duet,
-// ChatGPT Dots); returns nil for sites without a public/internal quota endpoint (Muse, Gemini).
+// ChatGPT Dots, Muse, Gemini); returns nil without error when unavailable.
 func (a *Adapter) ReadQuota(ctx context.Context, credential string) ([]provider.QuotaReading, error) {
 	if qr, ok := a.site.impl.(siteQuotaReader); ok {
 		return qr.readQuota(ctx, a, credential)

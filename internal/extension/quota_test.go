@@ -126,11 +126,11 @@ func TestQuotaPagesRealAndEstimatedAndNoJargon(t *testing.T) {
 		}
 	}
 
-	// Account detail (estimated Muse): local counts + honest source & estimation explanation.
+	// Account detail (Muse before first real sync): local counts + honest real-source explanation.
 	museView := renderUI(t, h, HomeUI, wire.PlacementNavPage, pageState{Page: pageAccount, Account: museAcct.AccountID})
 	noJargon(t, "muse account", museView)
 	museText := text(museView)
-	for _, want := range []string{"近 5 小时已发 1 条 · 近 24 小时已发 1 条", "本地发送记录估算", "静态快照", "触发限流"} {
+	for _, want := range []string{"近 5 小时已发 1 条 · 近 24 小时已发 1 条", "等待读取真实额度", "muse.ai", "立即同步"} {
 		if !strings.Contains(museText, want) {
 			t.Errorf("muse detail lacks %q:\n%s", want, museText)
 		}

@@ -25,6 +25,15 @@ shasum -a 256 -c personal-agent-club-<version>.tar.gz.sha256   # or: sha256sum -
 To hold the program to the hub's own checks without a hub (manifest and package as at install, handshake, error
 codes, every page drawable), run `scripts/persona-test.sh` with a `personad` on `PATH` (or `PERSONAD=/path/to/personad`).
 
+## What 0.7.7 adds
+
+Live real-time quota readings for **Muse**, **Gemini**, and **Claude Duet credit**:
+- **Muse (`muse.ai`)**: reads real weekly usage (`percentUsed`, exact `resetsAt`, `quotaStatus`) and non-expiring extra credits (`topupBalance` / `topupTotal`) from Settings › General › Usage (intercepting the Next.js server action payload with a DOM fallback, then cleanly closing the settings dialog).
+- **Gemini (`gemini.google.com/usage?hl=en`)**: reads live **Current usage** and **Weekly limit** percentages and exact reset times inside an isolated temporary page (`task.newPage()`), leaving the active Gemini chat tab untouched.
+- **Claude Duet (`claude.ai/api/organizations/<org>/usage`)**: also reads Claude Duet's dedicated weekly credit (`maple_sundial`, e.g., `$190.87 / $500`) alongside 5-hour and 7-day plan limits, falling back cleanly to plan limits when promotional credit reaches `$0`.
+
+No new permissions or configuration fields are added.
+
 ## What 0.7.6 adds
 
 Repositories for Claude Duet, from Persona:

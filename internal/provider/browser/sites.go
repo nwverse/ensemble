@@ -455,7 +455,7 @@ func (duetSite) readQuota(ctx context.Context, a *Adapter, credential string) ([
       if (uRes.status === 429) throw new Error("http 429");
       if (!uRes.ok) continue;
       const usage = await uRes.json().catch(() => null);
-      if (usage && typeof usage === "object" && (usage.five_hour || usage.seven_day)) {
+      if (usage && typeof usage === "object" && (usage.five_hour || usage.seven_day || usage.maple_sundial)) {
         return { usage };
       }
     }
@@ -465,8 +465,9 @@ func (duetSite) readQuota(ctx context.Context, a *Adapter, credential string) ([
 		Error       string `json:"error"`
 		Unavailable bool   `json:"unavailable"`
 		Usage       struct {
-			FiveHour *claudeUsageWindow `json:"five_hour"`
-			SevenDay *claudeUsageWindow `json:"seven_day"`
+			FiveHour     *claudeUsageWindow  `json:"five_hour"`
+			SevenDay     *claudeUsageWindow  `json:"seven_day"`
+			MapleSundial *claudeCreditWindow `json:"maple_sundial"`
 		} `json:"usage"`
 	}
 	if err := a.run(ctx, credential, script, &r); err != nil {
@@ -503,10 +504,70 @@ func (duetSite) readQuota(ctx context.Context, a *Adapter, credential string) ([
 	}
 	appendWindow(r.Usage.FiveHour, "5h")
 	appendWindow(r.Usage.SevenDay, "week")
+	if ms := r.Usage.MapleSundial; ms != nil {
+		limit := 100.0
+		rem := 0.0
+		hasRem := false
+		if ms.LimitDollars != nil && *ms.LimitDollars > 0 {
+			limit = *ms.LimitDollars
+			switch {
+			case ms.RemainingDollars != nil:
+				rem = *ms.RemainingDollars
+				hasRem = true
+			case ms.UsedDollars != nil:
+				rem = limit - *ms.UsedDollars
+				hasRem = true
+			case ms.Utilization != nil:
+				rem = limit * (1 - *ms.Utilization/100)
+				hasRem = true
+			}
+		} else if ms.Utilization != nil {
+			rem = 100 - *ms.Utilization
+			hasRem = true
+		}
+		if hasRem {
+			if rem < 0 {
+				rem = 0
+			}
+			if rem > limit {
+				rem = limit
+			}
+			// Claude Duet's promotional weekly credit (maple_sundial) falls back to plan limits (five_hour/seven_day)
+			// when depleted. Only emit a zero-remaining credit bucket if no healthy plan limit remains, so depleted
+			// promo credit never falsely blocks sends while plan allowance is still available.
+			hasHealthyPlan := false
+			for _, q := range out {
+				if !q.Exhausted && q.Remaining > 0 {
+					hasHealthyPlan = true
+					break
+				}
+			}
+			if rem > 0 || !hasHealthyPlan {
+				out = append(out, provider.QuotaReading{
+					Kind:       protocol.QuotaKindCredits,
+					Window:     "week",
+					Limit:      limit,
+					Remaining:  rem,
+					ResetsAt:   parseTimeMs(ms.ResetsAt),
+					Exhausted:  rem <= 0,
+					SourceNote: "claude_duet:organizations/usage",
+				})
+			}
+		}
+	}
 	return out, nil
 }
 
 type claudeUsageWindow struct {
 	Utilization *float64 `json:"utilization"`
 	ResetsAt    string   `json:"resets_at"`
+}
+
+type claudeCreditWindow struct {
+	Utilization      *float64 `json:"utilization"`
+	ResetsAt         string   `json:"resets_at"`
+	LimitDollars     *float64 `json:"limit_dollars"`
+	UsedDollars      *float64 `json:"used_dollars"`
+	RemainingDollars *float64 `json:"remaining_dollars"`
+	State            string   `json:"state"`
 }
