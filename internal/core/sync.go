@@ -217,7 +217,7 @@ func (s *Space) runSync(ctx context.Context, id, only string, refreshed, forceQu
 			}
 			s.mu.Lock()
 			s.fetchedAt[x.SessionKey] = s.now()
-			s.readOnce[x.SessionKey] = true
+			s.readAt[x.SessionKey] = s.fetchedAt[x.SessionKey]
 			s.mu.Unlock()
 			if n > 0 {
 				touched = append(touched, x.SessionKey)
@@ -345,7 +345,7 @@ func knownRanks(rows []store.Session, remote []provider.RemoteSession, before []
 // stored. What such a read finds is the session's history, not news.
 func (s *Space) neverRead(ctx context.Context, key string) (bool, error) {
 	s.mu.Lock()
-	read := s.readOnce[key]
+	read := s.readAt[key] > 0
 	s.mu.Unlock()
 	if read {
 		return false, nil
@@ -398,7 +398,8 @@ func (s *Space) sessionsDue(ctx context.Context, acct store.Account, before, ses
 	s.mu.Lock()
 	var untimed, changed []store.Session
 	for _, x := range sessions {
-		since, read := s.fetchedAt[x.SessionKey]
+		// Against the session's last successful read: a read that failed saw nothing, so what made it due still does.
+		since, read := s.readAt[x.SessionKey]
 		if !read {
 			since = acct.LastSyncedAt
 		}

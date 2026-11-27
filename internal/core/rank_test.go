@@ -233,11 +233,14 @@ func TestMovedSessionStaysDueUntilRead(t *testing.T) {
 	}
 	// s7 was read last (so the rotation does not pick it) at lastSync-100_000, and its list time moved after that read
 	// but before the account's last sync, whose reads were all taken.
+	// A read of it was tried since and failed (fetchedAt moved, readAt did not): it is still due.
 	fx.space.mu.Lock()
 	for i, x := range sessions {
 		fx.space.fetchedAt[x.SessionKey] = lastSync - 500_000 + int64(i)
+		fx.space.readAt[x.SessionKey] = lastSync - 500_000 + int64(i)
 	}
-	fx.space.fetchedAt[sessions[7].SessionKey] = lastSync - 100_000
+	fx.space.readAt[sessions[7].SessionKey] = lastSync - 100_000
+	fx.space.fetchedAt[sessions[7].SessionKey] = lastSync - 10_000
 	fx.space.mu.Unlock()
 	activity["s7"] = lastSync - 50_000
 	due, err := fx.space.sessionsDue(ctx, acct, before, sessions, activity, listed)
