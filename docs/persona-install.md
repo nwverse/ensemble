@@ -25,6 +25,14 @@ shasum -a 256 -c personal-agent-club-<version>.tar.gz.sha256   # or: sha256sum -
 To hold the program to the hub's own checks without a hub (manifest and package as at install, handshake, error
 codes, every page drawable), run `scripts/persona-test.sh` with a `personad` on `PATH` (or `PERSONAD=/path/to/personad`).
 
+## What 0.7.0 adds
+
+A second connector, `ensemble` (chats as Inbox rows), a page for those rows, and four settings: `inbox_conversations` (off),
+`inbox_reply` (on), `inbox_via_subscription` (off) and `triage_rules`. Nothing changes until `inbox_conversations` is turned on.
+The hub may ask again about the new connector at upgrade. The connector declares `fallback` (every row carries a tier), so the
+hub's "Message triage" model is not required: without one the rows come in as "worth knowing". The chats' text goes to that model
+when there is one. See the README, "Chats in Persona's Inbox".
+
 ## Back up first
 
 An install or upgrade touches two directories under the hub's state directory (`~/.persona` unless `PERSONA_HOME`

@@ -172,7 +172,7 @@ func (s *Space) accountViewWithBackends(ctx context.Context, a store.Account, ba
 		Email:         names.Email(a.Provider, a.DisplayName, a.NameSource),
 		Status:        a.Status, ExternalAccountID: a.ExternalAccountID, LastSyncedAt: a.LastSyncedAt, LastError: a.LastError,
 		SessionCount: len(sessions), AssistantControl: string(control), AssistantBackend: backends[a.AccountID],
-		ShowQuota: a.ShowQuota, QuotaDisplay: a.QuotaDisplay, Quota: s.quotaView(a, s.now()),
+		InboxOff: s.InboxAccountsOff(ctx)[a.AccountID], ShowQuota: a.ShowQuota, QuotaDisplay: a.QuotaDisplay, Quota: s.quotaView(a, s.now()),
 		AvatarURL: ownAvatar(sessions)}, nil
 }
 
@@ -955,6 +955,7 @@ func (s *Space) RemoveAccount(ctx context.Context, p protocol.RemoveAccountParam
 		return err
 	}
 	_ = s.setAssistantBackend(ctx, p.AccountID, false)
+	_ = s.SetInboxAccount(ctx, p.AccountID, true) // forget the switch: an account id is never reused
 	s.mu.Lock()
 	delete(s.quota, p.AccountID)
 	s.mu.Unlock()

@@ -49,6 +49,13 @@ type Config struct {
 	// "config:muse2api_url:http" lets the egress proxy through to that address only.
 	Muse2APIURL   string `json:"muse2api_url"`
 	Muse2APIModel string `json:"muse2api_model"`
+	// InboxConversations puts each chat of the paired accounts into Persona's Inbox as one row (off unless switched
+	// on); InboxReply lets the owner answer there (on); InboxViaSubscription has a subscription read the rows
+	// instead of the Inbox itself; TriageRules are the owner's own words for sorting them.
+	InboxConversations   bool   `json:"inbox_conversations"`
+	InboxReply           *bool  `json:"inbox_reply"`
+	InboxViaSubscription bool   `json:"inbox_via_subscription"`
+	TriageRules          string `json:"triage_rules"`
 }
 
 func (c Config) browserProvidersEnabled() bool {
@@ -76,7 +83,13 @@ func Program(club *core.Club, version string) ext.Program {
 	driver := browser.NewPersonaHubDriver(&hubPtr)
 	var runtimeOn atomic.Bool
 	runtimeOn.Store(true)
-	page := accountsPage(club, &hubPtr, driver, &runtimeOn)
+	var cfgPtr atomic.Pointer[Config]
+	cfgPtr.Store(&Config{})
+	inboxCfg := func() inboxConfig { return cfgPtr.Load().inbox() }
+	in := newInbox(club, driver, inboxCfg)
+	note := newNotifier(in, hubPtr.Load)
+	page := accountsPage(club, &hubPtr, driver, &runtimeOn, inboxCfg)
+	tool := toolsHandler(club, driver)
 	return ext.Program{
 		ID:       ID,
 		Version:  version,
@@ -88,6 +101,7 @@ func Program(club *core.Club, version string) ext.Program {
 				return nil, err
 			}
 			runtimeOn.Store(cfg.assistantRuntimeEnabled())
+			cfgPtr.Store(&cfg)
 			if cfg.browserProvidersEnabled() {
 				for _, site := range []browser.Site{browser.SiteMuse, browser.SiteClaudeDuet, browser.SiteGeminiTasks, browser.SiteDots} {
 					if _, ok := club.Registry().Get(site.Provider); !ok {
@@ -140,7 +154,7 @@ func Program(club *core.Club, version string) ext.Program {
 				}
 			}
 			sub := club.Subscribe(core.DefaultSpace)
-			go forward(ctx, sub, hub, club, bridgeDone)
+			go forward(ctx, sub, hub, club, bridgeDone, note)
 			// The connector as the manifest has it: the hub wants the program to say it has it.
 			var m struct {
 				Contributes struct {
@@ -152,9 +166,14 @@ func Program(club *core.Club, version string) ext.Program {
 			}
 			return map[string]any{"connectors": m.Contributes.Connectors}, nil
 		},
-		UI: map[string]ext.Page{HomeUI: page, HomeCardUI: page, AccountsUI: page},
+		UI: map[string]ext.Page{HomeUI: page, HomeCardUI: page, AccountsUI: page, InboxItemUI: in.itemPage()},
 		Namespaces: map[string]ext.Handler{
-			ext.ConnectorNamespace: toolsHandler(club, driver),
+			ext.ConnectorNamespace: func(ctx context.Context, method string, params json.RawMessage) (any, error) {
+				if ext.Contribution(params) == InboxConnector {
+					return in.handler()(ctx, method, params)
+				}
+				return tool(ctx, method, params)
+			},
 			protocol.AgentSourceNamespace: func(ctx context.Context, method string, params json.RawMessage) (any, error) {
 				if c := ext.Contribution(params); c != "" && c != Contribution {
 					return nil, ext.NoContribution(c)
@@ -171,7 +190,7 @@ func Program(club *core.Club, version string) ext.Program {
 
 // forward sends the space's changes to the hub until the program ends, then closes the club. A change also redraws
 // the extension's pages where they are on screen (the hub coalesces these).
-func forward(ctx context.Context, sub *core.Subscription, hub *ext.Hub, club *core.Club, bridgeDone <-chan struct{}) {
+func forward(ctx context.Context, sub *core.Subscription, hub *ext.Hub, club *core.Club, bridgeDone <-chan struct{}, note *notifier) {
 	defer club.Close()
 	defer sub.Close()
 	for {
@@ -188,6 +207,7 @@ func forward(ctx context.Context, sub *core.Subscription, hub *ext.Hub, club *co
 			for _, ui := range []string{HomeUI, HomeCardUI, AccountsUI} {
 				_ = hub.Invalidate(ui)
 			}
+			note.poke(ctx)
 		}
 	}
 }
