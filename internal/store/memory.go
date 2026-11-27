@@ -405,6 +405,29 @@ func (m *Memory) Counts(_ context.Context, id string) (Counts, error) {
 	return c, nil
 }
 
+func (m *Memory) CountUserMessagesSince(_ context.Context, id string, since int64) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	msgCount := 0
+	for key, s := range m.sessions {
+		if s.AccountID != id {
+			continue
+		}
+		for _, msg := range m.messages[key] {
+			if msg.Role == protocol.RoleUser && msg.CreateTimeMs >= since {
+				msgCount++
+			}
+		}
+	}
+	outboxCount := 0
+	for _, o := range m.outbox {
+		if o.AccountID == id && o.Status == protocol.LocalSent && o.CreatedAt >= since {
+			outboxCount++
+		}
+	}
+	return max(msgCount, outboxCount), nil
+}
+
 func (m *Memory) EnqueueOutbox(_ context.Context, o Outbox) (Outbox, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

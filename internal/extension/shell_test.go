@@ -572,14 +572,17 @@ func TestGrokBotSignIn(t *testing.T) {
 }
 
 func TestAnExhaustedAccountIsNotSentToByTheAssistant(t *testing.T) {
-	if err := exhausted(nil); err != nil {
+	if err := exhausted(nil, 0); err != nil {
 		t.Fatalf("unknown quota: %v", err)
 	}
-	if err := exhausted(&protocol.Quota{State: protocol.QuotaLow}); err != nil {
+	if err := exhausted(&protocol.Quota{State: protocol.QuotaLow}, 0); err != nil {
 		t.Fatalf("low quota: %v", err)
 	}
+	if err := exhausted(&protocol.Quota{State: protocol.QuotaExhausted, Stale: true}, 0); err != nil {
+		t.Fatalf("stale no-reset quota should not block forever: %v", err)
+	}
 	for _, q := range []*protocol.Quota{{State: protocol.QuotaExhausted}, {State: protocol.QuotaExhausted, ResetsAt: 1_800_000_000_000}} {
-		if err := exhausted(q); protocol.CodeOf(err) != protocol.CodeConflict {
+		if err := exhausted(q, 1_799_000_000_000); protocol.CodeOf(err) != protocol.CodeConflict {
 			t.Fatalf("exhausted quota %+v: %v", q, err)
 		}
 	}

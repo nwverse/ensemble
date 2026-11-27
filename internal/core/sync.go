@@ -59,19 +59,23 @@ func (s *Space) SyncAll(ctx context.Context) {
 }
 
 // SyncAccount is club.accounts.sync: one sync round of the account now. A failure is recorded on the account
-// (lastError), not returned.
+// (lastError), not returned. Manual sync also forces a fresh read from any QuotaReader.
 func (s *Space) SyncAccount(ctx context.Context, id string) error {
 	if _, err := s.requireAccount(ctx, id); err != nil {
 		return err
 	}
-	s.sync(ctx, id, "")
+	s.syncWithQuota(ctx, id, "", true)
 	return nil
 }
 
 // sync is one sync of an account, or of one of its sessions only; a second caller joins the one running.
 func (s *Space) sync(ctx context.Context, id, only string) {
+	s.syncWithQuota(ctx, id, only, false)
+}
+
+func (s *Space) syncWithQuota(ctx context.Context, id, only string, forceQuota bool) {
 	_, _ = join(&s.mu, s.syncing, id+"|"+only, func() (struct{}, error) {
-		if err := s.runSync(ctx, id, only, false); err != nil {
+		if err := s.runSync(ctx, id, only, false, forceQuota); err != nil {
 			s.log().Warn("sync failed", "space", s.name, "account", id, "err", err)
 		} else {
 			s.settleName(ctx, id)
@@ -88,7 +92,7 @@ func (s *Space) syncable(ctx context.Context, id string) bool {
 
 // runSync reads the account's sessions, then the messages of the sessions due. A provider's failure is recorded on
 // the account; an AUTH_FAILED is retried once with a refreshed credential. The returned error is the store's.
-func (s *Space) runSync(ctx context.Context, id, only string, refreshed bool) error {
+func (s *Space) runSync(ctx context.Context, id, only string, refreshed, forceQuota bool) error {
 	acct, ok, err := s.store.Account(ctx, id)
 	if err != nil || !ok || acct.Status == protocol.AccountPaused {
 		return err
@@ -106,9 +110,20 @@ func (s *Space) runSync(ctx context.Context, id, only string, refreshed bool) er
 	listChanged := 0
 	perr := func() error {
 		if wantsHistory(adapter) {
-			// Nothing remote to poll: the session only has to exist. The status is left alone, so a key a send
-			// found refused stays in error.
+			// Nothing remote to poll: the session only has to exist. On a manual sync while quota-blocked,
+			// re-verify once to refresh rate-limit headers or clear an old cooldown when the account is healthy.
 			if len(before) > 0 {
+				if forceQuota && s.hasActiveQuotaBlock(id) {
+					remoteAcct, err := adapter.Verify(ctx, cred)
+					if err != nil {
+						return err
+					}
+					if len(remoteAcct.Quota) > 0 {
+						s.noteQuota(id, remoteAcct.Quota)
+					} else {
+						s.clearExhaustedQuota(id)
+					}
+				}
 				return nil
 			}
 			remote, err := adapter.ListSessions(ctx, cred)
@@ -214,6 +229,9 @@ func (s *Space) runSync(ctx context.Context, id, only string, refreshed bool) er
 		if err := s.store.UpdateAccount(ctx, id, patch, now); err != nil {
 			return storeError{err}
 		}
+		if only == "" {
+			s.refreshQuota(ctx, id, adapter, cred, forceQuota)
+		}
 		return nil
 	}()
 	if se, ok := perr.(storeError); ok {
@@ -225,7 +243,7 @@ func (s *Space) runSync(ctx context.Context, id, only string, refreshed bool) er
 		auth := code == provider.CodeAuthFailed
 		if auth && !refreshed {
 			if fresh := s.refresh(ctx, id, adapter, cred); fresh != "" {
-				return s.runSync(ctx, id, only, true)
+				return s.runSync(ctx, id, only, true, forceQuota)
 			}
 		}
 		if acct.Status == protocol.AccountError {

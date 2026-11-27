@@ -564,3 +564,27 @@ func TestCJKTokens(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestCountUserMessagesSince(t *testing.T) {
+	each(t, func(t *testing.T, s Store) {
+		seed(t, s)
+		// seed inserts one user message at now-90_000 and one assistant message at now-60_000.
+		if n, err := s.CountUserMessagesSince(ctx, acct, now-100_000); err != nil || n != 1 {
+			t.Fatalf("since now-100_000: %d %v", n, err)
+		}
+		if n, err := s.CountUserMessagesSince(ctx, acct, now-80_000); err != nil || n != 0 {
+			t.Fatalf("since now-80_000: %d %v", n, err)
+		}
+		// Add two sent outbox rows and one failed row at now.
+		for i, status := range []string{protocol.LocalSent, protocol.LocalSent, protocol.LocalFailed} {
+			cid := "out-" + string(rune('a'+i))
+			_, _, err := s.EnqueueOutbox(ctx, Outbox{ClientID: cid, SessionKey: key, AccountID: acct, Text: "hi", CreatedAt: now})
+			must(t, err)
+			_, _, _ = s.ClaimOutbox(ctx, cid, now)
+			must(t, s.SettleOutbox(ctx, cid, status, "", now))
+		}
+		if n, err := s.CountUserMessagesSince(ctx, acct, now-1); err != nil || n != 2 {
+			t.Fatalf("sent outbox count: %d %v", n, err)
+		}
+	})
+}

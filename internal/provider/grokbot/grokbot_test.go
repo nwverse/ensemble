@@ -550,3 +550,70 @@ func TestListSessionsSkipsNotFoundSideSessionList(t *testing.T) {
 		}
 	}
 }
+
+func TestReadQuotaFromSandUsageStatusAndCurrentPeriod(t *testing.T) {
+	resetAt := time.Date(2026, 12, 1, 8, 0, 0, 0, time.UTC)
+	cycleEnd := time.Date(2026, 12, 15, 0, 0, 0, 0, time.UTC)
+	up := providertest.Serve(t, func(c providertest.Call) providertest.Answer {
+		switch c.Path {
+		case "/aiserver.v1.DashboardService/GetSandUsageStatus":
+			return providertest.Answer{Body: map[string]any{
+				"usagePercent":          72.5,
+				"nextResetTimestampUtc": resetAt.Format(time.RFC3339),
+				"hasAvailableUsage":     true,
+			}}
+		case "/aiserver.v1.DashboardService/GetCurrentPeriodUsage":
+			return providertest.Answer{Body: map[string]any{
+				"billingCycleEnd": cycleEnd.UnixMilli(),
+				"planUsage": map[string]any{
+					"limit":     2000,
+					"remaining": 400,
+				},
+			}}
+		default:
+			return providertest.Answer{Status: http.StatusNotFound}
+		}
+	})
+	readings, err := New(Options{Origin: up.URL}).ReadQuota(ctx, key)
+	if err != nil || len(readings) != 2 {
+		t.Fatalf("readings = %+v, err = %v", readings, err)
+	}
+	if readings[0].Kind != protocol.QuotaKindWindow || readings[0].Window != "week" || readings[0].Remaining != 27.5 ||
+		readings[0].ResetsAt != resetAt.UnixMilli() || readings[0].Exhausted {
+		t.Fatalf("first reading = %+v", readings[0])
+	}
+	if readings[1].Kind != protocol.QuotaKindCredits || readings[1].Window != "month" || readings[1].Remaining != 400 ||
+		readings[1].Limit != 2000 || readings[1].ResetsAt != cycleEnd.UnixMilli() {
+		t.Fatalf("second reading = %+v", readings[1])
+	}
+
+	// Exhausted via wouldRefuseSend with protobuf {seconds, nanos} timestamp.
+	exSrv := providertest.Serve(t, func(c providertest.Call) providertest.Answer {
+		if c.Path == "/aiserver.v1.DashboardService/GetSandUsageStatus" {
+			return providertest.Answer{Body: map[string]any{
+				"usagePercent":          99.5,
+				"wouldRefuseSend":       true,
+				"nextResetTimestampUtc": map[string]any{"seconds": resetAt.Unix(), "nanos": 0},
+			}}
+		}
+		return providertest.Answer{Status: http.StatusNotFound}
+	})
+	ex, err := New(Options{Origin: exSrv.URL}).ReadQuota(ctx, key)
+	if err != nil || len(ex) != 1 || !ex[0].Exhausted || ex[0].Remaining != 0 || ex[0].ResetsAt != resetAt.UnixMilli() {
+		t.Fatalf("exhausted readings = %+v, err = %v", ex, err)
+	}
+
+	// 429 propagates; 404 returns nil without error.
+	rlSrv := providertest.Serve(t, func(providertest.Call) providertest.Answer {
+		return providertest.Answer{Status: http.StatusTooManyRequests, Header: http.Header{"Retry-After": {"45"}}}
+	})
+	if _, err := New(Options{Origin: rlSrv.URL}).ReadQuota(ctx, key); provider.CodeOf(err) != provider.CodeRateLimited {
+		t.Fatalf("429 err = %v", err)
+	}
+	nfSrv := providertest.Serve(t, func(providertest.Call) providertest.Answer {
+		return providertest.Answer{Status: http.StatusNotFound}
+	})
+	if got, err := New(Options{Origin: nfSrv.URL}).ReadQuota(ctx, key); err != nil || len(got) != 0 {
+		t.Fatalf("404 got=%+v err=%v", got, err)
+	}
+}

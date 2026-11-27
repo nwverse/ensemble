@@ -866,7 +866,7 @@ func TestQuotaStatesStalenessAndAnnouncements(t *testing.T) {
 		left     float64
 		state    string
 		announce bool
-	}{{21, "ok", true}, {50, "ok", false}, {20, "low", true}, {1, "low", false}, {0, "exhausted", true}, {90, "ok", true}} {
+	}{{21, "ok", true}, {50, "ok", false}, {20, "low", true}, {1, "low", false}, {0, "exhausted", true}} {
 		q := sendWith(tc.left)
 		if q == nil || q.State != tc.state || q.Stale || q.Source != "provider" {
 			t.Fatalf("%v left: %+v", tc.left, q)
@@ -874,6 +874,20 @@ func TestQuotaStatesStalenessAndAnnouncements(t *testing.T) {
 		if got := listEvents(sub); got != tc.announce {
 			t.Fatalf("%v left: announced %v", tc.left, got)
 		}
+	}
+	// While freshly exhausted, a send stops before reaching the provider with an explicit conflict prompt.
+	n++
+	if _, err := e.space.Send(ctx, protocol.SendParams{SessionKey: key, ClientID: uuid(n), Text: "blocked"}); protocol.CodeOf(err) != protocol.CodeConflict ||
+		protocol.ReasonOf(err) != protocol.ReasonQuotaExhausted {
+		t.Fatalf("exhausted send should refuse with QUOTA_EXHAUSTED, got %v", err)
+	}
+	// Once the exhausted reading goes stale (no reset timestamp given), sends may try again and recover to ok.
+	e.advance(15*time.Minute + time.Millisecond)
+	if q := sendWith(90); q == nil || q.State != "ok" || q.Stale || q.Source != "provider" {
+		t.Fatalf("90 left after stale: %+v", q)
+	}
+	if !listEvents(sub) {
+		t.Fatal("recovering to ok was not announced")
 	}
 	// 15 minutes without an answer: stale, announced once by time alone
 	e.advance(15*time.Minute + time.Millisecond)

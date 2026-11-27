@@ -79,6 +79,9 @@ func reasonWords(l lang, why string) string {
 			"This service is not switched on; switch it on in the extension's settings as the page says, then come back.")
 	case protocol.ReasonAccountPaused:
 		return l.t("这个账号已暂停同步：先在它的页面点「恢复同步」。", "This account is paused: resume it on its page first.")
+	case protocol.ReasonQuotaExhausted:
+		return l.t("这个账号的额度已用完或正在限流，暂不发送以免失败。如确认已恢复，请先在账号页点「立即同步」。",
+			"This account's allowance is used up or currently rate limited, so sending is paused. Tap Sync now on the account page if it already reset.")
 	case protocol.ReasonAccountNotFound:
 		return l.t("找不到这个账号了，它可能已经被移除。", "This account is gone; it may have been removed.")
 	case protocol.ReasonAccountMismatch:

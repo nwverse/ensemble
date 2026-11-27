@@ -431,3 +431,82 @@ return found ? (found.error ? { clicked, error: found.error } : { sent: true, cl
 	}
 	return sendOutcome(err, r.Error, r.Sent, r.ID)
 }
+
+// readQuota reads Claude's real-time usage windows from claude.ai/api/organizations/<org>/usage inside the
+// already-open tab. Best-effort: returns nil when the endpoint is unavailable, while still propagating 429s.
+func (duetSite) readQuota(ctx context.Context, a *Adapter, credential string) ([]provider.QuotaReading, error) {
+	script := duetScript(duetOrigin+"/duet", nil, `
+    const orgsRes = await fetch("/api/organizations", { credentials: "include" });
+    if (orgsRes.status === 429) throw new Error("http 429");
+    if (!orgsRes.ok) return { unavailable: true };
+    const orgs = await orgsRes.json().catch(() => null);
+    const list = Array.isArray(orgs) ? orgs.filter(o => o && o.uuid) : [];
+    if (list.length === 0) return { unavailable: true };
+    const activeMatch = (document.cookie || "").match(/(?:^|;\s*)lastActiveOrg=([^;]+)/);
+    const activeUUID = activeMatch ? decodeURIComponent(activeMatch[1]) : "";
+    const hasChat = o => Array.isArray(o.capabilities) && o.capabilities.includes("chat");
+    const ordered = [...list].sort((a, b) => {
+      const sa = (a.uuid === activeUUID ? 2 : 0) + (hasChat(a) ? 1 : 0);
+      const sb = (b.uuid === activeUUID ? 2 : 0) + (hasChat(b) ? 1 : 0);
+      return sb - sa;
+    });
+    for (const org of ordered) {
+      const uRes = await fetch("/api/organizations/" + encodeURIComponent(org.uuid) + "/usage", { credentials: "include" });
+      if (uRes.status === 429) throw new Error("http 429");
+      if (!uRes.ok) continue;
+      const usage = await uRes.json().catch(() => null);
+      if (usage && typeof usage === "object" && (usage.five_hour || usage.seven_day)) {
+        return { usage };
+      }
+    }
+    return { unavailable: true };
+`)
+	var r struct {
+		Error       string `json:"error"`
+		Unavailable bool   `json:"unavailable"`
+		Usage       struct {
+			FiveHour *claudeUsageWindow `json:"five_hour"`
+			SevenDay *claudeUsageWindow `json:"seven_day"`
+		} `json:"usage"`
+	}
+	if err := a.run(ctx, credential, script, &r); err != nil {
+		return nil, nil
+	}
+	if r.Error == "http 429" {
+		return nil, dotsError(r.Error)
+	}
+	if r.Error != "" || r.Unavailable {
+		return nil, nil
+	}
+	var out []provider.QuotaReading
+	appendWindow := func(w *claudeUsageWindow, window string) {
+		if w == nil || w.Utilization == nil {
+			return
+		}
+		used := *w.Utilization
+		if used < 0 {
+			used = 0
+		}
+		if used > 100 {
+			used = 100
+		}
+		rem := 100 - used
+		out = append(out, provider.QuotaReading{
+			Kind:       protocol.QuotaKindWindow,
+			Window:     window,
+			Limit:      100,
+			Remaining:  rem,
+			ResetsAt:   parseTimeMs(w.ResetsAt),
+			Exhausted:  rem <= 0,
+			SourceNote: "claude_duet:organizations/usage",
+		})
+	}
+	appendWindow(r.Usage.FiveHour, "5h")
+	appendWindow(r.Usage.SevenDay, "week")
+	return out, nil
+}
+
+type claudeUsageWindow struct {
+	Utilization *float64 `json:"utilization"`
+	ResetsAt    string   `json:"resets_at"`
+}

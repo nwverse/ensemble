@@ -86,6 +86,7 @@ type Adapter struct {
 	client *http.Client
 	origin string
 	model  string
+	now    func() time.Time
 	chat   *groq.Adapter
 }
 
@@ -98,9 +99,13 @@ func New(o Options) (*Adapter, error) {
 	if o.Client == nil {
 		o.Client, _ = web.NewClient("")
 	}
+	nowFn := o.Now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
 	model := Model(o.Model)
-	return &Adapter{client: o.Client, origin: origin, model: model,
-		chat: groq.New(groq.Options{Client: o.Client, Origin: origin, Model: model, Timeout: AnswerTimeout, Now: o.Now})}, nil
+	return &Adapter{client: o.Client, origin: origin, model: model, now: nowFn,
+		chat: groq.New(groq.Options{Client: o.Client, Origin: origin, Model: model, Timeout: AnswerTimeout, Now: nowFn})}, nil
 }
 
 var (
@@ -130,7 +135,7 @@ func (a *Adapter) Verify(ctx context.Context, key string) (provider.RemoteAccoun
 		// Not a model list: the address is something other than a muse2api (or OpenAI-compatible) server.
 		return provider.RemoteAccount{}, &provider.Error{Code: provider.CodeRequestFailed, HTTPStatus: r.Status}
 	}
-	return provider.RemoteAccount{ExternalAccountID: Name}, nil
+	return provider.RemoteAccount{ExternalAccountID: Name, Quota: groq.Quota(r.Header, a.now())}, nil
 }
 
 // ListSessions is the one chat.

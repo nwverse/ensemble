@@ -726,6 +726,20 @@ func (s *SQLite) Counts(ctx context.Context, id string) (Counts, error) {
 	return c, err
 }
 
+func (s *SQLite) CountUserMessagesSince(ctx context.Context, id string, since int64) (int, error) {
+	var msgCount, outboxCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM agent_messages m
+		JOIN agent_sessions s ON s.session_key = m.session_key
+		WHERE s.account_id = ?1 AND m.role = 'user' AND m.create_time_ms >= ?2`, id, since).Scan(&msgCount); err != nil {
+		return 0, err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM agent_outbox
+		WHERE account_id = ?1 AND status = 'sent' AND created_at >= ?2`, id, since).Scan(&outboxCount); err != nil {
+		return 0, err
+	}
+	return max(msgCount, outboxCount), nil
+}
+
 const outboxColumns = `client_id, session_key, account_id, text, status, attempt_count, last_error, created_at, updated_at`
 
 func scanOutbox(r scanner) (Outbox, error) {

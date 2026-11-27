@@ -163,6 +163,10 @@ func (a *accounts) machineSection(ctx context.Context, l lang, acct protocol.Acc
 			Badge: &wire.Badge{Text: l.t("查不到", "Unknown"), Tone: wire.ToneCaution}}}
 		return sec, false
 	}
+	exhaustedHint := ""
+	if blocked, _ := quotaExhaustedActive(acct.Quota, 0); blocked {
+		exhaustedHint = l.t("注意：这个账号当前额度已用完，发消息前会被提示拦截。", "Note: this account is currently out of allowance, so sending will be blocked. ")
+	}
 	switch {
 	case !st.Exists:
 		sec.Items = []wire.Component{
@@ -170,7 +174,7 @@ func (a *accounts) machineSection(ctx context.Context, l lang, acct protocol.Acc
 				Badge: &wire.Badge{Text: l.t("未接入", "Not connected"), Tone: wire.ToneNeutral}},
 			{Type: "button", Title: l.t("发送接入说明", "Send the instructions"), Action: &wire.Action{
 				ID:      actTakeover,
-				Confirm: l.t("会生成一个只能用一次的接入链接，连同安装说明发到这个助手的对话里，让它照着装好并连上你的 Persona。要继续吗？", "This generates a one-time pairing link and sends bootstrap instructions to this agent's chat. Continue?"),
+				Confirm: exhaustedHint + l.t("会生成一个只能用一次的接入链接，连同安装说明发到这个助手的对话里，让它照着装好并连上你的 Persona。要继续吗？", "This generates a one-time pairing link and sends bootstrap instructions to this agent's chat. Continue?"),
 			}},
 		}
 		return sec, false
@@ -185,7 +189,7 @@ func (a *accounts) machineSection(ctx context.Context, l lang, acct protocol.Acc
 			{Type: "row", Title: l.t("状态", "Status"), Value: val},
 			{Type: "button", Title: l.t("重新发送接入说明", "Resend the instructions"), Action: &wire.Action{
 				ID:      actTakeover,
-				Confirm: l.t("重新生成一个接入链接并再发一次安装说明？", "Generate a fresh pairing link and resend bootstrap instructions?"),
+				Confirm: exhaustedHint + l.t("重新生成一个接入链接并再发一次安装说明？", "Generate a fresh pairing link and resend bootstrap instructions?"),
 			}},
 		}
 		return sec, true
@@ -196,7 +200,7 @@ func (a *accounts) machineSection(ctx context.Context, l lang, acct protocol.Acc
 		}
 		sec.Items = []wire.Component{
 			{Type: "row", Title: l.t("电脑编号", "Machine ID"), Value: st.MachineID, Badge: badge},
-			{Type: "button", Title: l.t("让它重新连一下", "Ask it to reconnect"), Action: &wire.Action{ID: actWake}},
+			{Type: "button", Title: l.t("让它重新连一下", "Ask it to reconnect"), Action: &wire.Action{ID: actWake, Confirm: exhaustedHint}},
 		}
 		return sec, false
 	default:
@@ -205,7 +209,7 @@ func (a *accounts) machineSection(ctx context.Context, l lang, acct protocol.Acc
 			{Type: "row", Title: l.t("电脑编号", "Machine ID"), Value: st.MachineID,
 				Badge: &wire.Badge{Text: l.t("离线", "Offline"), Tone: wire.ToneDanger}},
 			{Type: "row", Title: l.t("状态", "Status"), Value: val},
-			{Type: "button", Title: l.t("让它重新连上", "Ask it to reconnect"), Action: &wire.Action{ID: actWake}},
+			{Type: "button", Title: l.t("让它重新连上", "Ask it to reconnect"), Action: &wire.Action{ID: actWake, Confirm: exhaustedHint}},
 		}
 		return sec, false
 	}
@@ -226,6 +230,9 @@ func (a *accounts) runTakeover(ctx context.Context, acctID string) (string, erro
 	}
 	if !takeoverSupported(acct.Provider) {
 		return "", protocol.Unsupported("provider does not support machine takeover")
+	}
+	if err := exhausted(acct.Quota, a.club.Now().UnixMilli()); err != nil {
+		return "", err
 	}
 	sessionKey, err := takeoverSessionKey(ctx, space, acct.AccountID)
 	if err != nil {
