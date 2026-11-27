@@ -83,7 +83,7 @@ func (m *Memory) updateLocked(id string, p AccountPatch, now int64) error {
 	if !ok {
 		return ErrNotFound
 	}
-	if p.Status != nil {
+	if p.Status != nil && (!p.PreservePaused || a.Status != protocol.AccountPaused) {
 		a.Status = *p.Status
 	}
 	if p.DisplayName != nil {
