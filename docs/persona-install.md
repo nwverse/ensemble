@@ -25,6 +25,16 @@ shasum -a 256 -c personal-agent-club-<version>.tar.gz.sha256   # or: sha256sum -
 To hold the program to the hub's own checks without a hub (manifest and package as at install, handshake, error
 codes, every page drawable), run `scripts/persona-test.sh` with a `personad` on `PATH` (or `PERSONAD=/path/to/personad`).
 
+## What 0.7.5 adds
+
+Remote terminal & shell entry for each account:
+- Every account detail page adds a **远端终端与命令行** entry opening its environment and terminal view.
+- SSH-reachable environments (such as **Muse** cloud VMs and **Grok Bot** sandboxes) support saving a non-secret SSH / Tailscale SSH target (no passwords or private keys ever stored), running a fixed read-only status probe (`uname -srm && uptime`), and running commands only after explicit two-step staging + confirmation (`20 s` timeout, `16 KB` output cap, ANSI/control stripping).
+- **Grok Bot** reads cloud sandbox run state read-only via `SandBoxService/GetSandBoxRunState` without waking a sleeping sandbox, and both **Muse** and **Grok Bot** also offer a two-step confirmed chat-assisted sandbox runner (respecting the quota exhaustion guard) when SSH is not configured.
+- Hosted web/API services without a shell (**Claude Duet**, **ChatGPT Dots**, **Gemini**, **Manus**, **Groq**, **muse2api**) clearly report that no direct terminal is available and document the Persona core interfaces needed for native/embedded webshell support (`nwverse/persona#16741`).
+
+No new permissions or configuration fields are added.
+
 ## What 0.7.4 adds
 
 Claude Duet and ChatGPT dots show their own pictures, no longer Claude's and ChatGPT's icons: Claude Duet the icon of

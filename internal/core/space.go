@@ -43,6 +43,7 @@ type Space struct {
 	vault vault.Vault
 
 	mu             sync.Mutex
+	sshMu          sync.Mutex
 	syncing        map[string]*flight[struct{}]
 	refreshing     map[string]*flight[string]
 	fetchedAt      map[string]int64
@@ -973,6 +974,7 @@ func (s *Space) RemoveAccount(ctx context.Context, p protocol.RemoveAccountParam
 	}
 	_ = s.setAssistantBackend(ctx, p.AccountID, false)
 	_ = s.SetInboxAccount(ctx, p.AccountID, true) // forget the switch: an account id is never reused
+	_ = s.clearSSHTarget(ctx, p.AccountID)
 	s.mu.Lock()
 	delete(s.quota, p.AccountID)
 	delete(s.quotaCheckedAt, p.AccountID)
