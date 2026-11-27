@@ -79,11 +79,11 @@ func resolveRuntimeSocket() string {
 }
 
 // Program is the extension program serving club. The club is closed when the program ends.
-func Program(club *core.Club, version string) ext.Program { return program(club, version, nil) }
+func Program(club *core.Club, version string) ext.Program { return program(club, version, nil, nil) }
 
 // program is Program with the phone-alert sender given (tests); nil sends through the hub's notify route with the
-// token the hub gave this run.
-func program(club *core.Club, version string, push pushFunc) ext.Program {
+// token the hub gave this run. onRound, if any, is called after each round of alerts.
+func program(club *core.Club, version string, push pushFunc, onRound func()) ext.Program {
 	var hubAPIPtr atomic.Pointer[hubAPI]
 	hubAPIPtr.Store(&hubAPI{})
 	if push == nil {
@@ -98,6 +98,7 @@ func program(club *core.Club, version string, push pushFunc) ext.Program {
 	inboxCfg := func() inboxConfig { return cfgPtr.Load().inbox() }
 	in := newInbox(club, driver, inboxCfg)
 	note := newNotifier(in, hubPtr.Load, push)
+	note.onRound = onRound
 	page := accountsPage(club, &hubPtr, driver, &runtimeOn, inboxCfg)
 	tool := toolsHandler(club, driver)
 	return ext.Program{
@@ -167,6 +168,8 @@ func program(club *core.Club, version string, push pushFunc) ext.Program {
 				}
 			}
 			sub := club.Subscribe(core.DefaultSpace)
+			note.seed(ctx) // the log of alerts starts now: what waits already is remembered, not alerted
+			go note.run(ctx)
 			go forward(ctx, sub, hub, club, bridgeDone, note)
 			// The connector as the manifest has it: the hub wants the program to say it has it.
 			var m struct {
@@ -212,6 +215,7 @@ func forward(ctx context.Context, sub *core.Subscription, hub *ext.Hub, club *co
 			if bridgeDone != nil {
 				<-bridgeDone
 			}
+			<-note.done // the alerts stop before the club closes under them
 			return
 		case <-sub.Ready():
 			for _, e := range sub.Take() {

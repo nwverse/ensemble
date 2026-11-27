@@ -28,6 +28,7 @@ codes, every page drawable), run `scripts/persona-test.sh` with a `personad` on 
 ## What 0.7.1 adds
 
 Alerts: a reply that waits for you (choices, or a request to sign in or approve a link) is also pushed to the phone, once.
+Replies already waiting at the upgrade are not alerted, only later ones.
 This needs the hub scope `notify`, so the hub asks again at upgrade; without it everything else works and no alert is sent.
 The setting `inbox_push` (on) turns the alerts off. The manifest also says `engines.persona` `>=202611160608`: the first
 stable hub (v0.6.0) with the connector `catalog` capability, `fallback`, `inbox_item` pages and `push_level`, found from the

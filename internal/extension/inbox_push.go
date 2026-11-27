@@ -2,6 +2,7 @@ package extension
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -24,17 +25,17 @@ import (
 // once for each such reply.
 
 const (
-	pushWindow   = 6 * time.Hour // a reply older than this is not worth an alert (after a restart, or a switch turned on)
-	pushMaxEach  = 5             // alerts in one round
-	pushKeep     = 500           // replies remembered
-	pushTimeout  = 15 * time.Second
-	pushLogKey   = "inboxPushed"
-	notifyPath   = "/api/v1/notify"
-	pushBodyRune = 80
+	pushWindow  = 6 * time.Hour // a reply older than this is not worth an alert (after a restart, or a switch turned on)
+	pushMaxEach = 5             // alerts in one round
+	pushKeep    = 500           // replies remembered
+	pushTimeout = 15 * time.Second
+	pushRetry   = time.Minute // when an alert failed or the round's cap left some waiting
+	pushLogKey  = "inboxPushed"
+	notifyPath  = "/api/v1/notify"
 )
 
-// notification is one phone alert. It carries no words of the AI's reply, only whose chat it is, so nothing of the
-// conversation shows on a lock screen.
+// notification is one phone alert. It names the account and its service only: no words of the reply and not the
+// chat's title either (a service often writes the title from the conversation), so nothing of it shows on a lock screen.
 type notification struct {
 	ID        string `json:"id"`
 	Title     string `json:"title"`
@@ -92,51 +93,49 @@ func urlErrorKind(err error) string {
 	return "request failed"
 }
 
-// pushLog remembers which replies were alerted, so a restart or a repeated round never alerts one twice. Kept in the
+// pushLog remembers which replies were alerted, so more rounds or a restart never alert one twice. Kept in the
 // space's settings, with the time of each (to forget the old ones).
 type pushLog struct {
 	mu     sync.Mutex
 	loaded bool
+	fresh  bool // nothing was stored yet: the log starts with this run
 	m      map[string]int64
 }
 
-func (l *pushLog) load(ctx context.Context, st store.Store) {
+// load reads the stored log once. An error leaves it unloaded: nothing is alerted until it can be read, as an alert
+// sent without knowing what was sent before could be a repeat.
+func (l *pushLog) load(ctx context.Context, st store.Store) error {
 	if l.loaded {
-		return
+		return nil
+	}
+	raw, ok, err := st.Setting(ctx, pushLogKey)
+	if err != nil {
+		return err
 	}
 	l.m = map[string]int64{}
-	if raw, ok, err := st.Setting(ctx, pushLogKey); err == nil && ok {
+	if ok && raw != "" {
 		_ = json.Unmarshal([]byte(raw), &l.m)
 	}
-	l.loaded = true
+	l.loaded, l.fresh = true, !ok
+	return nil
 }
 
-func (l *pushLog) has(ctx context.Context, st store.Store, key string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.load(ctx, st)
-	_, ok := l.m[key]
-	return ok
-}
-
-func (l *pushLog) add(ctx context.Context, st store.Store, key string, now int64) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.load(ctx, st)
-	l.m[key] = now
+func (l *pushLog) save(ctx context.Context, st store.Store) error {
 	if len(l.m) > pushKeep {
 		keys := make([]string, 0, len(l.m))
 		for k := range l.m {
 			keys = append(keys, k)
 		}
-		slices.SortFunc(keys, func(a, b string) int { return int(l.m[a] - l.m[b]) })
+		slices.SortFunc(keys, func(a, b string) int { return cmp.Compare(l.m[a], l.m[b]) })
 		for _, k := range keys[:len(keys)-pushKeep] {
 			delete(l.m, k)
 		}
 	}
 	b, _ := json.Marshal(l.m)
-	_ = st.PutSetting(ctx, pushLogKey, string(b))
+	return st.PutSetting(ctx, pushLogKey, string(b))
 }
+
+func pushKey(r cachedRow) string { return r.thing.Thread + "\n" + r.thing.Last }
 
 // pushID is the alert's id (the hub replaces an earlier alert with the same one): one a reply, at most 56 bytes.
 func pushID(thread, last string) string {
@@ -146,14 +145,8 @@ func pushID(thread, last string) string {
 
 // alertFor is the phone alert for a row waiting for the owner.
 func alertFor(r cachedRow) notification {
-	chat := ""
-	for _, t := range r.thing.Tags {
-		if t.Key == "chat" {
-			chat = t.Name
-		}
-	}
 	n := notification{ID: pushID(r.thing.Thread, r.thing.Last), PushLevel: "P0",
-		Body: clip(oneLine(chat, pushBodyRune)+"：点开收件箱处理", 120)}
+		Body: clip(r.thing.Label+"：打开 Persona 收件箱处理", 120)}
 	switch r.attn {
 	case attnAuth:
 		n.Title, n.Level = clip(r.thing.Sender+" 请你登录或批准授权", 120), "time-sensitive"
@@ -163,9 +156,72 @@ func alertFor(r cachedRow) notification {
 	return n
 }
 
-// pushAttention sends the alerts the rows are owed, and remembers them. A failed one is not remembered: the next round
-// tries it again while it is still within the window.
-func (n *notifier) pushAttention(ctx context.Context, rows []cachedRow) {
+// owed says a row is owed an alert now: something waits for the owner, unread, unanswered and recent.
+func owed(r cachedRow, now time.Time) bool {
+	return r.attn != "" && !r.thing.Read && r.thing.Done == "" && now.Sub(r.thing.At) <= pushWindow
+}
+
+// pushAttention is one round of alerts: at most pushMaxEach, each for a row that is owed one when its turn comes (the
+// rows are read again before every send, so a row the owner read or answered meanwhile is not alerted). An alert is
+// remembered once the hub took it; one that failed is not, and more says a later round has work left (a failure, or
+// rows past the cap).
+//
+// The first round of a log that never existed (the first run with alerts, an upgrade) remembers the rows waiting then
+// without alerting them: they were in the Inbox already, and a burst of alerts for old news helps nobody.
+func (n *notifier) pushAttention(ctx context.Context) (more bool) {
+	cfg := n.in.cfg()
+	if !cfg.On || !cfg.Push || n.push == nil {
+		return false
+	}
+	space, err := n.in.club.Space(ctx, core.DefaultSpace)
+	if err != nil {
+		return false
+	}
+	st := space.Store()
+	l := &n.log
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if seeded, err := n.seedLocked(ctx, st); err != nil {
+		return true // not known what was alerted before: try again before alerting anything
+	} else if seeded {
+		return false
+	}
+	failed := map[string]bool{}
+	for sent := 0; ; {
+		if ctx.Err() != nil {
+			return false
+		}
+		rows, err := n.rows(ctx)
+		if err != nil {
+			return true
+		}
+		now := n.in.club.Now()
+		var next *cachedRow
+		for i := range rows {
+			if _, done := l.m[pushKey(rows[i])]; owed(rows[i], now) && !done && !failed[pushKey(rows[i])] {
+				next = &rows[i]
+				break
+			}
+		}
+		if next == nil {
+			return len(failed) > 0
+		}
+		if sent >= pushMaxEach {
+			return true
+		}
+		if err := n.push(ctx, alertFor(*next)); err != nil {
+			failed[pushKey(*next)] = true
+			continue
+		}
+		sent++
+		l.m[pushKey(*next)] = now.UnixMilli() // remembered for this run even if the write below fails
+		_ = l.save(ctx, st)
+	}
+}
+
+// seed starts the log of alerts when there is none yet, remembering the rows that wait now without alerting them.
+// Called when the program starts, before anything can change, and again by a round if that failed.
+func (n *notifier) seed(ctx context.Context) {
 	cfg := n.in.cfg()
 	if !cfg.On || !cfg.Push || n.push == nil {
 		return
@@ -174,21 +230,55 @@ func (n *notifier) pushAttention(ctx context.Context, rows []cachedRow) {
 	if err != nil {
 		return
 	}
-	st := space.Store()
+	n.log.mu.Lock()
+	defer n.log.mu.Unlock()
+	_, _ = n.seedLocked(ctx, space.Store())
+}
+
+// seedLocked loads the log and, if it never existed, seeds and stores it; seeded says it did. n.log.mu is held.
+func (n *notifier) seedLocked(ctx context.Context, st store.Store) (seeded bool, err error) {
+	l := &n.log
+	if err := l.load(ctx, st); err != nil {
+		return false, err
+	}
+	if !l.fresh {
+		return false, nil
+	}
+	rows, err := n.rows(ctx)
+	if err != nil {
+		return false, err
+	}
 	now := n.in.club.Now()
-	sent := 0
 	for _, r := range rows {
-		if r.attn == "" || r.thing.Read || r.thing.Done != "" || now.Sub(r.thing.At) > pushWindow || sent >= pushMaxEach {
-			continue
+		if owed(r, now) {
+			l.m[pushKey(r)] = now.UnixMilli()
 		}
-		key := r.thing.Thread + "\n" + r.thing.Last
-		if n.log.has(ctx, st, key) {
-			continue
+	}
+	if err := l.save(ctx, st); err != nil {
+		return false, err
+	}
+	l.fresh = false
+	return true, nil
+}
+
+// run sends the alerts until ctx ends: one round after each kick, and again after pushRetry while a round left work.
+// One goroutine, so rounds never overlap and never pile up behind a slow hub.
+func (n *notifier) run(ctx context.Context) {
+	defer close(n.done)
+	var retry <-chan time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-n.kick:
+		case <-retry:
 		}
-		if err := n.push(ctx, alertFor(r)); err != nil {
-			continue
+		retry = nil
+		if n.pushAttention(ctx) {
+			retry = time.After(n.retry)
 		}
-		n.log.add(ctx, st, key, now.UnixMilli())
-		sent++
+		if n.onRound != nil {
+			n.onRound()
+		}
 	}
 }

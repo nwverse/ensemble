@@ -162,16 +162,22 @@ every send confirmed on the phone, are unchanged). Each account's page has its o
   choice as a button. A tap asks first, then sends that text as the owner's next message through the chat's outbox
   (`internal/extension/options.go`).
 - **Sign-in and authorization requests** (`internal/extension/auth.go`): a reply that asks the owner to sign in or approve
-  a link (a link to a known sign-in page, or to an OAuth / device-activation path, with words asking them to act on it; a
-  device code to type at a link; or a plain request such as "请你先登录" / "please log in") also marks the row Needs You, even
-  in a chat that cannot be replied to. It reads only the text, in short messages, and leaves code blocks, quoted lines and
-  "no need to log in" alone. Nothing in the text is opened or followed.
-- **Phone alerts** (`inbox_push`, on): the Inbox does not push an alert for a connector's row by itself (only its count
-  changes), so a reply that waits for the owner (choices, or a sign-in request) is also sent to the hub's
-  `POST /api/v1/notify`, once per reply (kept in the space's settings, so a restart does not repeat it), at push level P0 and
-  never for a row already read, answered, or older than 6 hours. It uses the token this run's hub gave it (scope `notify`,
-  asked for in the manifest); without the scope nothing is sent. The alert says whose chat it is and nothing of what the
-  AI wrote.
+  an authorization also marks the row Needs You, even in a chat that cannot be replied to. Recognised: a sentence that
+  addresses the owner ("请", "你", "please", "you", an instruction) and tells them to act on a link to a sign-in page (a
+  sign-in path of a known host, or a short OAuth / device-activation path elsewhere) or to enter a device code; or, in a
+  message of at most 700 characters, a request in words alone ("请你先登录", "please log in", "you need to sign in"). Left
+  alone: the AI saying it must or did sign in itself, "no need to log in", approvals that are not a sign-in ("please approve
+  the PR"), code blocks, quoted lines and quoted phrases, documentation links. It prefers missing a request to a false alert.
+  Nothing in the text is opened or followed.
+- **Phone alerts** (`inbox_push`, on; `internal/extension/inbox_push.go`): the Inbox does not push an alert for a
+  connector's row by itself (only its count changes), so a reply that waits for the owner (choices, or a sign-in request)
+  is also sent to the hub's `POST /api/v1/notify`, at push level P0. One goroutine sends them, a round after each change
+  and again a minute later while an alert failed or more than 5 were due. Each reply is alerted once: what was alerted is
+  kept in the space's settings and read back after a restart (if an alert goes out and the program dies before that is
+  written, the hub replaces the earlier alert with the same id). Never for a row read, answered, or older than 6 hours;
+  the rows are read again before every send. What already waits when alerts start (an upgrade, the switch turned on) is
+  remembered and not alerted. It uses the token this run's hub gave it and only with the scope `notify`. The alert names
+  the account and its service: no chat title and nothing the AI wrote.
 - **Replying**: `inbox_reply` (on) lets the owner answer from the Inbox; the Send press is the confirmation, as for every Inbox
   source, and it goes out through the same outbox as any send (one client id per reply, so a retry sends once). Switched off, rows
   are read-only and a reply has to go through the assistant, which asks on the phone each time.

@@ -424,16 +424,22 @@ type notifier struct {
 	push  pushFunc // nil: no alerts
 	log   pushLog
 	every time.Duration
+	retry time.Duration
+
+	kick    chan struct{} // a round of alerts is wanted
+	done    chan struct{} // closed when run has ended
+	onRound func()        // after each round of alerts (tests)
+	rows    func(ctx context.Context) ([]cachedRow, error)
 
 	mu      sync.Mutex
 	digest  string
 	sentAt  time.Time
 	pending bool
-	alerts  sync.Mutex // one round of alerts at a time
 }
 
 func newNotifier(in *inbox, hub func() *ext.Hub, push pushFunc) *notifier {
-	return &notifier{in: in, hub: hub, push: push, every: notifyEvery}
+	return &notifier{in: in, hub: hub, push: push, every: notifyEvery, retry: pushRetry, kick: make(chan struct{}, 1),
+		done: make(chan struct{}), rows: func(ctx context.Context) ([]cachedRow, error) { return in.rows(ctx, true) }}
 }
 
 func digestOf(rows []cachedRow) string {
@@ -459,11 +465,10 @@ func (n *notifier) poke(ctx context.Context) {
 		return
 	}
 	if cfg.Push && n.push != nil {
-		go func() { // the hub may be slow: never hold up the club's own events
-			n.alerts.Lock()
-			defer n.alerts.Unlock()
-			n.pushAttention(context.WithoutCancel(ctx), rows)
-		}()
+		select { // the hub may be slow: the alerts are run's, never this caller's
+		case n.kick <- struct{}{}:
+		default: // a round is already wanted
+		}
 	}
 	if cfg.ViaSB {
 		return
