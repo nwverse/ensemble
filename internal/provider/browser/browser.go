@@ -183,11 +183,15 @@ type Adapter struct {
 	driver  Driver
 	timeout time.Duration
 	tabs    *tabs
+	// pictures keeps the pictures a site made in the page (a Dot's own avatar, scaled down to a data URL) by the
+	// picture's key, so a sync that finds the same picture again does not fetch and scale it again (dots.go).
+	pictures *pictureCache
 }
 
 // New creates a browser-backed provider.Adapter for site using driver.
 func New(site Site, driver Driver) *Adapter {
-	return &Adapter{site: site, driver: driver, timeout: 45 * time.Second, tabs: newTabs(DefaultTabRecycle)}
+	return &Adapter{site: site, driver: driver, timeout: 45 * time.Second, tabs: newTabs(DefaultTabRecycle),
+		pictures: newPictureCache(pictureCacheMax)}
 }
 
 // SetTabRecycle changes when the space's tab is closed and reopened (DefaultTabRecycle unless set).

@@ -25,6 +25,18 @@ shasum -a 256 -c personal-agent-club-<version>.tar.gz.sha256   # or: sha256sum -
 To hold the program to the hub's own checks without a hub (manifest and package as at install, handshake, error
 codes, every page drawable), run `scripts/persona-test.sh` with a `personad` on `PATH` (or `PERSONAD=/path/to/personad`).
 
+## What 0.7.9 adds
+
+- **A ChatGPT Dot's own picture.** A Dot whose owner gave it a picture (ChatGPT's `/backend-api/tbo` lists it as
+  `avatar_url`, with the file in `avatar_manifest`) now shows that picture instead of the dots cloud, on the account's
+  row and page and on Persona's Agents page. Its address is a signed `oaiusercontent.com` link that expires within
+  minutes, which the hub could not load later, so the signed-in ChatGPT page itself fetches it once, fits it into
+  128×128 and hands it over as a WebP data URL (about 9 KB, at most 16 KB, never past the 64 KB an own picture may
+  weigh); the next syncs reuse it while the Dot keeps the same file. A picture at a public https address would be
+  passed as it is. A Dot without its own picture, or one that cannot be made, keeps the dots icon.
+
+No new permissions or configuration fields are added.
+
 ## What 0.7.8 adds
 
 Persona's Messages page can list the agents' conversations among the others, newest message first:
@@ -295,7 +307,8 @@ personad extension show personal-agent-club   # "sandbox": {"active": true, "egr
 - If the hub itself must go through a proxy to reach the internet, set `HTTPS_PROXY` for the hub; the egress proxy
   goes out through it and the extension needs nothing more.
 - Pictures need no network entry: an account's avatar is its own picture when the service gives one (a Grok Bot's
-  bot avatar), else its product's official icon, else its letters (internal/names/avatar.go). The icons are https
+  bot avatar; a ChatGPT Dot's picture, which the signed-in ChatGPT page in your browser fetches and scales itself),
+  else its product's official icon, else its letters (internal/names/avatar.go). The icons are https
   addresses of PNGs the products publish (muse.ai's web app manifest icon, manus.im, groq.com, Google's branding path on www.gstatic.com for Gemini;
   for Grok Bot and Claude Duet the App Store artwork of each one's own app, whole on a transparent margin; for
   ChatGPT dots the dot chatgpt.com's dots page shows, from its image CDN images.ctfassets.net, padded on a gray ground)

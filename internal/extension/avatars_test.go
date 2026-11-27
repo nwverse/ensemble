@@ -220,3 +220,73 @@ func TestPicturesServedByRef(t *testing.T) {
 		t.Errorf("avatarTile without a hub: %v", err)
 	}
 }
+
+// dotWebp is a Dot's own picture as the page's canvas encodes it (browser.dotsAvatarJS): a 4x4 WebP data URL.
+const dotWebp = "data:image/webp;base64,UklGRgACAABXRUJQVlA4WAoAAAAgAAAAAwAAAwAASUNDUMgBAAAAAAHIAAAAAAQwAABtbnRyUkdCIFhZWiAH4AABAAEAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAACRyWFlaAAABFAAAABRnWFlaAAABKAAAABRiWFlaAAABPAAAABR3dHB0AAABUAAAABRyVFJDAAABZAAAAChnVFJDAAABZAAAAChiVFJDAAABZAAAAChjcHJ0AAABjAAAADxtbHVjAAAAAAAAAAEAAAAMZW5VUwAAAAgAAAAcAHMAUgBHAEJYWVogAAAAAAAAb6IAADj1AAADkFhZWiAAAAAAAABimQAAt4UAABjaWFlaIAAAAAAAACSgAAAPhAAAts9YWVogAAAAAAAA9tYAAQAAAADTLXBhcmEAAAAAAAQAAAACZmYAAPKnAAANWQAAE9AAAApbAAAAAAAAAABtbHVjAAAAAAAAAAEAAAAMZW5VUwAAACAAAAAcAEcAbwBvAGcAbABlACAASQBuAGMALgAgADIAMAAxADZWUDhMEQAAAC8DwAAAB1DVztSs/4GI6H8AAA=="
+
+// A ChatGPT Dot's own picture is drawn on the pages in the dots icon's place: given as WebP data (the page scaled it,
+// its address being signed and short-lived), the list and the account's page name it by ref and ui.image serves the
+// WebP; given at a public address, they draw the address. A Dot without one, or with one past 64 KB, keeps the dots
+// icon. Every view passes wire.CheckView (renderVersion).
+func TestDotOwnPictureOnThePages(t *testing.T) {
+	for _, tc := range []struct {
+		name, own string
+		ref       bool   // drawn by ref (own/<id>), served as WebP
+		url       string // else drawn from this address
+	}{
+		{"scaled", dotWebp, true, ""},
+		{"public", "https://cdn.example.com/dot.png", false, "https://cdn.example.com/dot.png"},
+		{"none", "", false, names.Icon("dots")},
+		{"oversized", "data:image/webp;base64," + strings.Repeat("A", 64*1024), false, names.Icon("dots")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			club := core.New(core.Options{Registry: provider.NewRegistry(withPicture{named{"dots"}, tc.own}), FollowUps: []time.Duration{}, WatchLimit: -1})
+			defer club.Close()
+			h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{"demo_echo":true}`))
+			ctx := context.Background()
+			space, _ := club.Space(ctx, core.DefaultSpace)
+			acct, err := space.AddAccount(ctx, protocol.AddAccountParams{Provider: "dots", Credential: "fixture-credential-dots"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := acct.AccountID
+			check := func(where string, av *wire.Avatar) {
+				t.Helper()
+				if av == nil || av.Text == "" {
+					t.Fatalf("%s: avatar %+v", where, av)
+				}
+				if tc.ref && (av.Ref != ownRef(id) || av.URL != "") || !tc.ref && (av.URL != tc.url || av.Ref != "") {
+					t.Errorf("%s: avatar %+v", where, av)
+				}
+			}
+			rows := 0
+			for _, s := range renderVersion(t, h, AccountsUI, 11, pageState{}).Sections {
+				for _, c := range s.Items {
+					if c.Key == "acct-"+id {
+						check("list", c.Avatar)
+						rows++
+					}
+				}
+			}
+			if rows != 1 {
+				t.Fatalf("%d rows for the Dot's account", rows)
+			}
+			check("account page", renderVersion(t, h, AccountsUI, 11, pageState{Page: pageAccount, Account: id}).Sections[0].Items[0].Avatar)
+			var img wire.UIImage
+			err = h.Call("ui.image", wire.UIImageParams{Contribution: AccountsUI, Ref: ownRef(id)}, &img)
+			if !tc.ref {
+				if err == nil {
+					t.Errorf("ui.image served an own picture the Dot has not")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ui.image: %v", err)
+			}
+			checked, err := wire.CheckImage(&img)
+			if err != nil || checked.Mime != "image/webp" {
+				t.Errorf("ui.image: %+v %v", checked, err)
+			}
+		})
+	}
+}

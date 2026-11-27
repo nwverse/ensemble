@@ -47,7 +47,11 @@ type RemoteSession struct {
 	ActivityApprox bool
 	CanSend        bool
 	AvatarURL      string
-	Ref            map[string]string
+	// AvatarPending says the session has a picture of its own that this read could not make (AvatarURL is then ""):
+	// a ChatGPT Dot's, which only the signed-in page can fetch and scale, left for a later sync by the read's byte
+	// budget or a failed fetch. The club keeps the picture it already has rather than dropping it to the product's icon.
+	AvatarPending bool
+	Ref           map[string]string
 }
 
 // SessionRef is the session's address.
