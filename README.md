@@ -161,6 +161,17 @@ every send confirmed on the phone, are unchanged). Each account's page has its o
   short closing lines such as "leave it for now"), the row is marked Needs You and its detail page (`ui` `inbox-chat`) draws each
   choice as a button. A tap asks first, then sends that text as the owner's next message through the chat's outbox
   (`internal/extension/options.go`).
+- **Sign-in and authorization requests** (`internal/extension/auth.go`): a reply that asks the owner to sign in or approve
+  a link (a link to a known sign-in page, or to an OAuth / device-activation path, with words asking them to act on it; a
+  device code to type at a link; or a plain request such as "请你先登录" / "please log in") also marks the row Needs You, even
+  in a chat that cannot be replied to. It reads only the text, in short messages, and leaves code blocks, quoted lines and
+  "no need to log in" alone. Nothing in the text is opened or followed.
+- **Phone alerts** (`inbox_push`, on): the Inbox does not push an alert for a connector's row by itself (only its count
+  changes), so a reply that waits for the owner (choices, or a sign-in request) is also sent to the hub's
+  `POST /api/v1/notify`, once per reply (kept in the space's settings, so a restart does not repeat it), at push level P0 and
+  never for a row already read, answered, or older than 6 hours. It uses the token this run's hub gave it (scope `notify`,
+  asked for in the manifest); without the scope nothing is sent. The alert says whose chat it is and nothing of what the
+  AI wrote.
 - **Replying**: `inbox_reply` (on) lets the owner answer from the Inbox; the Send press is the confirmation, as for every Inbox
   source, and it goes out through the same outbox as any send (one client id per reply, so a retry sends once). Switched off, rows
   are read-only and a reply has to go through the assistant, which asks on the phone each time.

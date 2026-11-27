@@ -25,6 +25,14 @@ shasum -a 256 -c personal-agent-club-<version>.tar.gz.sha256   # or: sha256sum -
 To hold the program to the hub's own checks without a hub (manifest and package as at install, handshake, error
 codes, every page drawable), run `scripts/persona-test.sh` with a `personad` on `PATH` (or `PERSONAD=/path/to/personad`).
 
+## What 0.7.1 adds
+
+Alerts: a reply that waits for you (choices, or a request to sign in or approve a link) is also pushed to the phone, once.
+This needs the hub scope `notify`, so the hub asks again at upgrade; without it everything else works and no alert is sent.
+The setting `inbox_push` (on) turns the alerts off. The manifest also says `engines.persona` `>=202611160608`: the first
+stable hub (v0.6.0) with the connector `catalog` capability, `fallback`, `inbox_item` pages and `push_level`, found from the
+hub's release index and git history. An older hub will refuse the install, and a development build (number 0) is not checked.
+
 ## What 0.7.0 adds
 
 A second connector, `ensemble` (chats as Inbox rows), a page for those rows, and four settings: `inbox_conversations` (off),

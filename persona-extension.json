@@ -2,10 +2,11 @@
   "manifest_version": 1,
   "id": "personal-agent-club",
   "name": "Ensemble",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "把你在 Grok、Muse、Claude、Gemini、ChatGPT 等 AI 服务上的账号接进 Persona：它们的对话会出现在「Agents」页，你可以直接看、直接给它们发消息，也可以允许 Persona 助手替你读、替你发（每次发之前先在手机上问你）。设置里打开「把 AI 对话放进收件箱」后，它们的对话还会出现在 Persona 收件箱里，有新回复就冒出来，还能直接在收件箱里回复。第一次用：打开「我的 AI 助手」，照页面上的提示添加第一个账号。它在导航里（导航放不下时收在「更多」里）；也可以点概览页上的「我的 AI 助手 · 概况」卡片打开它（手机上这张卡片在 设置 › 扩展 里）。已接入的账号也可以在这个扩展的「账号」页里管理。",
   "publisher": "nwverse",
   "engines": {
+    "persona": ">=202611160608",
     "extension_protocol": 1
   },
   "runtime": {
@@ -134,6 +135,12 @@
         "description": "默认 Persona 直接来取这些对话。只有你想用 Persona 的「订阅」来管理（自己定多久取一次）时才打开，并且要另外建一个订阅（读取「Ensemble 的 AI 对话」来源）。打开后收件箱不再直接取，免得出现两份。",
         "default": false
       },
+      "inbox_push": {
+        "type": "boolean",
+        "title": "收件箱里有事等你时推送到手机",
+        "description": "打开时，AI 账号的回复在末尾给出选项等你选，或请你登录、批准授权时，除了在收件箱里标为「需要你」，还会推送一条提醒到手机（每条回复只推一次；推送里只写是哪个账号、哪个对话，不带它说的话）。只在「把 AI 对话放进收件箱」打开时有用。默认打开。",
+        "default": true
+      },
       "triage_rules": {
         "type": "string",
         "title": "收件箱分拣规则（可留空）",
@@ -150,7 +157,8 @@
   "permissions": {
     "hub": [
       "machines.read",
-      "browser.run"
+      "browser.run",
+      "notify"
     ],
     "agent_runtimes": true,
     "network": [
