@@ -179,6 +179,9 @@ func (s *Space) AccountBoxState(ctx context.Context, accountID string) (provider
 	if !ok {
 		return provider.BoxState{}, false, nil
 	}
+	if sup, ok := adapter.(provider.BoxStateSupporter); ok && !sup.SupportsBoxState() {
+		return provider.BoxState{}, false, nil
+	}
 	if acct.Status == protocol.AccountPaused {
 		return provider.BoxState{}, true, nil
 	}
@@ -193,4 +196,54 @@ func (s *Space) AccountBoxState(ctx context.Context, accountID string) (provider
 		return provider.BoxState{}, true, protocol.Failure(provider.CodeOf(err), "box state check failed: "+provider.CodeOf(err))
 	}
 	return st, true, nil
+}
+
+// SupportsAccountComputer reports whether the account's provider supports running owner-confirmed commands in a
+// dedicated remote computer session without disturbing its main chat.
+func (s *Space) SupportsAccountComputer(ctx context.Context, accountID string) bool {
+	acct, err := s.requireAccount(ctx, accountID)
+	if err != nil {
+		return false
+	}
+	adapter, err := s.adapter(acct.Provider)
+	if err != nil {
+		return false
+	}
+	cr, ok := adapter.(provider.ComputerRunner)
+	return ok && cr.SupportsComputer()
+}
+
+// RunAccountComputer executes an owner-confirmed command in the account provider's dedicated remote computer session.
+func (s *Space) RunAccountComputer(ctx context.Context, accountID, command string) (provider.ComputerRunResult, error) {
+	acct, err := s.requireAccount(ctx, accountID)
+	if err != nil {
+		return provider.ComputerRunResult{}, err
+	}
+	adapter, err := s.adapter(acct.Provider)
+	if err != nil {
+		return provider.ComputerRunResult{}, err
+	}
+	cr, ok := adapter.(provider.ComputerRunner)
+	if !ok || !cr.SupportsComputer() {
+		return provider.ComputerRunResult{}, protocol.Unsupported("this account does not have a dedicated remote computer runner")
+	}
+	if acct.Status == protocol.AccountPaused {
+		return provider.ComputerRunResult{}, protocol.Conflict("account is paused")
+	}
+	cred, found, err := s.vault.Get(ctx, acct.AccountID)
+	if err != nil {
+		return provider.ComputerRunResult{}, err
+	}
+	if !found {
+		return provider.ComputerRunResult{}, protocol.Conflict("missing account credential").Because(provider.CodeAuthFailed)
+	}
+	res, err := callWithRefresh(ctx, s, acct.AccountID, adapter, cred, func(c string) (provider.ComputerRunResult, error) {
+		return cr.RunComputer(ctx, c, command)
+	})
+	if err != nil {
+		s.observe(acct.AccountID, err)
+		return provider.ComputerRunResult{}, protocol.Failure(provider.CodeOf(err), "remote computer command failed: "+provider.CodeOf(err))
+	}
+	s.observe(acct.AccountID, nil)
+	return res, nil
 }

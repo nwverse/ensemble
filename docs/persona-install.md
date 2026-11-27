@@ -25,6 +25,26 @@ shasum -a 256 -c personal-agent-club-<version>.tar.gz.sha256   # or: sha256sum -
 To hold the program to the hub's own checks without a hub (manifest and package as at install, handshake, error
 codes, every page drawable), run `scripts/persona-test.sh` with a `personad` on `PATH` (or `PERSONAD=/path/to/personad`).
 
+## What 0.7.12 adds
+
+Gemini accounts have a remote computer status card and confirmed WebShell on the Remote terminal page:
+- **Read-only remote computer status.** Gemini's Remote terminal page queries `/BardFrontendService.GetVmSettings`
+  (`W8adn`) and `MaZiqc` task counts read-only inside the signed-in browser tab without navigating an active
+  conversation or flipping any user setting. It shows whether task mode and remote computer internet access are enabled,
+  notes the 2 vCPU / 8 GB RAM / Debian 12 environment and persistent working directory, and links directly to
+  `https://gemini.google.com/gemini-spark` and the current cloud computer session. When internet access is off, it shows
+  a clear hint and link so the owner can enable it themselves.
+- **Dedicated Task-mode WebShell isolated from the main chat.** Confirmed commands run in a dedicated Task-mode
+  (`chat-spark-toggle` `data-value="40"`) conversation kept under `localStorage["ensemble.gemini.computer"]`, leaving
+  `main` (`data-value="0"`, `ensemble.gemini.main`) untouched. Terminal stdout/stderr is extracted from the task's
+  code blocks, stripped of ANSI control characters, capped at 16 KB, and retained in the last 5 runs on the page.
+- **Two-step confirmation and allowance guards.** Commands and read-only preset probes (`uname -srm && nproc && free -h
+  && df -h`, `ls -la`, `python3 --version && node -v`) go through `validateTerminalCommand`, staging with a one-shot
+  SHA-256 digest, the native `Confirm` dialog, quota-exhaustion blocking before consuming the staged command, and
+  `Unconfirmed` protection against blind retries.
+
+No new permissions or configuration fields are added.
+
 ## What 0.7.11 adds
 
 Mounting repositories on Claude Duet works again:
