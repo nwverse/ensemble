@@ -36,12 +36,44 @@ func (f *fakeTermRunner) Run(_ context.Context, cfg core.SSHTarget, command stri
 
 type termBoxProvider struct {
 	quotaTestProvider
-	box      provider.BoxState
-	sentText []string
+	box          provider.BoxState
+	boxErr       error
+	supportsBox  bool
+	supportsComp bool
+	sentText     []string
+	compCmds     []string
+	compAnswer   func(string) (provider.ComputerRunResult, error)
+}
+
+func (p *termBoxProvider) SupportsBoxState() bool {
+	return p.supportsBox || p.name == grokBot || p.name == providerGemini
 }
 
 func (p *termBoxProvider) BoxState(context.Context, string) (provider.BoxState, error) {
+	if p.boxErr != nil {
+		return provider.BoxState{}, p.boxErr
+	}
 	return p.box, nil
+}
+
+func (p *termBoxProvider) SupportsComputer() bool {
+	return p.supportsComp || p.name == providerGemini
+}
+
+func (p *termBoxProvider) RunComputer(_ context.Context, _, cmd string) (provider.ComputerRunResult, error) {
+	p.compCmds = append(p.compCmds, cmd)
+	if p.compAnswer != nil {
+		return p.compAnswer(cmd)
+	}
+	return provider.ComputerRunResult{
+		Status:     provider.Sent,
+		SessionID:  "comp_b8f40e9a12",
+		SessionURL: "https://gemini.google.com/app/comp_b8f40e9a12",
+		TurnID:     "r_1:u",
+		Output:     "Linux localhost 6.6.137+ x86_64",
+		DurationMs: 320,
+		Answered:   true,
+	}, nil
 }
 
 func (p *termBoxProvider) Send(_ context.Context, _ string, _ provider.SessionRef, msg provider.Outgoing, _ provider.SendContext) (provider.SendResult, error) {
@@ -270,5 +302,220 @@ func TestTerminalSSHReadOnlyProbeAndTwoStepConfirmation(t *testing.T) {
 	}
 	if strings.Contains(duetTxt, "保存 SSH 目标") {
 		t.Errorf("non-terminal service should not offer SSH form:\n%s", duetTxt)
+	}
+}
+
+func TestTerminalGeminiCloudComputerWebShell(t *testing.T) {
+	now := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
+	taskOn := true
+	netOn := false
+	gemini := &termBoxProvider{
+		quotaTestProvider: quotaTestProvider{name: providerGemini},
+		box: provider.BoxState{
+			State:          "running",
+			Image:          "Debian 12 · 2 vCPU · 8 GB",
+			TaskMode:       &taskOn,
+			InternetAccess: &netOn,
+			Running:        1,
+			Waiting:        0,
+			Ready:          2,
+			SettingsURL:    "https://gemini.google.com/gemini-spark",
+			SessionID:      "comp_b8f40e9a12",
+			SessionTitle:   "云电脑探针会话",
+			SessionURL:     "https://gemini.google.com/app/comp_b8f40e9a12",
+		},
+	}
+
+	club := core.New(core.Options{
+		Registry:  provider.NewRegistry(gemini),
+		FollowUps: []time.Duration{},
+		Now:       func() time.Time { return now },
+	})
+	t.Cleanup(club.Close)
+	ctx := context.Background()
+	space, err := club.Space(ctx, core.DefaultSpace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gAcct, err := space.AddAccount(ctx, protocol.AddAccountParams{Provider: providerGemini, Credential: "fixture-gemini-cred"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a := &accounts{club: club, terms: newTermState()}
+	checkSchema := func(label string, v *wire.View) {
+		t.Helper()
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("%s marshal: %v", label, err)
+		}
+		if _, err := wire.DecodeCheckedViewJSON(b); err != nil {
+			t.Fatalf("%s failed wire.DecodeCheckedViewJSON: %v\n%s", label, err, string(b))
+		}
+	}
+	renderLocale := func(locale string) *wire.View {
+		r := &ext.UIRequest{UIParams: wire.UIParams{
+			Contribution: HomeUI, Placement: wire.PlacementNavPage, Locale: locale,
+			State: ext.EncodeState(pageState{Page: pageTerminal, Account: gAcct.AccountID}),
+		}}
+		v, err := a.render(ctx, r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkSchema("gemini terminal "+locale, v)
+		if strings.HasPrefix(locale, "zh") {
+			noJargon(t, "gemini terminal "+locale, v)
+		}
+		return v
+	}
+	doAct := func(action string, vals map[string]string) *wire.ActionResult {
+		r := &ext.UIRequest{UIParams: wire.UIParams{
+			Contribution: HomeUI, Placement: wire.PlacementNavPage, Locale: "zh-Hans",
+			State:  ext.EncodeState(pageState{Page: pageTerminal, Account: gAcct.AccountID}),
+			Action: action,
+			Values: vals,
+		}}
+		res, err := a.action(ctx, r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res != nil && res.View != nil {
+			checkSchema("gemini terminal act "+action, res.View)
+			noJargon(t, "gemini terminal act "+action, res.View)
+		}
+		return res
+	}
+
+	// 1. Account detail page renders the cloud computer entry with "云电脑" badge.
+	acctReq := &ext.UIRequest{UIParams: wire.UIParams{
+		Contribution: HomeUI, Placement: wire.PlacementNavPage, Locale: "zh-Hans",
+		State: ext.EncodeState(pageState{Page: pageAccount, Account: gAcct.AccountID}),
+	}}
+	acctView, err := a.render(ctx, acctReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkSchema("gemini account detail", acctView)
+	noJargon(t, "gemini account detail", acctView)
+	if !strings.Contains(text(acctView), "云电脑") {
+		t.Fatalf("gemini account detail missing cloud computer badge:\n%s", text(acctView))
+	}
+
+	// 2. Initial terminal view (InternetAccess=false): shows status card, clear Chinese hint without flipping switch,
+	// gemini-spark link and active session link, and passes schema + noJargon in both zh-Hans and en.
+	vZh := renderLocale("zh-Hans")
+	_ = renderLocale("en")
+	txtZh := text(vZh)
+	for _, want := range []string{
+		"Gemini 云电脑（任务模式）",
+		"2 核 CPU / 8 GB 内存 / Debian 12",
+		"远程计算机的网络访问权限（只读）",
+		"未开启",
+		"不会擅自修改你的开关",
+		"https://gemini.google.com/gemini-spark",
+		"https://gemini.google.com/app/comp_b8f40e9a12",
+		"云电脑命令行（经二次确认执行）",
+	} {
+		if !strings.Contains(txtZh, want) {
+			t.Errorf("gemini terminal view (internet off) lacks %q:\n%s", want, txtZh)
+		}
+	}
+
+	// 3. Flip internet on and test read-only refresh action (plus human-check / auth error classification).
+	netOn = true
+	refRes := doAct(actTermComputerRefresh, nil)
+	if !strings.Contains(refRes.Toast, "只读状态检查通过") {
+		t.Fatalf("refresh toast = %q", refRes.Toast)
+	}
+	if !strings.Contains(text(refRes.View), "已允许远程计算机在任务中访问外网") {
+		t.Fatalf("refreshed view did not show internet enabled:\n%s", text(refRes.View))
+	}
+	gemini.boxErr = &provider.Error{Code: provider.CodeHumanCheck}
+	hcRes := doAct(actTermComputerRefresh, nil)
+	if !strings.Contains(hcRes.Toast, "我不是机器人") {
+		t.Fatalf("human check refresh toast = %q", hcRes.Toast)
+	}
+	gemini.boxErr = nil
+
+	// 4. Preset shortcut whitelist: unknown preset rejected, valid read-only preset stages with SHA-256 digest.
+	badPreset := doAct(actTermComputerPreset, map[string]string{valTermPreset: "rm -rf /"})
+	if !strings.Contains(badPreset.Toast, "不在只读预设清单里") {
+		t.Fatalf("expected preset whitelist refusal, got %q", badPreset.Toast)
+	}
+	presetRes := doAct(actTermComputerPreset, map[string]string{valTermPreset: geminiPresetSystem})
+	if !strings.Contains(presetRes.Toast, "已准备好命令") {
+		t.Fatalf("preset stage toast = %q", presetRes.Toast)
+	}
+	sc, ok := a.term().getStaged(gAcct.AccountID, now)
+	if !ok || sc.Mode != termModeComputer || sc.Command != geminiPresetSystem || sc.Digest == "" {
+		t.Fatalf("staged preset = %+v, ok=%v", sc, ok)
+	}
+	if !strings.Contains(text(presetRes.View), `"confirm":"确认在`) {
+		t.Fatalf("staged computer view missing Confirm dialog:\n%s", text(presetRes.View))
+	}
+
+	// 5. Two-step confirmation: wrong digest rejected -> valid digest executes once -> cleans ANSI & caps at 16 KB -> replay rejected.
+	wrongDigest := doAct(actTermComputerRun, map[string]string{valTermDigest: "000000000000"})
+	if !strings.Contains(wrongDigest.Toast, "过期或已变动") || len(gemini.compCmds) != 0 {
+		t.Fatalf("wrong digest was not rejected: toast=%q calls=%d", wrongDigest.Toast, len(gemini.compCmds))
+	}
+	gemini.compAnswer = func(cmd string) (provider.ComputerRunResult, error) {
+		return provider.ComputerRunResult{
+			Status:     provider.Sent,
+			SessionID:  "comp_b8f40e9a12",
+			SessionURL: "https://gemini.google.com/app/comp_b8f40e9a12",
+			TurnID:     "r_10:u",
+			Output:     "\x1b[32mLinux localhost 6.6.137+ x86_64\x1b[0m\n2\n" + strings.Repeat("mem-line-0123456789\n", 900),
+			DurationMs: 410,
+			Answered:   true,
+		}, nil
+	}
+	runRes := doAct(actTermComputerRun, map[string]string{valTermDigest: sc.Digest})
+	if !strings.Contains(runRes.Toast, "已在云电脑执行完成") || len(gemini.compCmds) != 1 || gemini.compCmds[0] != geminiPresetSystem {
+		t.Fatalf("computer run: toast=%q cmds=%+v", runRes.Toast, gemini.compCmds)
+	}
+	runTxt := text(runRes.View)
+	if !strings.Contains(runTxt, "Linux localhost 6.6.137+ x86_64") || strings.Contains(runTxt, "\x1b[") || !strings.Contains(runTxt, "超过 16 KB，已截断") {
+		t.Fatalf("computer output not cleaned or truncated properly:\n%s", runTxt)
+	}
+	if len(gemini.sentText) != 0 {
+		t.Fatalf("computer run must never send into main chat: sentText=%+v", gemini.sentText)
+	}
+	// Replay of the same digest must be rejected.
+	replay := doAct(actTermComputerRun, map[string]string{valTermDigest: sc.Digest})
+	if !strings.Contains(replay.Toast, "过期或已变动") || len(gemini.compCmds) != 1 {
+		t.Fatalf("replay was not rejected: toast=%q calls=%d", replay.Toast, len(gemini.compCmds))
+	}
+
+	// 6. Unconfirmed run records caution and prevents blind resend.
+	_ = doAct(actTermComputerStage, map[string]string{fieldTermComputerCmd: "ls -la"})
+	sc2, _ := a.term().getStaged(gAcct.AccountID, now)
+	gemini.compAnswer = func(string) (provider.ComputerRunResult, error) {
+		return provider.ComputerRunResult{
+			Status:     provider.Unconfirmed,
+			SessionID:  "comp_b8f40e9a12",
+			SessionURL: "https://gemini.google.com/app/comp_b8f40e9a12",
+			DurationMs: 900,
+		}, nil
+	}
+	unconfRes := doAct(actTermComputerRun, map[string]string{valTermDigest: sc2.Digest})
+	if !strings.Contains(unconfRes.Toast, "不要直接重发") {
+		t.Fatalf("unconfirmed toast = %q", unconfRes.Toast)
+	}
+
+	// 7. Quota exhaustion blocks execution before consuming the staged command.
+	gemini.readings = []provider.QuotaReading{{
+		Kind: protocol.QuotaKindWindow, Window: "5h", Limit: 100, Remaining: 0,
+		Exhausted: true, ResetsAt: now.Add(2 * time.Hour).UnixMilli(),
+	}}
+	if err := space.SyncAccount(ctx, gAcct.AccountID); err != nil {
+		t.Fatal(err)
+	}
+	_ = doAct(actTermComputerStage, map[string]string{fieldTermComputerCmd: "python3 --version"})
+	sc3, _ := a.term().getStaged(gAcct.AccountID, now)
+	prevCalls := len(gemini.compCmds)
+	blockedRes := doAct(actTermComputerRun, map[string]string{valTermDigest: sc3.Digest})
+	if !strings.Contains(blockedRes.Toast, "额度已用完") || len(gemini.compCmds) != prevCalls {
+		t.Fatalf("exhausted quota did not block computer run: toast=%q calls=%d", blockedRes.Toast, len(gemini.compCmds))
 	}
 }

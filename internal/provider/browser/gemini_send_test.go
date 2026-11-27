@@ -27,6 +27,10 @@ type geminiPage struct {
 	NewID string `json:"newId"`
 	// Record is the turn id Gemini's record names for the sent text ("" when it has none).
 	Record string `json:"record"`
+	// Answer is the markdown text Gemini's record (hNvQHb) carries for the turn's answer candidate.
+	Answer string `json:"answer"`
+	// NoTaskMode simulates an account where the task-mode toggle (data-value="40") is missing or refuses selection.
+	NoTaskMode bool `json:"noTaskMode"`
 }
 
 type geminiRun struct {
@@ -59,7 +63,7 @@ func runGeminiScript(t *testing.T, script string, p geminiPage) geminiRun {
 	}
 	env, _ := json.Marshal(p)
 	sels, _ := json.Marshal(map[string]string{"composer": geminiComposerSel, "send": geminiSendSel, "stop": geminiStopSel,
-		"query": geminiQuerySel, "queryText": geminiQueryTextSel, "chatMode": geminiChatModeSel})
+		"query": geminiQuerySel, "queryText": geminiQueryTextSel, "chatMode": geminiChatModeSel, "taskMode": geminiTaskModeSel})
 	src := `
 const P = ` + string(env) + `, S = ` + string(sels) + `;
 const calls = [];
@@ -88,7 +92,10 @@ globalThis.document = {
 globalThis.fetch = async (url, opts) => {
   const body = String((opts && opts.body) || "");
   let payload = null;
-  if (body.includes("hNvQHb") && P.record) payload = [[[["c_x", P.record], null, [[turns[turns.length - 1]]], [], [1, 0]]]];
+  if (body.includes("hNvQHb") && P.record) {
+    const cands = P.answer ? [[["rc_1", [P.answer]]]] : [];
+    payload = [[[["c_x", P.record], null, [[turns[turns.length - 1]]], cands, [1, 0]]]];
+  }
   if (body.includes("MaZiqc")) payload = [null, null, []];
   const text = ")]}'\n" + JSON.stringify([["wrb.fr", body.includes("hNvQHb") ? "hNvQHb" : "MaZiqc", JSON.stringify(payload)]]);
   return { status: 200, ok: true, url: String(url), text: async () => text, json: async () => JSON.parse(text) };
@@ -112,6 +119,7 @@ const page = {
     calls.push("click " + sel);
     if (sel === "loc=css:" + S.send) { if (P.clickTakes) send("click"); return; }
     if (sel === "loc=css:" + S.chatMode) return;
+    if (sel === "loc=css:" + S.taskMode) { if (P.noTaskMode) throw new Error("no task mode button"); return; }
     if (sel === "loc=css:" + S.composer) return;
     throw new Error("no such element");
   },

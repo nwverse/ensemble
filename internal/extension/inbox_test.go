@@ -1364,7 +1364,7 @@ func TestManifestAsksForNotifyAndTheHubBuild(t *testing.T) {
 	if d := m.Configuration.Properties["inbox_push"].Default; d != true {
 		t.Errorf("inbox_push default: %v", d)
 	}
-	if pac.Version() != "0.7.11" {
+	if pac.Version() != "0.7.12" {
 		t.Errorf("version %s", pac.Version())
 	}
 }

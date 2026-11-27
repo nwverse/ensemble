@@ -1,0 +1,66 @@
+<main>
+<div class="content-container">
+<gemini-agent-settings class="is-remy-user">
+<div class="container">
+<div class="header">
+<h1 class="title gds-headline-m">任务设置</h1>
+</div>
+<div class="options">
+<div class="settings-card disable-agent-section">
+<div class="setting-row">
+<div class="setting-text">
+<h2 class="section-title gds-headline-s">使用任务模式委托工作</h2>
+<div id="disable-agent-description" class="section-description gds-body-l">
+<span>允许 Gemini 代表你使用任务模式。如果关闭此设置，系统会删除你的浏览数据和远程代码执行文件，并停止运行你的定时任务。</span>
+</div>
+</div>
+<div class="card-actions">
+<button type="button" data-test-id="disable-agent-button" aria-describedby="disable-agent-description" class="action-button gds-body-m">关闭</button>
+</div>
+</div>
+</div>
+<div class="settings-card memory-section">
+<div class="setting-row">
+<div class="setting-text">
+<h2 class="section-title gds-headline-s">任务记忆</h2>
+</div>
+<div class="setting-action">
+<button type="button" class="mdc-button">管理</button>
+</div>
+</div>
+</div>
+<div class="settings-card remote-computer-settings-card">
+<div class="setting-row allow-remote-computer-access-section">
+<div class="setting-text">
+<h2 class="section-title gds-headline-s">要允许远程计算机访问网络吗？</h2>
+<div class="section-description gds-body-l">
+<span>Gemini 将能够通过网络访问权限在你的所有任务中运行代码，以执行安装软件包和调用外部 API 等操作。代码和文件会保存到一台用于执行所有任务的远程计算机上。</span>
+</div>
+</div>
+<div class="setting-action">
+<span class="toggle-container">
+<mat-slide-toggle id="mat-mdc-slide-toggle-0" class="mat-mdc-slide-toggle mat-accent mat-mdc-slide-toggle-checked">
+<div class="mdc-form-field">
+<button role="switch" type="button" id="mat-mdc-slide-toggle-0-button" class="mdc-switch mdc-switch--selected mdc-switch--checked" aria-label="远程计算机的网络访问权限" aria-checked="true"></button>
+</div>
+</mat-slide-toggle>
+</span>
+</div>
+</div>
+<div class="setting-row remote-computer-data-section">
+<div class="setting-text">
+<h2 class="section-title gds-headline-s">删除远程代码执行数据</h2>
+<div class="section-description gds-body-l">
+<span id="remote-computer-data-description">删除 Gemini 通过远程计算机为你运行代码时使用的已保存文件和其他数据。</span>
+</div>
+</div>
+<div class="setting-action">
+<button type="button" aria-describedby="remote-computer-data-description" class="delete-button gds-body-m">删除</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+</gemini-agent-settings>
+</div>
+</main>

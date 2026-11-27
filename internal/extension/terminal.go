@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/nwverse/ensemble/internal/core"
 	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
 	"github.com/nwverse/ensemble/internal/provider/cue"
 	"github.com/nwverse/ensemble/internal/provider/echo"
 	"github.com/nwverse/ensemble/internal/provider/groq"
@@ -28,36 +30,50 @@ import (
 const (
 	pageTerminal = "terminal"
 
-	actTermSaveSSH   = "term_save_ssh"
-	actTermClearSSH  = "term_clear_ssh"
-	actTermProbe     = "term_probe"
-	actTermStage     = "term_stage"
-	actTermPreset    = "term_preset"
-	actTermExec      = "term_exec"
-	actTermCancel    = "term_cancel"
-	actTermChatStage = "term_chat_stage"
-	actTermChatSend  = "term_chat_send"
+	actTermSaveSSH         = "term_save_ssh"
+	actTermClearSSH        = "term_clear_ssh"
+	actTermProbe           = "term_probe"
+	actTermStage           = "term_stage"
+	actTermPreset          = "term_preset"
+	actTermExec            = "term_exec"
+	actTermCancel          = "term_cancel"
+	actTermChatStage       = "term_chat_stage"
+	actTermChatSend        = "term_chat_send"
+	actTermComputerRefresh = "term_computer_refresh"
+	actTermComputerStage   = "term_computer_stage"
+	actTermComputerPreset  = "term_computer_preset"
+	actTermComputerRun     = "term_computer_run"
 
 	fieldTermSSHTarget    = "term_ssh_target"
 	fieldTermSSHTransport = "term_ssh_transport"
 	fieldTermCmd          = "term_cmd"
 	fieldTermChatCmd      = "term_chat_cmd"
+	fieldTermComputerCmd  = "term_computer_cmd"
 
 	valTermDigest = "digest"
 	valTermPreset = "preset"
 
-	termModeSSH  = "ssh"
-	termModeChat = "chat"
+	termModeSSH      = "ssh"
+	termModeChat     = "chat"
+	termModeComputer = "computer"
+
+	providerGemini         = "gemini_tasks"
+	geminiSparkSettingsURL = "https://gemini.google.com/gemini-spark"
 
 	termMaxCommandLen = 1024
 	termMaxOutputSize = 16 * 1024
 	termProbeTimeout  = 15 * time.Second
 	termExecTimeout   = 20 * time.Second
+	termComputerWait  = 115 * time.Second
 	termStageTTL      = 5 * time.Minute
 	termMaxHistory    = 5
 
 	// Fixed read-only status probe: OS/kernel version and uptime/load average only.
 	termProbeCommand = "uname -srm && uptime"
+
+	geminiPresetSystem   = "uname -srm && nproc && free -h && df -h"
+	geminiPresetListDir  = "ls -la"
+	geminiPresetRuntimes = "python3 --version && node -v"
 )
 
 // termRunOutput is the captured outcome of one remote SSH/Tailscale command execution.
@@ -171,8 +187,21 @@ func cleanTerminalOutput(s string) string {
 	return strings.TrimSpace(b.String())
 }
 
+// capTerminalOutput cleans ANSI sequences and truncates output at maxBytes on a valid UTF-8 rune boundary.
+func capTerminalOutput(s string, maxBytes int) (string, bool) {
+	cleaned := cleanTerminalOutput(s)
+	if len(cleaned) <= maxBytes {
+		return cleaned, false
+	}
+	cut := cleaned[:maxBytes]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return strings.TrimSpace(cut), true
+}
+
 type stagedCommand struct {
-	Mode      string // termModeSSH | termModeChat
+	Mode      string // termModeSSH | termModeChat | termModeComputer
 	Target    string
 	Transport string
 	Command   string
@@ -192,30 +221,40 @@ type termProbeRecord struct {
 }
 
 type termRunRecord struct {
-	Target     string
-	Transport  string
-	Command    string
-	RanAt      int64
-	ExitCode   int
-	DurationMs int64
-	Output     string
-	Truncated  bool
-	ErrMsg     string
+	Target      string
+	Transport   string
+	Command     string
+	RanAt       int64
+	ExitCode    int
+	DurationMs  int64
+	Output      string
+	Truncated   bool
+	ErrMsg      string
+	Unconfirmed bool
+	SessionURL  string
+}
+
+type termComputerState struct {
+	Box       provider.BoxState
+	CheckedAt int64
+	ErrMsg    string
 }
 
 // termState holds per-account in-memory terminal confirmation state, read-only probes, and recent runs.
 type termState struct {
-	mu      sync.Mutex
-	staged  map[string]stagedCommand
-	probes  map[string]termProbeRecord
-	history map[string][]termRunRecord
+	mu       sync.Mutex
+	staged   map[string]stagedCommand
+	probes   map[string]termProbeRecord
+	computer map[string]termComputerState
+	history  map[string][]termRunRecord
 }
 
 func newTermState() *termState {
 	return &termState{
-		staged:  map[string]stagedCommand{},
-		probes:  map[string]termProbeRecord{},
-		history: map[string][]termRunRecord{},
+		staged:   map[string]stagedCommand{},
+		probes:   map[string]termProbeRecord{},
+		computer: map[string]termComputerState{},
+		history:  map[string][]termRunRecord{},
 	}
 }
 
@@ -268,7 +307,21 @@ func (ts *termState) deleteAccount(acctID string) {
 	defer ts.mu.Unlock()
 	delete(ts.staged, acctID)
 	delete(ts.probes, acctID)
+	delete(ts.computer, acctID)
 	delete(ts.history, acctID)
+}
+
+func (ts *termState) setComputer(acctID string, rec termComputerState) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.computer[acctID] = rec
+}
+
+func (ts *termState) getComputer(acctID string) (termComputerState, bool) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	rec, ok := ts.computer[acctID]
+	return rec, ok
 }
 
 func (ts *termState) setProbe(acctID string, rec termProbeRecord) {
@@ -366,6 +419,9 @@ func (a *accounts) terminalEntrySection(ctx context.Context, l lang, at string, 
 	case acct.Provider == grokBot:
 		badge = &wire.Badge{Text: l.t("云端沙箱", "Cloud sandbox"), Tone: wire.TonePositive}
 		sub = l.t("可只读查看沙箱运行状态、配置 SSH，或经确认让它在沙箱里执行命令。", "Check read-only sandbox state, configure SSH, or run confirmed commands via chat.")
+	case acct.Provider == providerGemini:
+		badge = &wire.Badge{Text: l.t("云电脑", "Cloud computer"), Tone: wire.TonePositive}
+		sub = l.t("可只读查看任务模式与远程计算机联网状态，或经二次确认在独立云电脑会话里执行命令。", "Check read-only task mode and remote computer internet access, or run confirmed commands in a dedicated task session.")
 	case acct.Provider == echo.Name:
 		badge = &wire.Badge{Text: l.t("可配 SSH", "SSH available"), Tone: wire.ToneNeutral}
 		sub = l.t("可配置 SSH 地址以检查只读状态并经确认执行命令。", "Configure an SSH target for read-only checks and confirmed commands.")
@@ -475,12 +531,19 @@ func (a *accounts) terminalView(ctx context.Context, r *ext.UIRequest, l lang, s
 		sections = append(sections, a.terminalChatRunnerSection(l, acct, staged, hasStaged, now))
 	}
 
-	// Section 5: Recent SSH outputs (if any).
+	// Section 4b: Gemini remote computer WebShell runner (dedicated task-mode conversation, isolated from main chat).
+	if acct.Provider == providerGemini {
+		sections = append(sections, a.terminalComputerRunnerSection(l, acct, staged, hasStaged, now))
+	}
+
+	// Section 5: Recent SSH / cloud computer outputs (if any).
 	if hist := a.term().getHistory(acct.AccountID); len(hist) > 0 {
 		var hItems []wire.Component
 		for idx, rec := range hist {
 			badge := &wire.Badge{Text: fmt.Sprintf(l.t("退出码 %d", "exit %d"), rec.ExitCode), Tone: wire.TonePositive}
-			if rec.ErrMsg != "" || rec.ExitCode != 0 {
+			if rec.Unconfirmed {
+				badge = &wire.Badge{Text: l.t("待确认", "Unconfirmed"), Tone: wire.ToneCaution}
+			} else if rec.ErrMsg != "" || rec.ExitCode != 0 {
 				badge.Tone = wire.ToneDanger
 			}
 			sub := fmt.Sprintf("%s · %dms · %s", rec.Target, rec.DurationMs, clk.at(l, rec.RanAt))
@@ -579,6 +642,155 @@ func (a *accounts) terminalEnvItems(ctx context.Context, l lang, space *core.Spa
 				})
 			}
 		}
+	case providerGemini:
+		items = append(items, wire.Component{
+			Type:     "row",
+			Title:    l.t("环境类型", "Environment"),
+			Value:    l.t("Gemini 云电脑（任务模式）", "Gemini cloud computer (task mode)"),
+			Subtitle: l.t("配备 2 核 CPU / 8 GB 内存 / Debian 12，工作目录中的代码与文件会在同一台远程计算机上跨任务持久保存；命令通过独立的任务模式会话执行，不会混入你的主对话。", "2 vCPU / 8 GB RAM / Debian 12 with a persistent working directory shared across tasks; commands run in a dedicated task-mode conversation without touching your main chat."),
+			Badge:    &wire.Badge{Text: l.t("云电脑", "Cloud computer"), Tone: wire.TonePositive},
+		})
+		var box provider.BoxState
+		var boxSupported bool
+		var boxErr error
+		cached, hasCached := a.term().getComputer(acct.AccountID)
+		if space != nil {
+			bctx, cancel := context.WithTimeout(ctx, termProbeTimeout)
+			box, boxSupported, boxErr = space.AccountBoxState(bctx, acct.AccountID)
+			cancel()
+		}
+		if hasCached {
+			if !boxSupported {
+				box = cached.Box
+				boxSupported = true
+			} else if boxErr != nil || acct.Status == protocol.AccountPaused {
+				if box.InternetAccess == nil {
+					box.InternetAccess = cached.Box.InternetAccess
+				}
+				if box.SessionURL == "" {
+					box.SessionURL = cached.Box.SessionURL
+					box.SessionTitle = cached.Box.SessionTitle
+				}
+			}
+		}
+		if boxSupported {
+			stateVal, stateTone := boxStateLabel(l, box.State)
+			taskCounts := fmt.Sprintf(
+				l.t("任务进行中 %d / 待处理 %d / 已就绪 %d · 只读查询，不唤醒无关会话。",
+					"%d running / %d waiting / %d ready · read-only check."),
+				box.Running, box.Waiting, box.Ready,
+			)
+			stateSub := taskCounts
+			if box.TaskMode != nil && *box.TaskMode {
+				stateSub = l.t("使用任务模式委托工作：已开启 · ", "Task mode enabled · ") + taskCounts
+			}
+			if box.Image != "" {
+				stateSub = l.t("规格：", "Spec: ") + box.Image + " · " + stateSub
+			}
+			if acct.Status == protocol.AccountPaused {
+				stateVal = l.t("已暂停同步", "Paused")
+				stateTone = wire.ToneNeutral
+				stateSub = l.t("这个账号已暂停同步，未发起实时检查；恢复同步后再刷新状态。", "This account is paused, so no live check was run; resume syncing first.")
+			} else if boxErr != nil {
+				stateVal = l.t("暂时读取不到", "Unavailable right now")
+				stateTone = wire.ToneCaution
+				stateSub = a.terminalProblemShort(ctx, l, space, acct, boxErr)
+			} else if box.TaskMode != nil && !*box.TaskMode {
+				stateVal = l.t("未开启任务模式", "Task mode off")
+				stateTone = wire.ToneCaution
+				stateSub = l.t("请先前往下方 Gemini 任务设置页开启「使用任务模式委托工作」；这里只做只读检查，不会替你改动任何开关。",
+					"Turn on task mode on Gemini's task settings page below first; this page is read-only and never changes your settings.")
+			}
+			items = append(items, wire.Component{
+				Type:     "row",
+				Title:    l.t("任务模式与云电脑状态（只读）", "Task mode & computer state (read-only)"),
+				Value:    stateVal,
+				Subtitle: stateSub,
+				Badge:    &wire.Badge{Text: stateVal, Tone: stateTone},
+			})
+
+			netVal := l.t("暂时读取不到", "Unavailable right now")
+			netTone := wire.ToneNeutral
+			netSub := l.t("点下方「只读刷新云电脑状态」重新检查，或打开 Gemini 任务设置页查看。",
+				"Tap Refresh below to check again, or open Gemini's task settings page.")
+			if box.InternetAccess != nil {
+				if *box.InternetAccess {
+					netVal = l.t("已开启", "Enabled")
+					netTone = wire.TonePositive
+					netSub = l.t("已允许远程计算机在任务中访问外网（可安装软件包、拉取代码或调用外部服务）。",
+						"The remote computer is allowed outbound internet access across tasks (install packages, fetch repos, or call external services).")
+				} else {
+					netVal = l.t("未开启", "Disabled")
+					netTone = wire.ToneCaution
+					netSub = l.t("当前未开启远程计算机的网络访问权限，需要联网的命令会受限；如需开启，请点下方链接前往 Gemini 任务设置页自行打开开关（这里不会擅自修改你的开关）。",
+						"Remote computer internet access is currently off, so commands requiring network access will fail; open Gemini's task settings below to turn it on yourself (this page never flips your switch).")
+				}
+			}
+			items = append(items, wire.Component{
+				Type:     "row",
+				Title:    l.t("远程计算机的网络访问权限（只读）", "Remote computer internet access (read-only)"),
+				Value:    netVal,
+				Subtitle: netSub,
+				Badge:    &wire.Badge{Text: netVal, Tone: netTone},
+			})
+		}
+		if hasCached && cached.CheckedAt > 0 {
+			items = append(items, wire.Component{
+				Type:     "row",
+				Title:    l.t("最近一次只读检查", "Last read-only check"),
+				Value:    clk.at(l, cached.CheckedAt),
+				Subtitle: l.t("只读读取任务设置与任务列表，未改动任何开关。", "Read-only check of task settings and task list; no switches were changed."),
+				Badge:    &wire.Badge{Text: l.t("只读", "Read-only"), Tone: wire.TonePositive},
+			})
+		}
+		items = append(items, wire.Component{
+			Type:   "button",
+			Title:  l.t("只读刷新云电脑状态", "Refresh computer status (read-only)"),
+			Action: &wire.Action{ID: actTermComputerRefresh},
+		})
+		settingsURL := geminiSparkSettingsURL
+		if httpsURL(box.SettingsURL) {
+			settingsURL = box.SettingsURL
+		}
+		items = append(items, wire.Component{
+			Type:     "link",
+			Icon:     "settings",
+			Title:    l.t("打开 Gemini 任务设置页", "Open Gemini task settings"),
+			Subtitle: l.t("直达 gemini.google.com/gemini-spark 查看或自行管理「使用任务模式委托工作」与「远程计算机的网络访问权限」。", "Open gemini.google.com/gemini-spark to view or manage task mode and remote computer internet access."),
+			URL:      settingsURL,
+		})
+		sessionURL := box.SessionURL
+		if sessionURL == "" {
+			for _, rec := range a.term().getHistory(acct.AccountID) {
+				if rec.SessionURL != "" {
+					sessionURL = rec.SessionURL
+					break
+				}
+			}
+		}
+		if httpsURL(sessionURL) {
+			sessionSub := l.t("在浏览器中直达当前云电脑关联的独立任务模式会话。", "Open the dedicated task-mode conversation backing this cloud computer in your browser.")
+			if box.SessionTitle != "" {
+				sessionSub = l.t("当前会话：", "Current session: ") + box.SessionTitle
+			}
+			items = append(items, wire.Component{
+				Type:     "link",
+				Icon:     "link",
+				Title:    l.t("打开当前云电脑任务会话", "Open current cloud computer session"),
+				Subtitle: sessionSub,
+				URL:      sessionURL,
+			})
+		}
+		if space != nil && basicPlace(acct).Browser {
+			if mlabel := a.browserMachineLabel(ctx, space, acct); mlabel != "" {
+				items = append(items, wire.Component{
+					Type:     "row",
+					Title:    l.t("所在浏览器电脑", "Browser computer"),
+					Value:    mlabel,
+					Subtitle: l.t("此账号通过这台电脑上的浏览器连接 Gemini 云电脑。", "This account reaches Gemini's cloud computer through the browser on that computer."),
+				})
+			}
+		}
 	case echo.Name:
 		items = append(items, wire.Component{
 			Type:     "row",
@@ -595,8 +807,6 @@ func (a *accounts) terminalEnvItems(ctx context.Context, l lang, space *core.Spa
 			detail = l.t("Claude Duet 运行在 Anthropic 托管云端，不对外提供 SSH 或沙箱终端入口。", "Claude Duet runs on Anthropic's hosted service without an SSH or sandbox shell.")
 		case "dots":
 			detail = l.t("ChatGPT 网页版不对外提供 SSH 或持续终端会话入口。", "ChatGPT web does not expose SSH or a persistent shell.")
-		case "gemini_tasks":
-			detail = l.t("Gemini 网页版不对外提供 SSH 或命令行终端入口。", "Gemini web does not expose SSH or a shell.")
 		case cue.Name:
 			kind = l.t("云端任务服务（无直接终端）", "Hosted task service (no direct shell)")
 			detail = l.t("Manus 任务在对方托管沙箱内运行，目前未向外部开放 SSH 连接地址。", "Manus tasks run in a managed sandbox with no external SSH address.")
@@ -800,6 +1010,93 @@ func (a *accounts) terminalChatRunnerSection(l lang, acct protocol.Account, stag
 	}
 }
 
+func isGeminiComputerPreset(cmd string) bool {
+	switch strings.TrimSpace(cmd) {
+	case geminiPresetSystem, geminiPresetListDir, geminiPresetRuntimes:
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *accounts) terminalComputerRunnerSection(l lang, acct protocol.Account, staged stagedCommand, hasStaged bool, now time.Time) wire.Section {
+	var items []wire.Component
+	exhaustedNote := ""
+	if blocked, _ := quotaExhaustedActive(acct.Quota, now.UnixMilli()); blocked {
+		exhaustedNote = l.t("注意：这个账号当前额度已用完，执行前会被提示拦截。", "Note: this account is currently out of allowance and execution will be blocked. ")
+		items = append(items, wire.Component{
+			Type:     "row",
+			Icon:     "warning",
+			Title:    l.t("当前额度已用完", "Allowance used up"),
+			Subtitle: l.t("在 Gemini 云电脑执行命令会消耗账号额度，当前会被拦截；请等额度恢复后再试。", "Running commands on Gemini's cloud computer uses account allowance and is currently blocked; wait for reset before retrying."),
+			Badge:    &wire.Badge{Text: l.t("额度用完", "Used up"), Tone: wire.ToneDanger},
+		})
+	}
+	if hasStaged && staged.Mode == termModeComputer {
+		items = append(items,
+			wire.Component{
+				Type:     "row",
+				Key:      "term-computer-staged-banner",
+				Icon:     "warning",
+				Title:    l.t("待你确认在云电脑执行的命令", "Command waiting for your confirmation"),
+				Subtitle: l.t("请核对下方命令，点「确认在云电脑执行」后才会发往独立的任务模式会话（不会混入主对话）。校验摘要："+staged.Digest, "Review the exact command below; confirming runs it in the dedicated task-mode session without touching your main chat. Digest: "+staged.Digest),
+				Badge:    &wire.Badge{Text: l.t("待确认", "Confirm"), Tone: wire.ToneCaution},
+			},
+			wire.Component{Type: "code", Language: "sh", Text: staged.Command},
+			wire.Component{
+				Type:  "button",
+				Title: l.t("确认在云电脑执行", "Confirm and run on cloud computer"),
+				Action: &wire.Action{
+					ID:     actTermComputerRun,
+					Values: map[string]string{valTermDigest: staged.Digest},
+					Confirm: exhaustedNote + l.t("确认在「"+accountTitle(l, acct)+"」的 Gemini 云电脑（独立任务模式会话）中执行这条命令？\n\n"+staged.Command,
+						"Run this command on "+accountTitle(l, acct)+"'s Gemini cloud computer (dedicated task session)?\n\n"+staged.Command),
+				},
+			},
+			wire.Component{
+				Type:   "button",
+				Title:  l.t("取消待执行命令", "Cancel staged command"),
+				Action: &wire.Action{ID: actTermCancel},
+			},
+		)
+	}
+	items = append(items,
+		wire.Component{
+			Type:        "field",
+			Name:        fieldTermComputerCmd,
+			Label:       l.t("要在云电脑执行的命令", "Command for cloud computer"),
+			Kind:        wire.FieldKindText,
+			Placeholder: l.t("例如 uname -srm && df -h 或 ls -la", "e.g. uname -srm && df -h or ls -la"),
+		},
+		wire.Component{
+			Type:   "button",
+			Title:  l.t("准备执行（下一步确认）", "Stage command (confirm next)"),
+			Action: &wire.Action{ID: actTermComputerStage, Submit: true},
+		},
+		wire.Component{
+			Type:   "button",
+			Title:  l.t("快速预填：系统内核与资源（只读）", "Quick stage: kernel & resources (read-only)"),
+			Action: &wire.Action{ID: actTermComputerPreset, Values: map[string]string{valTermPreset: geminiPresetSystem}},
+		},
+		wire.Component{
+			Type:   "button",
+			Title:  l.t("快速预填：查看持久目录文件（只读）", "Quick stage: list working directory (read-only)"),
+			Action: &wire.Action{ID: actTermComputerPreset, Values: map[string]string{valTermPreset: geminiPresetListDir}},
+		},
+		wire.Component{
+			Type:   "button",
+			Title:  l.t("快速预填：查看 Python 与 Node 版本（只读）", "Quick stage: Python & Node versions (read-only)"),
+			Action: &wire.Action{ID: actTermComputerPreset, Values: map[string]string{valTermPreset: geminiPresetRuntimes}},
+		},
+	)
+	return wire.Section{
+		Title: l.t("云电脑命令行（经二次确认执行）", "Cloud computer command runner (confirmed)"),
+		Footer: l.t("每条命令必须先「准备执行」生成校验摘要，再经「确认在云电脑执行」二次确认后才会在独立任务模式会话中运行；输出上限 16 KB，保留最近 5 次终端回显。",
+			"Every command must be staged and explicitly confirmed before running in the dedicated task-mode conversation; 16 KB output cap, last 5 runs retained."),
+		Items: items,
+	}
+}
+
 func (a *accounts) handleTerminalAction(ctx context.Context, r *ext.UIRequest, l lang, st pageState, done, refuse func(string) (*wire.ActionResult, error), failed func(error, string) (*wire.ActionResult, error)) (*wire.ActionResult, error) {
 	space, err := a.club.Space(ctx, core.DefaultSpace)
 	if err != nil {
@@ -994,6 +1291,140 @@ func (a *accounts) handleTerminalAction(ctx context.Context, r *ext.UIRequest, l
 	case actTermCancel:
 		a.term().clearStaged(acct.AccountID)
 		return done(l.t("已取消待执行命令", "Canceled staged command"))
+
+	case actTermComputerRefresh:
+		if acct.Provider != providerGemini {
+			return refuse(l.t("这个账号不支持 Gemini 云电脑状态检查。", "This account does not support Gemini cloud computer status checks."))
+		}
+		pctx, cancel := context.WithTimeout(ctx, termProbeTimeout)
+		defer cancel()
+		box, supported, berr := space.AccountBoxState(pctx, acct.AccountID)
+		if !supported {
+			return refuse(l.t("这个账号不支持 Gemini 云电脑状态检查。", "This account does not support Gemini cloud computer status checks."))
+		}
+		if berr != nil {
+			words := a.terminalProblemText(ctx, l, space, acct, berr)
+			prev, _ := a.term().getComputer(acct.AccountID)
+			a.term().setComputer(acct.AccountID, termComputerState{Box: prev.Box, CheckedAt: now.UnixMilli(), ErrMsg: a.terminalProblemShort(ctx, l, space, acct, berr)})
+			return refuse(words)
+		}
+		a.term().setComputer(acct.AccountID, termComputerState{Box: box, CheckedAt: now.UnixMilli()})
+		return done(l.t("只读状态检查通过", "Read-only status check succeeded"))
+
+	case actTermComputerStage, actTermComputerPreset:
+		if acct.Provider != providerGemini {
+			return refuse(l.t("这个账号不支持在 Gemini 云电脑里执行命令。", "This account does not support running commands on Gemini's cloud computer."))
+		}
+		rawCmd := r.Values[fieldTermComputerCmd]
+		if r.Action == actTermComputerPreset {
+			rawCmd = r.Values[valTermPreset]
+			if !isGeminiComputerPreset(rawCmd) {
+				return refuse(l.t("这个快捷命令不在只读预设清单里。", "This preset is not in the read-only preset list."))
+			}
+		}
+		cmd, cerr := validateTerminalCommand(rawCmd)
+		if cerr != nil {
+			return refuse(commandValidationWords(l, cerr))
+		}
+		digest := commandDigest(termModeComputer, acct.AccountID, "gemini_computer", cmd)
+		a.term().putStaged(acct.AccountID, stagedCommand{
+			Mode:      termModeComputer,
+			Target:    acct.AccountID,
+			Transport: "gemini_computer",
+			Command:   cmd,
+			Digest:    digest,
+			StagedAt:  now,
+		})
+		return done(l.t("已准备好命令，请核对后点「确认在云电脑执行」", "Command staged; review it and tap Confirm and run on cloud computer"))
+
+	case actTermComputerRun:
+		if acct.Provider != providerGemini {
+			return refuse(l.t("这个账号不支持在 Gemini 云电脑里执行命令。", "This account does not support running commands on Gemini's cloud computer."))
+		}
+		if err := exhausted(acct.Quota, now.UnixMilli()); err != nil {
+			return failed(err, "")
+		}
+		sc, ok := a.term().popStaged(acct.AccountID, termModeComputer, r.Values[valTermDigest], now)
+		if !ok {
+			return refuse(l.t("待确认命令已过期或已变动，请重新准备后再确认执行。", "Staged command expired or changed; stage it again before confirming."))
+		}
+		targetLabel := l.t("Gemini 云电脑", "Gemini cloud computer")
+		if space.SupportsAccountComputer(ctx, acct.AccountID) {
+			ectx, cancel := context.WithTimeout(ctx, termComputerWait)
+			defer cancel()
+			res, rerr := space.RunAccountComputer(ectx, acct.AccountID, sc.Command)
+			if rerr != nil {
+				words := a.terminalProblemText(ctx, l, space, acct, rerr)
+				a.term().addHistory(acct.AccountID, termRunRecord{
+					Target:    targetLabel,
+					Transport: "gemini_computer",
+					Command:   sc.Command,
+					RanAt:     now.UnixMilli(),
+					ExitCode:  1,
+					ErrMsg:    a.terminalProblemShort(ctx, l, space, acct, rerr),
+				})
+				return refuse(words)
+			}
+			if res.SessionID != "" {
+				targetLabel += " (" + res.SessionID + ")"
+			}
+			if res.Status == provider.Unconfirmed {
+				a.term().addHistory(acct.AccountID, termRunRecord{
+					Target:      targetLabel,
+					Transport:   "gemini_computer",
+					Command:     sc.Command,
+					RanAt:       now.UnixMilli(),
+					DurationMs:  res.DurationMs,
+					Unconfirmed: true,
+					SessionURL:  res.SessionURL,
+					Output:      l.t("命令可能已发往云电脑任务会话，但尚未收到完成确认；请先打开会话查看，不要直接重发。", "Command may have been delivered to the cloud computer session but was not confirmed; open the session to check before retrying."),
+				})
+				st.Note = l.t("命令可能已发往云电脑任务会话，但尚未得到对方确认；请先到会话里查看，不要直接重发。",
+					"Command may have been delivered to the cloud computer session but was not confirmed; check the session before retrying.")
+				st.NoteTone = wire.ToneCaution
+				return &wire.ActionResult{View: a.view(ctx, r, st), Toast: st.Note}, nil
+			}
+			outText, truncated := capTerminalOutput(res.Output, termMaxOutputSize)
+			if !res.Answered {
+				if outText == "" {
+					outText = l.t("命令已发往独立云电脑任务会话，后台仍在运行中；请点上方会话链接查看实时进度，不要直接重发。",
+						"Command was sent to the dedicated cloud computer task session and is still running; open the session link above to check live progress before retrying.")
+				}
+				a.term().addHistory(acct.AccountID, termRunRecord{
+					Target:      targetLabel,
+					Transport:   "gemini_computer",
+					Command:     sc.Command,
+					RanAt:       now.UnixMilli(),
+					DurationMs:  res.DurationMs,
+					Output:      outText,
+					Truncated:   truncated,
+					Unconfirmed: true,
+					SessionURL:  res.SessionURL,
+				})
+				st.Note = l.t("命令已发往独立云电脑任务会话，后台仍在运行中；请先到会话里查看，不要直接重发。",
+					"Command was sent to the dedicated cloud computer task session and is still running; check the session before retrying.")
+				st.NoteTone = wire.ToneCaution
+				return &wire.ActionResult{View: a.view(ctx, r, st), Toast: st.Note}, nil
+			}
+			a.term().addHistory(acct.AccountID, termRunRecord{
+				Target:     targetLabel,
+				Transport:  "gemini_computer",
+				Command:    sc.Command,
+				RanAt:      now.UnixMilli(),
+				ExitCode:   res.ExitCode,
+				DurationMs: res.DurationMs,
+				Output:     outText,
+				Truncated:  truncated,
+				SessionURL: res.SessionURL,
+			})
+			if res.ExitCode != 0 {
+				st.Note = fmt.Sprintf(l.t("命令已在云电脑执行完成，退出码 %d", "Command finished on cloud computer with exit code %d"), res.ExitCode)
+				st.NoteTone = wire.ToneCaution
+				return &wire.ActionResult{View: a.view(ctx, r, st), Toast: st.Note}, nil
+			}
+			return done(l.t("已在云电脑执行完成（退出码 0）", "Command finished on cloud computer (exit 0)"))
+		}
+		return refuse(l.t("当前账号尚未启用云电脑命令通道。", "Cloud computer command runner is unavailable for this account."))
 	}
 	return nil, nil
 }
@@ -1074,4 +1505,20 @@ func (a *accounts) browserMachineLabel(ctx context.Context, space *core.Space, a
 		return w.Machine
 	}
 	return id
+}
+
+func (a *accounts) terminalProblemText(ctx context.Context, l lang, space *core.Space, acct protocol.Account, err error) string {
+	code := protocol.ReasonOf(err)
+	if p, ok := problemOf(l, code, placerFor(ctx, space, a.browser).of(ctx, acct, code)); ok {
+		return p.Text(l)
+	}
+	return reason(l, err, "")
+}
+
+func (a *accounts) terminalProblemShort(ctx context.Context, l lang, space *core.Space, acct protocol.Account, err error) string {
+	code := protocol.ReasonOf(err)
+	if p, ok := problemOf(l, code, basicPlace(acct)); ok && p.Short != "" {
+		return p.Short
+	}
+	return l.t("暂时无法读取状态，请稍后再试。", "Could not check status right now; try again shortly.")
 }

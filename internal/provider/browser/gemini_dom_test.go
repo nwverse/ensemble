@@ -36,7 +36,7 @@ func loadGeminiPage(t *testing.T, name string) *html.Node {
 }
 
 func TestGeminiSelectorsHoldOnRecordedPages(t *testing.T) {
-	pages := []string{"new-chat.html", "conversation-idle.html", "conversation-typed.html", "conversation-answering.html", "conversation-answered.html"}
+	pages := []string{"new-chat.html", "conversation-idle.html", "conversation-typed.html", "conversation-answering.html", "conversation-answered.html", "gemini-spark.html"}
 	for _, tc := range []struct {
 		sel  string
 		name string
@@ -46,7 +46,11 @@ func TestGeminiSelectorsHoldOnRecordedPages(t *testing.T) {
 		{geminiSendSel, "send button", map[string]int{"conversation-typed.html": 1}},
 		{geminiStopSel, "stop button", map[string]int{"conversation-answering.html": 1}},
 		{geminiChatModeSel, "对话 mode", map[string]int{"new-chat.html": 1}},
+		{geminiTaskModeSel, "任务 mode", map[string]int{"new-chat.html": 1}},
 		{geminiQuerySel, "user turns", map[string]int{"conversation-idle.html": 2, "conversation-typed.html": 2, "conversation-answering.html": 2, "conversation-answered.html": 2}},
+		{geminiAgentSettingsSel, "gemini-spark settings root", map[string]int{"gemini-spark.html": 1}},
+		{geminiDisableAgentButtonSel, "gemini-spark disable task-mode button", map[string]int{"gemini-spark.html": 1}},
+		{geminiInternetSwitchSel, "gemini-spark remote computer network switch", map[string]int{"gemini-spark.html": 1}},
 	} {
 		for _, p := range pages {
 			if got := len(querySelectorAll(loadGeminiPage(t, p), tc.sel)); got != tc.want[p] {
@@ -55,10 +59,18 @@ func TestGeminiSelectorsHoldOnRecordedPages(t *testing.T) {
 		}
 	}
 
-	// The 对话 switch is the pressed one on a new conversation's page.
+	// The 对话 switch is the pressed one on a new conversation's page, and 任务 (data-value=40) is alongside it.
 	mode := querySelectorAll(loadGeminiPage(t, "new-chat.html"), geminiChatModeSel)
 	if len(mode) != 1 || strings.TrimSpace(nodeText(mode[0])) != "对话" || attr(mode[0], "aria-pressed") != "true" {
 		t.Errorf("对话 mode: %d matches", len(mode))
+	}
+	taskMode := querySelectorAll(loadGeminiPage(t, "new-chat.html"), geminiTaskModeSel)
+	if len(taskMode) != 1 || strings.TrimSpace(nodeText(taskMode[0])) != "任务" || attr(taskMode[0], "aria-pressed") != "false" {
+		t.Errorf("任务 mode: %d matches", len(taskMode))
+	}
+	sparkSwitch := querySelectorAll(loadGeminiPage(t, "gemini-spark.html"), geminiInternetSwitchSel)
+	if len(sparkSwitch) != 1 || attr(sparkSwitch[0], "aria-checked") != "true" || attr(sparkSwitch[0], "aria-label") != "远程计算机的网络访问权限" {
+		t.Errorf("gemini-spark network switch: %d matches", len(sparkSwitch))
 	}
 
 	// The newest turn's text is its lines, without the screen reader's "你说" label the turn also carries (and which

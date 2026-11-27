@@ -1480,7 +1480,8 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 			return failed(err, "")
 		}
 		return done(l.t("已让它把电脑重新连上（电脑编号 "+mid+"）", "Asked it to reconnect its computer ("+mid+")"))
-	case actTermSaveSSH, actTermClearSSH, actTermProbe, actTermStage, actTermPreset, actTermExec, actTermCancel, actTermChatStage, actTermChatSend:
+	case actTermSaveSSH, actTermClearSSH, actTermProbe, actTermStage, actTermPreset, actTermExec, actTermCancel, actTermChatStage, actTermChatSend,
+		actTermComputerRefresh, actTermComputerStage, actTermComputerPreset, actTermComputerRun:
 		return a.handleTerminalAction(ctx, r, l, st, done, refuse, failed)
 	}
 	return nil, nil

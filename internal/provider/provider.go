@@ -148,11 +148,51 @@ type BoxState struct {
 	Image                string
 	ImageUpdateAvailable bool
 	SourceNote           string
+	// TaskMode is whether the service's task / agent mode is enabled on the account (Gemini Spark), nil when not said.
+	TaskMode *bool
+	// InternetAccess is whether the remote computer is allowed outbound network access (Gemini W8adn), nil when not said.
+	InternetAccess *bool
+	// Running, Waiting, Ready count the remote computer's tasks by status when reported (Gemini MaZiqc).
+	Running int
+	Waiting int
+	Ready   int
+	// SettingsURL is the direct settings page for the remote computer (https://gemini.google.com/gemini-spark).
+	SettingsURL string
+	// SessionID, SessionTitle, SessionURL identify the kept or active remote computer session when known.
+	SessionID    string
+	SessionTitle string
+	SessionURL   string
 }
 
 // BoxStater reads the current cloud sandbox state read-only without starting or waking it.
 type BoxStater interface {
 	BoxState(ctx context.Context, credential string) (BoxState, error)
+}
+
+// BoxStateSupporter lets an adapter that statically implements BoxStater (such as browser.Adapter) report whether its
+// site actually supports BoxState.
+type BoxStateSupporter interface {
+	SupportsBoxState() bool
+}
+
+// ComputerRunResult is the outcome of running an owner-confirmed command in a provider's dedicated remote computer session.
+type ComputerRunResult struct {
+	Status     SendStatus
+	SessionID  string
+	SessionURL string
+	TurnID     string
+	Output     string
+	ExitCode   int
+	DurationMs int64
+	Answered   bool
+	Error      string
+}
+
+// ComputerRunner executes an owner-confirmed shell command in the provider's dedicated remote computer session without
+// disturbing its main chat.
+type ComputerRunner interface {
+	SupportsComputer() bool
+	RunComputer(ctx context.Context, credential, command string) (ComputerRunResult, error)
 }
 
 // Adapter is one provider. A call that returns an *Error was refused by the provider (nothing was accepted); any
