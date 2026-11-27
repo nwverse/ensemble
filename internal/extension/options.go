@@ -34,13 +34,13 @@ type option struct {
 }
 
 // markerLine reads "A：text", "A. text", "(B) text", "选项C：text", "1、text" (after any list bullet or bold marks).
-var markerLine = regexp.MustCompile(`^(?:[-*•·]\s*)?(?:(?:选项|方案|Option|option)\s*)?[（(\[【]?([A-Fa-f]|[1-9])[）)\]】]?\s*[：:.．、]\s*(\S.*)$`)
+var markerLine = regexp.MustCompile(`^(?:[-*•·]\s*)?(?:(?:选项|方案|Option|option)\s*)?[（(\[【]?([A-Fa-f]|[1-9])[）)\]】]?\s*(?:[：:、]\s*|[.．](?:\s+|$))(\S.*)$`)
 
 // markerBare is the same with the delimiter inside brackets only: "(A) text", "A) text".
 var markerBare = regexp.MustCompile(`^(?:[-*•·]\s*)?[（(\[【]([A-Fa-f]|[1-9])[）)\]】]\s*(\S.*)$|^(?:[-*•·]\s*)?([A-Fa-f]|[1-9])[）)]\s*(\S.*)$`)
 
 // cueWords say the text around a numbered list asks for a choice (a lettered list is taken for one without them).
-var cueWords = []string{"?", "？", "选", "哪", "决定", "要不要", "是否", "你想", "请回复", "回复", "which", "choose", "pick", "prefer", "option"}
+var cueWords = []string{"选", "哪个", "哪一", "哪种", "决定", "要不要", "是否", "你想", "请回复", "choose", "which one", "which do", "which would", "prefer", "pick one", "let me know"}
 
 type markedLine struct {
 	idx    int
@@ -110,7 +110,8 @@ func parseOptions(text string) []option {
 			return nil
 		}
 	}
-	if digits && !asksForChoice(lines, run[0].idx, end) {
+	// a lettered list needs to be introduced or asked about; a numbered one (steps, results) only when it asks
+	if digits && !asksForChoice(lines, run[0].idx, end) || !digits && !asksForChoice(lines, run[0].idx, end) && !introduced(lines, run[0].idx) {
 		return nil
 	}
 	var out []option
@@ -123,7 +124,7 @@ func parseOptions(text string) []option {
 		if l == "" {
 			continue
 		}
-		if extras >= maxExtraLines || utf8.RuneCountInString(l) > maxExtraRunes || endsSentence(l) || len(out) >= maxOptions {
+		if extras >= maxExtraLines || utf8.RuneCountInString(l) > maxExtraRunes || endsSentence(l) || isSignOff(l) || len(out) >= maxOptions {
 			break
 		}
 		out = append(out, option{Label: clip(l, maxOptionLabel), Reply: clip(l, maxOptionReply)})
@@ -142,12 +143,43 @@ func closingLines(lines []string) int {
 	return n
 }
 
-// asksForChoice says a numbered list is a question: a cue word in the lines before it or after it.
+// asksForChoice says the list is a question the owner is meant to answer: a cue word in the few lines around it, or
+// the line right before it asking (ending in a question mark) or introducing it (ending in a colon).
 func asksForChoice(lines []string, from, to int) bool {
 	lo := max(0, from-cueLines)
 	near := strings.ToLower(strings.Join(append(append([]string{}, lines[lo:from]...), lines[to+1:]...), "\n"))
 	for _, w := range cueWords {
 		if strings.Contains(near, w) {
+			return true
+		}
+	}
+	for i := from - 1; i >= 0; i-- {
+		if lines[i] == "" {
+			continue
+		}
+		return strings.HasSuffix(lines[i], "?") || strings.HasSuffix(lines[i], "？")
+	}
+	return false
+}
+
+// introduced says the line before the list ends in a colon or question mark: enough, for a lettered list.
+func introduced(lines []string, from int) bool {
+	for i := from - 1; i >= 0; i-- {
+		if lines[i] != "" {
+			l := lines[i]
+			return strings.HasSuffix(l, ":") || strings.HasSuffix(l, "：") || strings.HasSuffix(l, "?") || strings.HasSuffix(l, "？")
+		}
+	}
+	return false
+}
+
+// signOffs are closing lines that are not choices.
+var signOffs = []string{"cheers", "thanks", "thank you", "regards", "best", "谢谢", "感谢", "以上", "祝好", "辛苦"}
+
+func isSignOff(l string) bool {
+	l = strings.ToLower(strings.Trim(l, " .!,~，。！"))
+	for _, w := range signOffs {
+		if strings.HasPrefix(l, w) {
 			return true
 		}
 	}

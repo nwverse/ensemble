@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 	"github.com/nwverse/ensemble/internal/protocol"
 	"github.com/nwverse/ensemble/internal/provider"
 	"github.com/nwverse/ensemble/internal/provider/echo"
+	"github.com/nwverse/ensemble/internal/store"
 )
 
 // inboxProvider is a fake service whose chats and replies the test scripts, counting every call that reaches it.
@@ -256,36 +258,80 @@ func TestInboxReadAndRepliedState(t *testing.T) {
 
 func TestInboxDoesNotFloodWhenSwitchedOn(t *testing.T) {
 	e := newInboxEnv(t, inboxOn)
+	ctx := context.Background()
 	now := e.now.Load()
-	// an unread reply from two days ago, before the switch could have been seen on
+	// an unread reply from two days ago, in a chat that is still within the window
 	e.prov.say("main", protocol.RoleAssistant, "old", "old news", now-48*3600_000)
 	e.sync()
-	ctx := context.Background()
-	_ = e.space.Store().PutSetting(ctx, "inboxSince", "")
-	e.collect() // the switch is seen on now
-	if since := e.space.InboxSince(ctx); since == 0 {
+	key := e.sessionKey(0, "main")
+	e.collect() // the switch is seen on for the first time
+	if e.space.InboxSince(ctx) == 0 {
 		t.Fatal("the first collect with the switch on should remember when")
 	}
+	if row := thingOfThread(e.collect(), key); row == nil || !row.Read {
+		t.Fatalf("a chat that was quiet when the switch went on must come in read: %+v", row)
+	}
+	// news after the switch is unread
 	e.now.Add(3600_000)
 	e.prov.say("main", protocol.RoleAssistant, "new", "fresh", e.now.Load())
 	e.sync()
-	key := e.sessionKey(0, "main")
-	_ = e.space.Store().MarkRead(ctx, key, 1) // an unread count left over from the old reply would show as unread
-	if row := thingOfThread(e.collect(), key); row == nil || row.Last != "m:new" {
-		t.Fatalf("%+v", row)
+	if row := thingOfThread(e.collect(), key); row == nil || row.Read || row.Last != "m:new" {
+		t.Fatalf("a reply after the switch is unread: %+v", row)
 	}
-	// the old one, in a chat that stays quiet, is already read
-	e.prov.say("main", protocol.RoleAssistant, "old2", "x", now-47*3600_000)
 }
 
 func TestInboxWindowAndCap(t *testing.T) {
 	e := newInboxEnv(t, inboxOn)
+	ctx := context.Background()
 	now := e.now.Load()
 	e.prov.say("main", protocol.RoleAssistant, "m1", "recent", now-1000)
 	e.sync()
-	e.now.Add(9 * 24 * 3600_000) // the chat is now 9 days old
+	// 130 chats in the store, newest first by rank: only the newest inboxMaxRows are rows
+	st := e.space.Store()
+	var rows []store.Session
+	for i := range 130 {
+		rows = append(rows, store.Session{SessionKey: fmt.Sprintf("agent:echo:%s:bulk%03d", e.ids[0], i), AccountID: e.ids[0], Provider: echo.Name,
+			ExternalID: fmt.Sprintf("bulk%03d", i), Title: fmt.Sprintf("bulk %d", i), Kind: protocol.KindMain, CanSend: true,
+			RankTimeMs: now - int64(i)*1000 - 5000, Ref: map[string]string{}})
+	}
+	if err := st.Import(ctx, store.Import{Sessions: rows}); err != nil {
+		t.Fatal(err)
+	}
+	got := e.collect()
+	if len(got) != inboxMaxRows {
+		t.Fatalf("rows: %d, want the cap %d", len(got), inboxMaxRows)
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i].At.After(got[i-1].At) {
+			t.Fatalf("rows are not newest first at %d", i)
+		}
+	}
+	e.now.Add(9 * 24 * 3600_000) // everything is now 9 days old
 	if got := e.collect(); len(got) != 0 {
 		t.Fatalf("chats older than the window should not be rows: %d", len(got))
+	}
+}
+
+// A send that failed, or that no echo has confirmed, is not the owner having answered: it must not close the row
+// (a thing with done set never opens an Inbox item, so every later reply would be lost).
+func TestInboxFailedSendDoesNotMuteTheChat(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	now := e.now.Load()
+	e.prov.say("main", protocol.RoleAssistant, "m1", "ok?", now-1000)
+	e.sync()
+	key := e.sessionKey(0, "main")
+	e.prov.mu.Lock()
+	e.prov.failSend = true
+	e.prov.mu.Unlock()
+	if err := e.reply(wire.ConnectorInboxReply{Thread: key, Text: "this one fails"}); err == nil {
+		t.Fatal("the send should have failed")
+	}
+	e.now.Add(3 * 24 * 3600_000)
+	e.prov.say("main", protocol.RoleAssistant, "m2", "a later reply", e.now.Load())
+	e.sync()
+	row := thingOfThread(e.collect(), key)
+	if row == nil || row.Last != "m:m2" || row.Done != "" || row.Read {
+		t.Fatalf("a failed send must leave the chat open to the next reply: %+v", row)
 	}
 }
 
@@ -614,7 +660,7 @@ func TestInboxChoicesAreButtonsThatReplyAfterConfirming(t *testing.T) {
 	e := newInboxEnv(t, inboxOn)
 	now := e.now.Load()
 	e.prov.say("main", protocol.RoleUser, "u1", "what now", now-60_000)
-	e.prov.say("main", protocol.RoleAssistant, "m1", "Two ways forward:\nA：run it now\nB：fix the cause\nleave it for now", now-1000)
+	e.prov.say("main", protocol.RoleAssistant, "m1", "Two ways forward, pick:\nA：run it now\nB：fix the cause\nleave it for now", now-1000)
 	e.sync()
 	key := e.sessionKey(0, "main")
 	row := thingOfThread(e.collect(), key)
@@ -654,14 +700,15 @@ func TestInboxChoicesAreButtonsThatReplyAfterConfirming(t *testing.T) {
 		return e.h.Call("ui.action", wire.UIParams{Contribution: InboxItemUI, Placement: wire.PlacementInboxItem, Size: "full", UIVersion: 6,
 			Locale: "zh-Hans", Item: item, Action: actPick, Values: vals}, &res)
 	}
-	if err := pick(map[string]string{valOption: "1"}); err != nil {
+	if err := pick(buttons[1].Action.Values); err != nil {
 		t.Fatal(err)
 	}
 	if sent := e.prov.sent(); len(sent) != 1 || sent[0].Text != "B：fix the cause" {
 		t.Fatalf("sent: %+v", sent)
 	}
 	// a number that is not one of the choices, or text instead of a number, sends nothing
-	_ = pick(map[string]string{valOption: "9"})
+	_ = pick(map[string]string{valOption: "9", valLast: buttons[1].Action.Values[valLast], valSum: buttons[1].Action.Values[valSum]})
+	_ = pick(map[string]string{valOption: "1"}) // no last or sum: not what was shown
 	_ = pick(map[string]string{valOption: "-1"})
 	_ = pick(map[string]string{valOption: "B：fix the cause; delete everything"})
 	if sent := e.prov.sent(); len(sent) != 1 {
@@ -682,5 +729,63 @@ func TestInboxChoicesNeedAReplyThatEndsInThem(t *testing.T) {
 	// and no reply for a chat that cannot be replied to
 	if row := thingOfThread(e.collect(), e.sessionKey(0, "notes")); row != nil && row.Tier != "" {
 		t.Fatalf("%+v", row)
+	}
+}
+
+// The owner confirms the text on the button they saw. If a newer reply changes the choices before the tap, the same
+// position holds other words: nothing is sent.
+func TestInboxTapAfterTheChoicesChangedSendsNothing(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	now := e.now.Load()
+	e.prov.say("main", protocol.RoleAssistant, "m1", "Next step, pick:\nA：run the tests\nB：skip them", now-2000)
+	e.sync()
+	key := e.sessionKey(0, "main")
+	item := &wire.UIInboxItem{ID: "i1", Extra: map[string]json.RawMessage{"connector": json.RawMessage(`{"thread":"` + key + `"}`)}}
+	var v wire.View
+	if err := e.h.Call("ui.render", wire.UIParams{Contribution: InboxItemUI, Placement: wire.PlacementInboxItem, Size: "full", UIVersion: 6,
+		Locale: "zh-Hans", Item: item}, &v); err != nil {
+		t.Fatal(err)
+	}
+	var shown *wire.Action
+	for _, s := range v.Sections {
+		for _, c := range s.Items {
+			if c.Type == "button" && shown == nil {
+				shown = c.Action
+			}
+		}
+	}
+	if shown == nil || shown.Values[valLast] != "m:m1" || shown.Values[valSum] == "" {
+		t.Fatalf("the button must carry what it was drawn for: %+v", shown)
+	}
+	// a newer reply with different choices arrives before the tap
+	e.now.Add(60_000)
+	e.prov.say("main", protocol.RoleAssistant, "m2", "Changed my mind, pick:\nA：delete the branch\nB：keep it", e.now.Load())
+	e.sync()
+	var res wire.ActionResult
+	if err := e.h.Call("ui.action", wire.UIParams{Contribution: InboxItemUI, Placement: wire.PlacementInboxItem, Size: "full", UIVersion: 6,
+		Locale: "zh-Hans", Item: item, Action: actPick, Values: shown.Values}, &res); err != nil {
+		t.Fatal(err)
+	}
+	if sent := e.prov.sent(); len(sent) != 0 {
+		t.Fatalf("a tap confirmed for old text sent new text: %+v", sent)
+	}
+	if res.Toast == "" {
+		t.Fatal("the owner should be told the choices changed")
+	}
+}
+
+// With no choices the page has nothing to add, so the app draws the conversation itself.
+func TestInboxItemPageWithoutChoicesLeavesTheBodyToTheApp(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	e.prov.say("main", protocol.RoleAssistant, "m1", "All done, nothing needed.", e.now.Load())
+	e.sync()
+	key := e.sessionKey(0, "main")
+	item := &wire.UIInboxItem{ID: "i1", Extra: map[string]json.RawMessage{"connector": json.RawMessage(`{"thread":"` + key + `"}`)}}
+	var v wire.View
+	err := e.h.Call("ui.render", wire.UIParams{Contribution: InboxItemUI, Placement: wire.PlacementInboxItem, Size: "full", UIVersion: 6,
+		Locale: "zh-Hans", Item: item}, &v)
+	var ee *ext.Error
+	if !errors.As(err, &ee) || ee.Code != wire.ErrorCodeUnsupported {
+		t.Fatalf("want unsupported so the app draws its own body, got %v", err)
 	}
 }

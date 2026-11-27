@@ -265,12 +265,10 @@ func thingOf(c chat, msgs []protocol.Message, since int64, cfg inboxConfig) (wir
 	name := accountName(acct)
 	chatName := cmp.Or(strings.TrimSpace(s.Title), "未命名对话")
 	var real []protocol.Message
-	repliedLast := false
 	for _, m := range msgs {
-		if m.Local == nil {
+		if m.Local == nil { // a send not echoed yet (or one that failed) is not part of the chat: it never closes the row
 			real = append(real, m)
 		}
-		repliedLast = m.Role == protocol.RoleUser
 	}
 	at, last := time.UnixMilli(s.RankTimeMs).UTC(), "t:"+fmt.Sprint(s.RankTimeMs)
 	preview := strings.TrimSpace(s.PreviewText)
@@ -311,7 +309,7 @@ func thingOf(c chat, msgs []protocol.Message, since int64, cfg inboxConfig) (wir
 		Extra: &wire.ConnectorThingExtra{RuleTier: wire.ConnectorTierFyi},
 		Tags: []wire.ConnectorTag{{Key: wire.ConnectorTagKeyChat, Value: s.SessionKey, Name: chatName},
 			{Key: wire.ConnectorTagKeySender, Value: acct.AccountID, Name: name}}}
-	if repliedLast && len(real) > 0 {
+	if n := len(real); n > 0 && real[n-1].Role == protocol.RoleUser {
 		t.Done = wire.ConnectorDoneReplied
 	}
 	if strings.HasPrefix(s.AvatarURL, "https://") {
@@ -465,7 +463,15 @@ const InboxItemUI = "inbox-chat"
 const (
 	actPick   = "pick"
 	valOption = "option"
+	valLast   = "last" // the reply the buttons were drawn for
+	valSum    = "sum"  // a hash of the text of the choice that was shown and confirmed
 )
+
+// optionSum identifies the text of a choice, so a tap only sends what the owner was asked about.
+func optionSum(o option) string {
+	sum := sha256.Sum256([]byte(o.Reply))
+	return hex.EncodeToString(sum[:8])
+}
 
 // itemThread is the chat's session key an Inbox row of this connector is about: the host passes the row's connector
 // block as it stored it.
@@ -513,13 +519,17 @@ func (h *inbox) itemView(ctx context.Context, r *ext.UIRequest) (*wire.View, err
 	if err != nil {
 		return nil, err
 	}
+	if len(row.opts) == 0 {
+		// This page replaces the row's body: with nothing of its own to add, let the app draw the conversation.
+		return nil, ext.Unsupported("no choices to draw")
+	}
 	v := &wire.View{RefreshAfter: 60}
-	if len(row.opts) > 0 {
+	{
 		sec := wire.Section{Title: l.t("它在等你选", "It is waiting for your choice"),
 			Footer: l.t("点一项，确认后就会把这一项作为你的下一条消息发给它。", "Tap one: after you confirm, it is sent to the chat as your next message.")}
 		for i, o := range row.opts {
 			sec.Items = append(sec.Items, wire.Component{Type: "button", Title: o.Label,
-				Action: &wire.Action{ID: actPick, Values: map[string]string{valOption: fmt.Sprint(i)},
+				Action: &wire.Action{ID: actPick, Values: map[string]string{valOption: fmt.Sprint(i), valLast: row.thing.Last, valSum: optionSum(o)},
 					Confirm: l.t("把「"+oneLine(o.Reply, 80)+"」发给"+providerName("zh", c.sess.Provider)+"？", "Send \""+oneLine(o.Reply, 80)+"\" to "+providerName("en", c.sess.Provider)+"?")}})
 		}
 		v.Sections = append(v.Sections, sec)
@@ -547,6 +557,11 @@ func (h *inbox) itemAction(ctx context.Context, r *ext.UIRequest) (*wire.ActionR
 		return &wire.ActionResult{Toast: l.t("这些选项已经变了，请重新看一下再选", "The choices changed; look again and pick"), View: nil}, nil
 	}
 	o := row.opts[i]
+	// The owner confirmed the text on the button they saw. A newer reply may have changed the choices since: then the
+	// same position holds other words, and nothing is sent. (The values are only compared, never sent.)
+	if r.Values[valLast] != row.thing.Last || r.Values[valSum] != optionSum(o) {
+		return &wire.ActionResult{Toast: l.t("它刚又回了新内容，选项变了，请重新看一下再选", "It just replied again and the choices changed; look again and pick")}, nil
+	}
 	if err := h.send(ctx, c.sess.SessionKey, o.Reply, replyClientID(c.sess.SessionKey, "pick|"+row.thing.Last+"|"+fmt.Sprint(i))); err != nil {
 		return &wire.ActionResult{Toast: l.t("没有发出去：", "Not sent: ") + err.Error()}, nil
 	}
