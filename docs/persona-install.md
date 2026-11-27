@@ -25,6 +25,27 @@ shasum -a 256 -c personal-agent-club-<version>.tar.gz.sha256   # or: sha256sum -
 To hold the program to the hub's own checks without a hub (manifest and package as at install, handshake, error
 codes, every page drawable), run `scripts/persona-test.sh` with a `personad` on `PATH` (or `PERSONAD=/path/to/personad`).
 
+## What 0.7.10 adds
+
+The account page no longer fails with HTTP 502 「扩展返回的界面无法显示」:
+- **The avatar ring selector fits what the hub draws.** Persona's hub holds every page to `wire.CheckView`: a
+  `segmented` control has 2–5 choices of at most 12 characters each. The selector titled its choices with the long
+  wording (「每 5 小时的时段额度 91%」 on ChatGPT Dots, 「Auto (the lowest)」 in English, Claude Duet's and Gemini's 5-hour
+  windows, Groq's tokens), so the page was refused once real readings came in. Its choices are short now (「自动」
+  「5小时 91%」「每周点数 40%」 / "Auto" "5h 91%" "Credit 40%" "Req/day 80%"), cut to 12 characters if a service ever
+  reports something longer; the bars above keep the full wording. With more than three buckets the selector keeps
+  Auto, Off, the one chosen and the ones with the least left, so it never has more than five choices.
+- **English Inbox choice.** "Not in the Inbox" (16 characters) is "Not in Inbox", which the hub refused the same way
+  once 「把 AI 对话放进收件箱」 was on.
+- **Other pages that some data would have refused.** An assistant level this version does not know (written by a
+  newer one) showed as a selector value with no choice; it shows as off now. A link is drawn only when it is what the
+  hub accepts (lowercase `https://`, a host, no user name). The list of repositories granted to the Claude GitHub App
+  is cut to a view's 2000 characters, counting the rest, for an installation with many repositories.
+- Every page (home, 账号, add, card, account, terminal, repositories, pairing, Grok Bot sign-in) is now tested against
+  `wire.CheckView` in both languages, with every service's real readings, seven buckets, and stale readings.
+
+No new permissions or configuration fields are added.
+
 ## What 0.7.9 adds
 
 - **A ChatGPT Dot's own picture.** A Dot whose owner gave it a picture (ChatGPT's `/backend-api/tbo` lists it as

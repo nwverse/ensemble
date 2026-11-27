@@ -98,6 +98,10 @@ func checkView(t *testing.T, v *wire.View) {
 	if err := exttest.CheckView(raw, false); err != nil {
 		t.Fatalf("view the apps cannot draw: %v\n%s", err, raw)
 	}
+	// the hub holds every view to wire.CheckView (HTTP 502 when it does not fit), which is stricter than exttest's
+	if err := wire.CheckView(v); err != nil {
+		t.Fatalf("view the hub refuses (wire.CheckView): %v\n%s", err, raw)
+	}
 	if strings.Contains(string(raw), demoCredential) {
 		t.Fatalf("a view carries the credential: %s", raw)
 	}

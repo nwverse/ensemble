@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -159,7 +160,7 @@ func grantSection(l lang, inv provider.RepoInventory) wire.Section {
 	for _, r := range inv.Authorized {
 		names = append(names, shortRepo(r.URL))
 	}
-	text := strings.Join(names, l.t("、", ", "))
+	text := joinFit(l, names, wire.StringMost)
 	if text == "" {
 		text = l.t("还没有授权任何仓库", "No repositories granted yet")
 	}
@@ -193,7 +194,7 @@ func outcomeSections(l lang, o repoOutcome) []wire.Section {
 		for i, s := range g.Steps {
 			gs.Items = append(gs.Items, wire.Component{Type: "text", Text: fmt.Sprintf("%d. %s", i+1, s)})
 		}
-		gs.Items = append(gs.Items, wire.Component{Type: "row", Title: l.t("要勾的仓库", "To tick"), Value: strings.Join(shortRepos(g.Repos), l.t("、", ", "))})
+		gs.Items = append(gs.Items, wire.Component{Type: "row", Title: l.t("要勾的仓库", "To tick"), Value: joinFit(l, shortRepos(g.Repos), wire.StringMost)})
 		if httpsURL(g.URL) {
 			gs.Items = append(gs.Items, wire.Component{Type: "link", Title: l.t("打开 GitHub 授权页", "Open the GitHub page"), URL: g.URL})
 		}
@@ -309,6 +310,32 @@ func resumeRepos(o repoOutcome) []string {
 	out := make([]string, 0, len(o.Repos))
 	for _, r := range o.Repos {
 		out = append(out, r.URL)
+	}
+	return out
+}
+
+// joinFit joins names as a list in at most most characters (a view's strings, wire.StringMost): the ones that do not
+// fit are counted at the end instead.
+func joinFit(l lang, names []string, most int) string {
+	sep := l.t("、", ", ")
+	more := func(n int) string { return fmt.Sprintf(l.t(" 等，还有 %d 个", " and %d more"), n) }
+	out, size := "", 0
+	for i, n := range names {
+		add := n
+		if i > 0 {
+			add = sep + n
+		}
+		need := size + utf8.RuneCountInString(add)
+		if left := len(names) - i - 1; left > 0 {
+			need += utf8.RuneCountInString(more(left)) // room to say what is left after this one
+		}
+		if need > most {
+			if i == 0 {
+				return fmt.Sprintf(l.t("%d 个仓库", "%d repositories"), len(names))
+			}
+			return out + more(len(names)-i)
+		}
+		out, size = out+add, size+utf8.RuneCountInString(add)
 	}
 	return out
 }

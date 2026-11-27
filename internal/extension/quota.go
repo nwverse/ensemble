@@ -1,10 +1,13 @@
 package extension
 
 import (
+	"cmp"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/wire"
 
@@ -73,9 +76,8 @@ func quotaDisplaySection(l lang, acct protocol.Account, c clock) wire.Section {
 		}
 	}
 	choices := []wire.Choice{
-		{Value: protocol.QuotaDisplayAuto, Title: l.t("自动（剩得最少的那项）", "Auto (the lowest)")},
+		{Value: protocol.QuotaDisplayAuto, Title: quotaChoiceTitle(l, protocol.QuotaDisplayAuto, "", nil)},
 	}
-	seen := map[string]bool{protocol.QuotaDisplayAuto: true, protocol.QuotaDisplayOff: true}
 	var items []wire.Component
 	if activeExhausted, _ := quotaExhaustedActive(acct.Quota, c.now.UnixMilli()); activeExhausted {
 		items = append(items, wire.Component{
@@ -135,16 +137,17 @@ func quotaDisplaySection(l lang, acct protocol.Account, c clock) wire.Section {
 		})
 	}
 
-	for _, b := range acct.Quota.Buckets {
-		ratio := 0.0
-		if b.Remaining != nil {
-			ratio = math.Max(0, math.Min(1, *b.Remaining))
-		} else if b.Percent != nil {
-			ratio = math.Max(0, math.Min(1, float64(*b.Percent)/100))
+	bars := map[string]bool{}
+	for i, b := range acct.Quota.Buckets {
+		key := "quota-bucket-" + b.ID
+		if b.ID == "" || bars[key] { // a key is once a page (wire.CheckView)
+			key = fmt.Sprintf("quota-bucket-%d-%s", i, b.ID)
 		}
+		bars[key] = true
+		ratio, _ := quotaBucketRatio(b)
 		items = append(items, wire.Component{
 			Type:   "progress",
-			Key:    "quota-bucket-" + b.ID,
+			Key:    key,
 			Label:  quotaWords(l, b.Kind, b.Window, b.Percent),
 			Ratio:  &ratio,
 			Tone:   quotaBadgeTone(b.Tone),
@@ -166,17 +169,11 @@ func quotaDisplaySection(l lang, acct protocol.Account, c clock) wire.Section {
 		Subtitle: srcSub,
 	})
 
-	for _, b := range acct.Quota.Buckets {
-		if b.ID == "" || seen[b.ID] {
-			continue
-		}
-		seen[b.ID] = true
-		choices = append(choices, wire.Choice{Value: b.ID, Title: quotaWords(l, b.Kind, b.Window, b.Percent)})
+	choices = append(choices, quotaBucketChoices(l, acct.Quota.Buckets, val)...)
+	if val != protocol.QuotaDisplayAuto && val != protocol.QuotaDisplayOff && !slices.ContainsFunc(choices, func(c wire.Choice) bool { return c.Value == val }) {
+		choices = append(choices, wire.Choice{Value: val, Title: quotaChoiceTitle(l, quotaChoiceCurrent, "", nil)})
 	}
-	if !seen[val] {
-		choices = append(choices, wire.Choice{Value: val, Title: l.t("之前选的那项", "The one chosen before")})
-	}
-	choices = append(choices, wire.Choice{Value: protocol.QuotaDisplayOff, Title: l.t("不显示", "Off")})
+	choices = append(choices, wire.Choice{Value: protocol.QuotaDisplayOff, Title: quotaChoiceTitle(l, protocol.QuotaDisplayOff, "", nil)})
 	items = append(items, wire.Component{
 		Type:    "segmented",
 		Name:    fieldQuotaDisplay,
@@ -190,6 +187,181 @@ func quotaDisplaySection(l lang, acct protocol.Account, c clock) wire.Section {
 			"Some services limit how much you can use per window, day or week. Persona draws a battery ring around the avatar for what is left; choose which one above."),
 		Items: items,
 	}
+}
+
+// The hub (wire.CheckView) and the schema hold a segmented control to 2–5 choices of at most 12 characters each: a
+// wider one is refused and the whole page fails with HTTP 502. Auto and Off always take two of the five.
+const (
+	segmentedTitleMost    = 12
+	segmentedChoicesMost  = 5
+	quotaBucketChoiceMost = segmentedChoicesMost - 2
+	// quotaChoiceCurrent is quotaChoiceTitle's kind for a display choice saved earlier that no bucket reports now.
+	quotaChoiceCurrent = "\x00current"
+)
+
+// quotaBucketRatio is how much of a bucket is left, 0–1, and whether the bucket says at all.
+func quotaBucketRatio(b protocol.QuotaBucket) (float64, bool) {
+	switch {
+	case b.Remaining != nil:
+		return math.Max(0, math.Min(1, *b.Remaining)), true
+	case b.Percent != nil:
+		return math.Max(0, math.Min(1, float64(*b.Percent)/100)), true
+	}
+	return 0, false
+}
+
+// quotaBucketChoices are the ring selector's choices for the buckets, in their order: one per bucket id, at most
+// quotaBucketChoiceMost (one fewer when val is a choice no bucket has, which takes a place of its own). When there are
+// more, the chosen one stays and then the ones with the least left. Titles are short (quotaChoiceTitle) and told apart.
+func quotaBucketChoices(l lang, buckets []protocol.QuotaBucket, val string) []wire.Choice {
+	var uniq []protocol.QuotaBucket
+	seen := map[string]bool{protocol.QuotaDisplayAuto: true, protocol.QuotaDisplayOff: true}
+	chosen := false
+	for _, b := range buckets {
+		if b.ID == "" || seen[b.ID] {
+			continue
+		}
+		seen[b.ID] = true
+		uniq = append(uniq, b)
+		chosen = chosen || b.ID == val
+	}
+	most := quotaBucketChoiceMost
+	if !chosen && val != protocol.QuotaDisplayAuto && val != protocol.QuotaDisplayOff {
+		most-- // the choice saved before takes a place
+	}
+	if len(uniq) > most {
+		rank := make([]int, len(uniq))
+		for i := range rank {
+			rank[i] = i
+		}
+		slices.SortStableFunc(rank, func(i, j int) int {
+			if (uniq[i].ID == val) != (uniq[j].ID == val) {
+				if uniq[i].ID == val {
+					return -1
+				}
+				return 1
+			}
+			ri, oki := quotaBucketRatio(uniq[i])
+			rj, okj := quotaBucketRatio(uniq[j])
+			if oki != okj { // a bucket that says how much is left comes before one that does not
+				if oki {
+					return -1
+				}
+				return 1
+			}
+			return cmp.Compare(ri, rj)
+		})
+		keep := map[int]bool{}
+		for _, i := range rank[:most] {
+			keep[i] = true
+		}
+		var kept []protocol.QuotaBucket
+		for i, b := range uniq {
+			if keep[i] {
+				kept = append(kept, b)
+			}
+		}
+		uniq = kept
+	}
+	titles := map[string]bool{
+		quotaChoiceTitle(l, protocol.QuotaDisplayAuto, "", nil): true,
+		quotaChoiceTitle(l, protocol.QuotaDisplayOff, "", nil):  true,
+		quotaChoiceTitle(l, quotaChoiceCurrent, "", nil):        true,
+	}
+	out := make([]wire.Choice, 0, len(uniq))
+	for _, b := range uniq {
+		title := quotaChoiceTitle(l, b.Kind, b.Window, b.Percent)
+		for n := 2; titles[title]; n++ { // two buckets that read alike: number the later one
+			title = quotaFit(quotaChoiceTitle(l, b.Kind, b.Window, nil), fmt.Sprintf(" %d", n))
+		}
+		titles[title] = true
+		out = append(out, wire.Choice{Value: b.ID, Title: title})
+	}
+	return out
+}
+
+// quotaChoiceTitle is a ring selector choice's title, at most 12 characters (wire.CheckView): Auto, Off, the choice
+// saved before (kind quotaChoiceCurrent), or a bucket as its window, kind and percent left (「5小时 91%」「5h 91%」).
+// The long wording (quotaWords) stays on the rows and bars above it.
+func quotaChoiceTitle(l lang, kind, window string, pct *int) string {
+	switch kind {
+	case protocol.QuotaDisplayAuto:
+		return l.t("自动", "Auto")
+	case protocol.QuotaDisplayOff:
+		return l.t("不显示", "Off")
+	case quotaChoiceCurrent:
+		return l.t("当前项", "Current")
+	}
+	var zhWin, enWin, enUnit string
+	switch window {
+	case "":
+	case "minute":
+		zhWin, enWin, enUnit = "每分", "1m", "min"
+	case "hour":
+		zhWin, enWin, enUnit = "每时", "1h", "h"
+	case "3h":
+		zhWin, enWin, enUnit = "3小时", "3h", "3h"
+	case "5h":
+		zhWin, enWin, enUnit = "5小时", "5h", "5h"
+	case "day":
+		zhWin, enWin, enUnit = "每天", "Day", "day"
+	case "week":
+		zhWin, enWin, enUnit = "每周", "Week", "wk"
+	case "month":
+		zhWin, enWin, enUnit = "每月", "Month", "mo"
+	default:
+		zhWin, enWin, enUnit = window, window, window
+		if n, ok := strings.CutSuffix(window, "h"); ok && n != "" && strings.Trim(n, "0123456789") == "" {
+			zhWin = n + "小时"
+		} else if n, ok := strings.CutSuffix(window, "d"); ok && n != "" && strings.Trim(n, "0123456789") == "" {
+			zhWin = n + "天"
+		}
+	}
+	var zhKind, enKind string
+	switch kind {
+	case protocol.QuotaKindCredits:
+		zhKind, enKind = "点数", "Credit"
+	case protocol.QuotaKindRequests:
+		zhKind, enKind = "次数", "Req"
+	case protocol.QuotaKindTokens:
+		zhKind, enKind = "字数", "Tok"
+	}
+	zh, en := zhWin+zhKind, enWin
+	switch {
+	case enKind == "":
+	case kind == protocol.QuotaKindCredits || enUnit == "":
+		en = enKind // credits are told from the windows by their kind; 「Credit/mo」 would not fit with a percent
+	default:
+		en = enKind + "/" + enUnit
+	}
+	if zh == "" {
+		zh = "额度"
+	}
+	if en == "" {
+		en = "Quota"
+	}
+	suffix := ""
+	if pct != nil {
+		suffix = fmt.Sprintf(" %d%%", *pct)
+	}
+	return quotaFit(l.t(zh, en), suffix)
+}
+
+// quotaFit is label then suffix in at most segmentedTitleMost characters, cutting the label (never mid-rune) first so
+// the suffix (a percent, a number) stays whole; a suffix too long on its own is cut too.
+func quotaFit(label, suffix string) string {
+	cut := func(s string, n int) string {
+		if r := []rune(s); len(r) > n {
+			return string(r[:max(0, n)])
+		}
+		return s
+	}
+	suffix = cut(suffix, segmentedTitleMost)
+	out := strings.TrimSpace(cut(label, segmentedTitleMost-utf8.RuneCountInString(suffix)) + suffix)
+	if out == "" {
+		return "?"
+	}
+	return out
 }
 
 func quotaEstimatedSection(l lang, acct protocol.Account) wire.Section {
