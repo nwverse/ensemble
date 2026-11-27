@@ -157,7 +157,8 @@ func (g *geminiHub) send(t *testing.T, key string) string {
 	return res.Text
 }
 
-// paired pairs the account with Gemini answering, hands it to the assistant (confirm) and answers its id and task.
+// paired pairs the account with Gemini answering, hands it to the assistant (confirm) and answers its id and task
+// (the account also lists its main chat).
 func (g *geminiHub) paired(t *testing.T) (string, string) {
 	t.Helper()
 	g.mode = "ok"
@@ -171,10 +172,16 @@ func (g *geminiHub) paired(t *testing.T) (string, string) {
 	id := st.Accounts[0].AccountID
 	setControl(t, g.club, id, core.ControlConfirm)
 	ss, err := g.space(t).Sessions(context.Background())
-	if err != nil || len(ss.Sessions) != 1 {
+	if err != nil || len(ss.Sessions) != 2 {
 		t.Fatalf("sessions: %+v %v", ss, err)
 	}
-	return id, ss.Sessions[0].SessionKey
+	for _, s := range ss.Sessions {
+		if s.Kind == protocol.KindTask {
+			return id, s.SessionKey
+		}
+	}
+	t.Fatalf("no task: %+v", ss)
+	return "", ""
 }
 
 // Google's human check at pairing: the pairing is refused in words that say what happened and what to do, on the

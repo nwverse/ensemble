@@ -70,13 +70,14 @@ func reloadScript(script string) string {
 
 // recycleScript runs script and then, when it answered without an error, closes the task space's tabs (the next
 // run in the space opens a fresh one), saying so in the answer's tabRecycled. An answer with an error leaves the
-// tab as it is: a person may have to sign in or pass a human check in it.
+// tab as it is: a person may have to sign in or pass a human check in it. Nor is a tab closed whose answer says the
+// page is busy: the site is still writing an answer there that it loses when the page goes (Gemini's).
 func recycleScript(script string) string {
 	return `
 const __v = await (async () => {
 ` + script + `
 })();
-if (__v && typeof __v === "object" && !__v.error && typeof task !== "undefined" && task && typeof task.finish === "function") {
+if (__v && typeof __v === "object" && !__v.error && !__v.busy && typeof task !== "undefined" && task && typeof task.finish === "function") {
   try { await task.finish({ keep: [] }); __v.tabRecycled = true; } catch (e) {}
 }
 return __v;
@@ -98,6 +99,7 @@ type tabUse struct {
 	reload   bool          // the next read loads its page again (the last answer in the tab failed)
 	inflight int           // runs in the tab now
 	closing  chan struct{} // closed when the run that closes the tab ends; nil when none does
+	sending  chan struct{} // closed when the send running in the tab ends; nil when none runs
 }
 
 func newTabs(policy TabRecycle) *tabs {
@@ -114,7 +116,9 @@ type tabLease struct {
 
 // begin starts a run in key's tab, after a run closing it has ended. A read is told to load its page again when the
 // last answer in the tab failed (and nothing else runs in the tab), and to close the tab when the tab is due and
-// nothing else runs in it. A send is never told to close the tab, and nothing closes it under a running send.
+// nothing else runs in it. A send is never told to close the tab, and nothing closes it under a running send. Sends
+// run one at a time in a tab: one opening its page would pull the page away from another still typing or waiting
+// for its answer there.
 func (t *tabs) begin(ctx context.Context, key string, read bool) (tabLease, error) {
 	for {
 		t.mu.Lock()
@@ -123,7 +127,11 @@ func (t *tabs) begin(ctx context.Context, key string, read bool) (tabLease, erro
 			u = &tabUse{since: t.now()}
 			t.use[key] = u
 		}
-		if ch := u.closing; ch != nil {
+		ch := u.closing
+		if ch == nil && !read {
+			ch = u.sending
+		}
+		if ch != nil {
 			t.mu.Unlock()
 			select {
 			case <-ch:
@@ -134,6 +142,9 @@ func (t *tabs) begin(ctx context.Context, key string, read bool) (tabLease, erro
 		}
 		u.inflight++
 		l := tabLease{key: key, read: read}
+		if !read {
+			u.sending = make(chan struct{})
+		}
 		if read {
 			u.runs++
 			// Not under another run: a send waiting in this tab (Gemini's) is not navigated away from.
@@ -161,6 +172,10 @@ func (t *tabs) end(l tabLease, failed, recycled bool) {
 		return
 	}
 	u.inflight--
+	if !l.read && u.sending != nil {
+		close(u.sending)
+		u.sending = nil
+	}
 	if l.recycle {
 		close(u.closing)
 		u.closing = nil

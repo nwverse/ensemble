@@ -25,6 +25,16 @@ shasum -a 256 -c personal-agent-club-<version>.tar.gz.sha256   # or: sha256sum -
 To hold the program to the hub's own checks without a hub (manifest and package as at install, handshake, error
 codes, every page drawable), run `scripts/persona-test.sh` with a `personad` on `PATH` (or `PERSONAD=/path/to/personad`).
 
+## What 0.7.2 adds
+
+Gemini and Claude Duet each have one main chat again, and sending to it works.
+Gemini: the main chat is a conversation Ensemble starts in Gemini's 对话 (chat) mode on its first message and continues after;
+your other Gemini conversations are its side chats (tasks stay tasks). A send now waits for Gemini's answer before leaving the
+page (the new Gemini drops a message whose page is left before the answer is written), and is refused, not lost, while Gemini is
+still answering in that conversation.
+Claude Duet: the main chat is Duet's own (claude.ai/duet, "Everything"), no longer the most recently active channel; every
+channel is a side chat of it. No new permission or setting.
+
 ## What 0.7.1 adds
 
 Alerts: a reply that waits for you (choices, or a request to sign in or approve a link) is also pushed to the phone, once.

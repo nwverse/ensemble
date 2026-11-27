@@ -448,3 +448,42 @@ func TestWaitingSendHonoursItsContext(t *testing.T) {
 		t.Fatalf("after the close: %+v, %v", l, err)
 	}
 }
+
+// Sends run one at a time in a tab (one opening its page would pull it from another waiting there for its answer);
+// reads do not wait for a send.
+func TestSendsInATabRunOneAtATime(t *testing.T) {
+	ctx := context.Background()
+	tb := newTabs(TabRecycle{})
+	first, _ := tb.begin(ctx, "k", false)
+	got := make(chan tabLease, 1)
+	go func() { l, _ := tb.begin(ctx, "k", false); got <- l }()
+	select {
+	case <-got:
+		t.Fatal("a second send began while the first ran")
+	case <-time.After(50 * time.Millisecond):
+	}
+	read, err := tb.begin(ctx, "k", true)
+	if err != nil {
+		t.Fatalf("a read waited for a send: %v", err)
+	}
+	tb.end(read, false, false)
+	if other, err := tb.begin(ctx, "other", false); err != nil {
+		t.Fatalf("a send in another tab waited: %v", err)
+	} else {
+		tb.end(other, false, false)
+	}
+	tb.end(first, false, false)
+	select {
+	case second := <-got:
+		tb.end(second, false, false)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the second send never began")
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	held, _ := tb.begin(ctx, "k", false)
+	cancel()
+	if _, err := tb.begin(cctx, "k", false); err == nil {
+		t.Fatal("a cancelled send waiting for the tab began")
+	}
+	tb.end(held, false, false)
+}
