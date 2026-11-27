@@ -23,8 +23,11 @@ func TestGeminiTasksReadsThroughTheHubFormat(t *testing.T) {
 			}}), nil
 		case strings.Contains(req.Script, "return { email"):
 			return hubOutput(t, map[string]any{"email": "Ada@Example.com", "name": "Ada", "tasks": 0}), nil
-		case strings.Contains(req.Script, "return { tasks"):
-			return hubOutput(t, map[string]any{"tasks": []map[string]any{
+		case strings.Contains(req.Script, "return { main"):
+			return hubOutput(t, map[string]any{"main": "c0ffee", "chats": []map[string]any{
+				{"id": "c0ffee", "title": "kept", "at": 1795681000000},
+				{"id": "aa11", "title": "", "at": 1795681100000},
+			}, "tasks": []map[string]any{
 				{"id": "8857", "title": "旧金山实时天气查询", "at": 1795681477385, "status": "ready"},
 				{"id": "9001", "title": "", "at": 1795681400000, "status": "running"},
 				{"id": "8857", "title": "dup", "at": 1, "status": "waiting"},
@@ -48,9 +51,18 @@ func TestGeminiTasksReadsThroughTheHubFormat(t *testing.T) {
 		t.Fatalf("verify script does not read the tasks on gemini.google.com")
 	}
 	ss, err := a.ListSessions(ctx, cred)
-	if err != nil || len(ss) != 2 {
+	if err != nil || len(ss) != 4 {
 		t.Fatalf("ListSessions = %+v, %v", ss, err)
 	}
+	// The main chat (its kept conversation not listed again as a side chat), the other conversations as its side
+	// chats, then the tasks.
+	if m := ss[0]; m.ExternalID != "main" || m.Kind != protocol.KindMain || !m.CanSend || m.Ref["url"] != "https://gemini.google.com/app/c0ffee" || m.LastActivityMs != 1795681000000 {
+		t.Fatalf("main = %+v", m)
+	}
+	if s := ss[1]; s.ExternalID != "aa11" || s.Kind != protocol.KindSide || s.ParentExternalID != "main" || s.Title != "Gemini 对话" || !s.CanSend {
+		t.Fatalf("side = %+v", s)
+	}
+	ss = ss[2:]
 	if s := ss[0]; s.ExternalID != "8857" || s.Title != "旧金山实时天气查询" || s.Kind != protocol.KindTask || !s.CanSend ||
 		s.Ref["url"] != "https://gemini.google.com/app/8857" || s.Ref["status"] != "ready" || s.LastActivityMs != 1795681477385 {
 		t.Fatalf("session = %+v", s)
@@ -130,7 +142,7 @@ func TestGeminiTasksSend(t *testing.T) {
 		if err != nil || res.Status != tc.status || res.ExternalID != tc.id {
 			t.Errorf("%v: %+v, %v", tc.value, res, err)
 		}
-		if sc := fd.gotReqs[0].Script; !strings.Contains(sc, `https://gemini.google.com/app/8857`) || !strings.Contains(sc, `"text":"hi \"there\""`) ||
+		if sc := fd.gotReqs[0].Script; !strings.Contains(sc, `"id":"8857"`) || !strings.Contains(sc, `"text":"hi \"there\""`) ||
 			!strings.Contains(sc, `document.execCommand("delete")`) || !strings.Contains(sc, `if (!ready)`) {
 			t.Errorf("script does not clear the draft and type the text into the task")
 		}
@@ -146,7 +158,7 @@ func TestGeminiTasksRunsInItsOwnSlot(t *testing.T) {
 		return RunResult{Backend: "ego", Output: `{"value":{"tasks":[{"id":"g1234","title":"Trip plan","status":"ready"}]}}`}, nil
 	}}
 	ss, err := New(SiteGeminiTasks, d).ListSessions(context.Background(), EncodeCredential(Credential{MachineID: "mac-2", Backend: "ego"}))
-	if err != nil || len(ss) != 1 || ss[0].ExternalID != "g1234" || d.gotReqs[0].Slot != "pac-gemini" {
+	if err != nil || len(ss) != 2 || ss[0].ExternalID != "main" || ss[1].ExternalID != "g1234" || d.gotReqs[0].Slot != "pac-gemini" {
 		t.Fatalf("ListSessions = %+v, %v (slot %q)", ss, err, d.gotReqs[0].Slot)
 	}
 }

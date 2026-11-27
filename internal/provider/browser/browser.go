@@ -98,6 +98,9 @@ type Site struct {
 	SendButtonSel  string // CSS selector for send button (Enter fallback when empty)
 	MessageLogSel  string // CSS selector for message container / rows
 	SignedOutHosts []string
+	// SendTimeout bounds a send's run when it needs longer than a read's (Gemini's waits for the answer, which the
+	// page loses when it is left before the answer is written); 0 for the Adapter's own timeout.
+	SendTimeout time.Duration
 	// impl replaces the generic DOM scripts for a site that needs its own (dots.go, sites.go); nil for the generic
 	// ones.
 	impl siteImpl
@@ -137,8 +140,9 @@ var (
 		SignedOutHosts: []string{"login"},
 		impl:           duetSite{},
 	}
-	// SiteGeminiTasks is Gemini's tasks (gemini.google.com, the composer's 任务 / Tasks mode): one session per task,
-	// read through the page's own RPCs and sent through the task's composer (gemini.go).
+	// SiteGeminiTasks is Gemini (gemini.google.com): its main chat (one conversation Ensemble started), the account's
+	// other conversations as side chats and its tasks (the composer's 任务 / Tasks mode), read through the page's own
+	// RPCs and sent through the conversation's composer (gemini.go).
 	SiteGeminiTasks = Site{
 		Provider:       "gemini_tasks",
 		Label:          "Gemini Tasks",
@@ -149,6 +153,7 @@ var (
 		SendButtonSel:  geminiSendSel,
 		MessageLogSel:  `user-query, model-response, message-content`,
 		SignedOutHosts: []string{"accounts.google.com"},
+		SendTimeout:    geminiSendTimeout,
 		impl:           geminiSite{},
 	}
 	// SiteDots is ChatGPT's Dot (chatgpt.com/dots/<id>): one session per Dot, read through the page's own
@@ -225,12 +230,16 @@ func (a *Adapter) exec(ctx context.Context, rawCred, script string, out any, rea
 	}
 	failed := true
 	defer func() { a.tabs.end(lease, failed || answer.Error != "", answer.TabRecycled) }()
+	timeout := a.timeout
+	if !read && a.site.SendTimeout > timeout {
+		timeout = a.site.SendTimeout
+	}
 	res, err := a.driver.Run(ctx, RunRequest{
 		MachineID: cred.MachineID,
 		Backend:   cred.Backend,
 		Slot:      a.site.Slot,
 		Script:    script,
-		TimeoutMS: int(a.timeout / time.Millisecond),
+		TimeoutMS: int(timeout / time.Millisecond),
 	})
 	if err != nil {
 		return &provider.Error{Code: provider.CodeNetworkError, Retryable: true}

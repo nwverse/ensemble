@@ -113,7 +113,7 @@ func TestClaudeDuetSite(t *testing.T) {
 	cred := EncodeCredential(Credential{MachineID: "mac-2", Backend: "ego"})
 	d := siteDriver(t, map[string]any{
 		"/api/account": map[string]any{"uuid": "acct-1", "name": "Rowan"},
-		"channels: chans": map[string]any{"channels": []map[string]any{
+		"channels: chans": map[string]any{"main": "chan_aibo", "mainLast": "2026-11-21T00:00:00Z", "channels": []map[string]any{
 			{"id": "chan_old", "title": "old", "last": "2026-11-20T00:00:00Z"},
 			{"id": "chan_new", "title": "new", "last": "2026-11-25T00:00:00Z"},
 		}},
@@ -128,25 +128,53 @@ func TestClaudeDuetSite(t *testing.T) {
 	if err != nil || acct.ExternalAccountID != "claude_duet:mac-2" || acct.Alias != "Rowan" {
 		t.Fatalf("Verify = %+v, err=%v", acct, err)
 	}
+	// The main chat is Duet's own (claude.ai/duet, its "aibo" channel), whichever channel was active last; every
+	// sidebar channel is a side chat of it, so only one session is main.
 	sessions, err := a.ListSessions(ctx, cred)
-	if err != nil || len(sessions) != 2 || sessions[1].Kind != protocol.KindMain || sessions[0].Kind != protocol.KindSide ||
-		sessions[1].Ref["url"] != "https://claude.ai/duet/chan_new" {
+	if err != nil || len(sessions) != 3 {
 		t.Fatalf("ListSessions = %+v, err=%v", sessions, err)
 	}
-	page, err := a.ListMessages(ctx, cred, sessions[1].SessionRef(), provider.ListOptions{Limit: 500})
+	if m := sessions[0]; m.ExternalID != "main" || m.Kind != protocol.KindMain || m.Ref["chan"] != "chan_aibo" || m.Ref["url"] != "https://claude.ai/duet" ||
+		m.Title != "Claude Duet" || m.LastActivityMs == 0 {
+		t.Fatalf("main = %+v", m)
+	}
+	for _, s := range sessions[1:] {
+		if s.Kind != protocol.KindSide || s.ParentExternalID != "main" {
+			t.Fatalf("channel = %+v", s)
+		}
+	}
+	if sessions[2].Ref["url"] != "https://claude.ai/duet/chan_new" {
+		t.Fatalf("channel url = %+v", sessions[2])
+	}
+	page, err := a.ListMessages(ctx, cred, sessions[2].SessionRef(), provider.ListOptions{Limit: 500})
 	if err != nil || len(page.Messages) != 2 || page.Messages[1].CreateTimeMs == 0 || page.Messages[1].Role != protocol.RoleAssistant {
 		t.Fatalf("ListMessages = %+v, err=%v", page, err)
 	}
 	if !strings.Contains(d.gotReqs[len(d.gotReqs)-1].Script, `"limit":50`) {
 		t.Fatal("the read limit is not clamped to 50")
 	}
-	res, err := a.Send(ctx, cred, sessions[1].SessionRef(), provider.Outgoing{Text: "hi"}, provider.SendContext{})
+	res, err := a.Send(ctx, cred, sessions[2].SessionRef(), provider.Outgoing{Text: "hi"}, provider.SendContext{})
 	if err != nil || res.Status != provider.Sent || res.ExternalID != "cmsg_3" {
 		t.Fatalf("Send = %+v, err=%v", res, err)
 	}
-	// A session that is not a channel is not found; a refused API is AUTH_FAILED.
-	if _, err := a.ListMessages(ctx, cred, provider.SessionRef{ExternalID: "main"}, provider.ListOptions{}); err == nil {
-		t.Fatal("ListMessages on a non-channel session succeeded")
+	// The main chat reads and sends through its channel, typed into claude.ai/duet's own composer.
+	if _, err := a.ListMessages(ctx, cred, sessions[0].SessionRef(), provider.ListOptions{}); err != nil ||
+		!strings.Contains(d.gotReqs[len(d.gotReqs)-1].Script, `"chan":"chan_aibo"`) {
+		t.Fatalf("main ListMessages: %v", err)
+	}
+	res, err = a.Send(ctx, cred, sessions[0].SessionRef(), provider.Outgoing{Text: "hi"}, provider.SendContext{})
+	if sc := d.gotReqs[len(d.gotReqs)-1].Script; err != nil || res.Status != provider.Sent || !strings.Contains(sc, `"chan":"chan_aibo"`) ||
+		!strings.Contains(sc, `"https://claude.ai/duet"`) {
+		t.Fatalf("main Send = %+v, err=%v", res, err)
+	}
+	// A main session synced before its channel was known finds it from the page at /duet.
+	if _, err := a.ListMessages(ctx, cred, provider.SessionRef{ExternalID: "main"}, provider.ListOptions{}); err != nil ||
+		!strings.Contains(d.gotReqs[len(d.gotReqs)-1].Script, "__duetMain()") {
+		t.Fatalf("main without its channel: %v", err)
+	}
+	// A session that is neither the main chat nor a channel is not found.
+	if _, err := a.ListMessages(ctx, cred, provider.SessionRef{ExternalID: "other"}, provider.ListOptions{}); provider.CodeOf(err) != provider.CodeNotFound {
+		t.Fatalf("ListMessages on another session: %v", err)
 	}
 	auth := siteDriver(t, map[string]any{"/api/account": map[string]any{"error": "auth"}})
 	if _, err := New(SiteClaudeDuet, auth).Verify(ctx, cred); !isAuthFailed(err) {
@@ -244,4 +272,31 @@ func TestLiveEgoSmoke(t *testing.T) {
 func isAuthFailed(err error) bool {
 	var pe *provider.Error
 	return errors.As(err, &pe) && pe.Code == provider.CodeAuthFailed
+}
+
+// Duet's main chat is the channel the page at /duet asked for its tasks, once that channel says it is the aibo one;
+// a channel it named that is not (or none) is no main chat.
+func TestDuetMainChannelFromThePage(t *testing.T) {
+	script := `
+globalThis.performance = { getEntriesByType: () => [
+  { name: "https://claude.ai/v1/code/channel-groups" },
+  { name: "https://claude.ai/v1/code/aibo/channels/chan_other/tasks?limit=200" },
+  { name: "https://claude.ai/v1/code/aibo/channels/chan_aibo/tasks?limit=200&include_today=true" },
+] };
+` + duetPrelude + `
+return { main: await __duetMain() };
+`
+	r := runTabScript(t, script, "https://claude.ai/duet", "complete", map[string]string{
+		"/v1/code/channels/chan_aibo":  `{"channel":{"id":"chan_aibo","template":"aibo","name":"Aibo"}}`,
+		"/v1/code/channels/chan_other": `{"channel":{"id":"chan_other","template":""}}`,
+	})
+	if string(r.Value) != `{"main":"chan_aibo"}` {
+		t.Fatalf("main = %s", r.Value)
+	}
+	r = runTabScript(t, strings.Replace(script, "chan_aibo/tasks", "chan_x/tasks", 1), "https://claude.ai/duet", "complete", map[string]string{
+		"/v1/code/channels/": `{"channel":{"template":""}}`,
+	})
+	if string(r.Value) != `{"main":""}` {
+		t.Fatalf("no aibo channel: main = %s", r.Value)
+	}
 }

@@ -122,6 +122,11 @@ func clampLimit(limit, max int) int {
 //     a tool activity or card, not a message.
 // The channel list comes from the page's sidebar (a[href^="/duet/chan_"]): the channels endpoint answers nothing
 // for the owner's own channels.
+//
+// The main chat is Duet's own, at claude.ai/duet (the sidebar's "Everything", composer "Message Claude Duet"): a
+// channel of its own (template "aibo") that the sidebar does not link. The page loading /duet asks for its tasks
+// (/v1/code/aibo/channels/<chan>/tasks), which names it; /v1/code/channels/<chan> says its template. It is the
+// session "main" (its channel in the session's ref "chan"); every sidebar channel is a side chat of it.
 
 type duetSite struct{}
 
@@ -135,6 +140,19 @@ const __api = async (path) => {
   if (r.status === 401 || r.status === 403) throw new Error("auth");
   if (!r.ok) throw new Error("http " + r.status);
   return r.json();
+};
+// __duetMain is the main chat's channel, named by the requests a page at /duet made ("" when none did).
+const __duetMain = async () => {
+  const ids = [];
+  for (const e of performance.getEntriesByType("resource")) {
+    const m = String(e.name).match(/\/v1\/code\/aibo\/channels\/(chan_[A-Za-z0-9]+)\//);
+    if (m && !ids.includes(m[1])) ids.push(m[1]);
+  }
+  for (const id of ids) {
+    const c = await __api("/v1/code/channels/" + encodeURIComponent(id));
+    if (c && c.channel && c.channel.template === "aibo") return id;
+  }
+  return "";
 };
 const __timeline = async (chan, limit) => {
   const t = await __api("/v1/code/channels/" + encodeURIComponent(chan) + "/timeline?limit=" + limit);
@@ -155,7 +173,12 @@ const duetStay = `^https://claude\.ai/(?!login)`
 // duetScript runs body in a claude.ai page (in page, async, with sitePrelude, duetPrelude and ARGS), mapping a
 // thrown error to {error}. It only calls the API from the page, so any signed-in claude.ai page will do.
 func duetScript(gotoURL string, args any, body string) string {
-	return siteScript(gotoURL, duetStay, args, fmt.Sprintf(`
+	return duetScriptPre(gotoURL, args, "", body)
+}
+
+// duetScriptPre is duetScript with pre run node side first (duetMainChanJS).
+func duetScriptPre(gotoURL string, args any, pre, body string) string {
+	return siteScript(gotoURL, duetStay, args, pre+fmt.Sprintf(`
 if (/\/login\b/.test(await page.url())) return { error: "auth" };
 return await page.evaluate(async (ARGS) => {
 %s
@@ -203,10 +226,21 @@ func (duetSite) listSessions(ctx context.Context, a *Adapter, credential string)
 	script := siteScript(duetOrigin+"/duet", "", nil, fmt.Sprintf(`
 if (/\/login\b/.test(await page.url())) return { error: "auth" };
 await page.waitForFunction(() => !!document.querySelector('a[href^="/duet/chan_"]'), undefined, { timeout: 15000 }).catch(() => {});
+await page.waitForFunction(() => performance.getEntriesByType("resource").some(e => /\/v1\/code\/aibo\/channels\/chan_/.test(e.name)), undefined, { timeout: 10000 }).catch(() => {});
 return await page.evaluate(async () => {
 %s
   try {
-    const seen = new Set();
+    const main = await __duetMain();
+    let mainLast = "";
+    if (main) {
+      try {
+        const t = await __api("/v1/code/channels/" + encodeURIComponent(main) + "/timeline?limit=1");
+        mainLast = ((t.data || [])[0] || {}).created_at || "";
+      } catch (e) {
+        if (String(e.message) === "auth") throw e;
+      }
+    }
+    const seen = new Set([main]);
     const chans = [];
     for (const el of document.querySelectorAll('a[href^="/duet/chan_"]')) {
       const m = (el.getAttribute('href') || '').match(/^\/duet\/(chan_[A-Za-z0-9]+)(?:$|[?#])/);
@@ -224,7 +258,7 @@ return await page.evaluate(async () => {
         c.last = "";
       }
     }));
-    return { channels: chans };
+    return { main, mainLast, channels: chans };
   } catch (e) {
     return { error: String((e && e.message) || e) };
   }
@@ -232,6 +266,8 @@ return await page.evaluate(async () => {
 `, duetPrelude))
 	var r struct {
 		Error    string `json:"error"`
+		Main     string `json:"main"`
+		MainLast string `json:"mainLast"`
 		Channels []struct {
 			ID    string `json:"id"`
 			Title string `json:"title"`
@@ -244,44 +280,81 @@ return await page.evaluate(async () => {
 	if err := dotsError(r.Error); err != nil {
 		return nil, err
 	}
-	out := make([]provider.RemoteSession, 0, len(r.Channels))
+	mainRef := map[string]string{"url": duetOrigin + "/duet"}
+	if strings.HasPrefix(r.Main, "chan_") {
+		mainRef["chan"] = r.Main
+	}
+	out := make([]provider.RemoteSession, 0, len(r.Channels)+1)
+	out = append(out, provider.RemoteSession{
+		ExternalID:     "main",
+		Title:          a.site.Label,
+		Kind:           protocol.KindMain,
+		LastActivityMs: parseTimeMs(r.MainLast),
+		CanSend:        true,
+		Ref:            mainRef,
+	})
 	for _, c := range r.Channels {
-		out = append(out, provider.RemoteSession{
-			ExternalID:     c.ID,
-			Title:          c.Title,
-			Kind:           protocol.KindSide,
-			LastActivityMs: parseTimeMs(c.Last),
-			CanSend:        true,
-			Ref:            map[string]string{"url": duetOrigin + "/duet/" + c.ID},
-		})
-	}
-	// The most recently active channel is the main one.
-	best := -1
-	for i := range out {
-		if best < 0 || out[i].LastActivityMs > out[best].LastActivityMs {
-			best = i
+		if c.ID == r.Main {
+			continue
 		}
-	}
-	if best >= 0 {
-		out[best].Kind = protocol.KindMain
+		out = append(out, provider.RemoteSession{
+			ExternalID:       c.ID,
+			Title:            c.Title,
+			Kind:             protocol.KindSide,
+			ParentExternalID: "main",
+			LastActivityMs:   parseTimeMs(c.Last),
+			CanSend:          true,
+			Ref:              map[string]string{"url": duetOrigin + "/duet/" + c.ID},
+		})
 	}
 	return out, nil
 }
 
-func duetChannel(session provider.SessionRef) string {
+// duetChannel is the channel a session reads and sends to: a sidebar channel's own id, or for the main chat the
+// channel its ref names ("" when the ref does not: the script finds it from a page at /duet).
+func duetChannel(session provider.SessionRef) (ch string, main bool) {
 	id := strings.TrimSpace(session.ExternalID)
-	if strings.HasPrefix(id, "chan_") {
-		return id
+	if id == "main" {
+		if c := strings.TrimSpace(session.Ref["chan"]); strings.HasPrefix(c, "chan_") {
+			return c, true
+		}
+		return "", true
 	}
-	return ""
+	if strings.HasPrefix(id, "chan_") {
+		return id, false
+	}
+	return "", false
 }
 
+// duetMainChanJS sets ARGS.chan to the main chat's channel when the session did not name it, from a page loaded at
+// /duet (node side, before the in-page reads).
+const duetMainChanJS = `
+if (ARGS.main && !ARGS.chan) {
+  if (!/^https:\/\/claude\.ai\/duet\/?(?:[?#]|$)/.test(String(await page.url()))) {
+    await page.goto("https://claude.ai/duet");
+    await page.waitForLoadState("domcontentloaded").catch(() => {});
+  }
+  if (/\/login\b/.test(await page.url())) return { error: "auth" };
+  await page.waitForFunction(() => performance.getEntriesByType("resource").some(e => /\/v1\/code\/aibo\/channels\/chan_/.test(e.name)), undefined, { timeout: 15000 }).catch(() => {});
+  ARGS.chan = await page.evaluate(async () => {
+%s
+%s
+    try { return await __duetMain(); } catch (e) { return ""; }
+  }).catch(() => "");
+  if (!ARGS.chan) return { error: "no thread" };
+}
+`
+
 func (duetSite) listMessages(ctx context.Context, a *Adapter, credential string, session provider.SessionRef, opts provider.ListOptions) (provider.RemotePage, error) {
-	ch := duetChannel(session)
-	if ch == "" {
+	ch, main := duetChannel(session)
+	if ch == "" && !main {
 		return provider.RemotePage{}, &provider.Error{Code: provider.CodeNotFound}
 	}
-	script := duetScript(duetOrigin+"/duet", map[string]any{"chan": ch, "limit": clampLimit(opts.Limit, 50)}, `
+	pre := ""
+	if ch == "" {
+		pre = fmt.Sprintf(duetMainChanJS, sitePrelude, duetPrelude)
+	}
+	script := duetScriptPre(duetOrigin+"/duet", map[string]any{"chan": ch, "main": main, "limit": clampLimit(opts.Limit, 50)}, pre, `
     return { messages: __fit(await __timeline(ARGS.chan, ARGS.limit), 40000) };
 `)
 	var r struct {
@@ -302,14 +375,19 @@ func (duetSite) send(ctx context.Context, a *Adapter, credential string, session
 	if text == "" {
 		return provider.SendResult{}, errors.New("empty message")
 	}
-	ch := duetChannel(session)
-	if ch == "" {
+	ch, main := duetChannel(session)
+	if ch == "" && !main {
 		return provider.SendResult{}, &provider.Error{Code: provider.CodeNotFound}
 	}
-	// Typed into the channel's composer, then read back from the timeline: sent once the owner's message with this
-	// text shows up after the send started.
-	script := siteScript(duetOrigin+"/duet/"+ch, "", map[string]any{"chan": ch, "text": text}, fmt.Sprintf(`
+	// Typed into the channel's composer (the main chat's is claude.ai/duet's own), then read back from the timeline:
+	// sent once the owner's message with this text shows up after the send started.
+	at := duetOrigin + "/duet/" + ch
+	if main {
+		at = duetOrigin + "/duet"
+	}
+	script := siteScript(at, "", map[string]any{"chan": ch, "main": main, "text": text}, fmt.Sprintf(`
 if (/\/login\b/.test(await page.url())) return { error: "auth" };
+%s
 const sel = %q;
 const ready = await page.waitForSelector("loc=css:" + sel, { state: "visible", timeout: 20000 }).then(() => true).catch(() => false);
 if (!ready) return { error: "no composer" };
@@ -335,7 +413,7 @@ for (let i = 0; i < 20 && !found; i++) {
   if (found && found.error) break;
 }
 return found ? (found.error ? { clicked, error: found.error } : { sent: true, clicked, id: found.id }) : { sent: false, clicked };
-`, duetComposerSel, duetSendSel, sitePrelude, duetPrelude))
+`, fmt.Sprintf(duetMainChanJS, sitePrelude, duetPrelude), duetComposerSel, duetSendSel, sitePrelude, duetPrelude))
 	var r struct {
 		Error string `json:"error"`
 		Sent  bool   `json:"sent"`

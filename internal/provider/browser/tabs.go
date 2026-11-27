@@ -70,13 +70,14 @@ func reloadScript(script string) string {
 
 // recycleScript runs script and then, when it answered without an error, closes the task space's tabs (the next
 // run in the space opens a fresh one), saying so in the answer's tabRecycled. An answer with an error leaves the
-// tab as it is: a person may have to sign in or pass a human check in it.
+// tab as it is: a person may have to sign in or pass a human check in it. Nor is a tab closed whose answer says the
+// page is busy: the site is still writing an answer there that it loses when the page goes (Gemini's).
 func recycleScript(script string) string {
 	return `
 const __v = await (async () => {
 ` + script + `
 })();
-if (__v && typeof __v === "object" && !__v.error && typeof task !== "undefined" && task && typeof task.finish === "function") {
+if (__v && typeof __v === "object" && !__v.error && !__v.busy && typeof task !== "undefined" && task && typeof task.finish === "function") {
   try { await task.finish({ keep: [] }); __v.tabRecycled = true; } catch (e) {}
 }
 return __v;

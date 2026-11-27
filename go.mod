@@ -5,6 +5,7 @@ go 1.27.3
 require (
 	github.com/google/uuid v1.6.0
 	github.com/nwverse/persona/sdk/go v0.0.0-20261126042423-c034eb93a3c5
+	golang.org/x/net v0.58.0
 	golang.org/x/text v0.42.0
 	modernc.org/sqlite v1.58.0
 )

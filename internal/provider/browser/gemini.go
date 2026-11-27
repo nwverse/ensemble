@@ -6,15 +6,25 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/nwverse/ensemble/internal/protocol"
 	"github.com/nwverse/ensemble/internal/provider"
 )
 
-// geminiSite drives Gemini's tasks (gemini.google.com, the composer's "任务" / "Tasks" mode: Gemini works on a task
-// with tools, and the conversation carries the task's status). It reads through the batchexecute RPCs the signed-in
-// page itself calls, with the page's own token (WIZ_global_data.SNlM0e, never leaving the browser), and sends through
-// the task conversation's composer, then reads the turn back to confirm it arrived.
+// geminiSite drives Gemini (gemini.google.com) for one Google account: its main chat, its other conversations and
+// its tasks (the composer's "任务" / "Tasks" mode: Gemini works on a task with tools, and the conversation carries the
+// task's status). It reads through the batchexecute RPCs the signed-in page itself calls, with the page's own token
+// (WIZ_global_data.SNlM0e, never leaving the browser), and sends through the conversation's composer.
+//
+// The main chat is one conversation Ensemble started: the first send to "main" opens a new conversation in the
+// composer's 对话 (chat) mode and the page keeps its id (localStorage, geminiMainKey); later sends to main continue
+// it, and main reads it. The account's other conversations are side chats of main, its tasks are tasks.
+//
+// Gemini keeps a turn only once its answer is written: a page left (navigated, closed) before then loses the turn,
+// and while an answer the page left half-written is still being written, the conversation takes no other message.
+// So a send waits for the answer, a run never leaves a page that is writing one if it can wait, and a tab is not
+// recycled under one.
 //
 // What the page answers (2026-11):
 //   - MaZiqc [n, null, [null,null,1,null,null,null,null,null,null,1,null,[statuses]]]: the sidebar's conversations
@@ -36,6 +46,39 @@ const (
 
 // geminiMaxTurns is the most turns one read asks for.
 const geminiMaxTurns = 20
+
+// geminiMaxChats is the most plain conversations listed as side chats.
+const geminiMaxChats = 30
+
+// geminiMainKey is where the page keeps the main chat's conversation id (localStorage on gemini.google.com).
+const geminiMainKey = "ensemble.gemini.main"
+
+// geminiMainTitle is the main chat's title.
+const geminiMainTitle = "Gemini"
+
+// geminiSendTimeout bounds a send: the page, the wait for an answer Gemini is still writing there, the typing, and
+// the wait for this message's answer (geminiAnswerWaitMs), within the node's two-minute limit.
+const geminiSendTimeout = 110 * time.Second
+
+// geminiAnswerWaitMs is how long a send waits at most for its answer to be written before it leaves the page (the
+// answer is then still being written in the tab, which no run leaves while it is).
+const geminiAnswerWaitMs = 60000
+
+// The page's parts the scripts use (testdata/gemini holds recorded pages they are tested on).
+const (
+	// geminiComposerSel is the composer.
+	geminiComposerSel = `rich-textarea div.ql-editor[contenteditable="true"]`
+	// geminiSendSel is the send button, shown while the composer holds text.
+	geminiSendSel = `button[aria-label="发送"]:not([disabled]), button[aria-label="Send message" i]:not([disabled]), button.send-button:not([disabled])`
+	// geminiStopSel is the stop button, shown in place of the send button while an answer is being written.
+	geminiStopSel = `button[aria-label="停止回答"], button[aria-label="Stop response" i], button.stop`
+	// geminiQuerySel is one of the user's turns on the page.
+	geminiQuerySel = `user-query`
+	// geminiQueryTextSel is a turn's text (its lines; the turn also carries a screen reader's label with "你说").
+	geminiQueryTextSel = `.query-text-line`
+	// geminiChatModeSel is the composer's 对话 (chat) mode, on a new conversation's page (任务 is data-value 40).
+	geminiChatModeSel = `chat-spark-toggle gem-segmented-button[data-value="0"] button`
+)
 
 // geminiHumanCheckJS defines __humanCheck() inside the page: whether Google put its "unusual traffic" check in front
 // of Gemini (www.google.com/sorry/index, a reCAPTCHA in #captcha-form) instead of the app. That is neither signed out
@@ -87,6 +130,8 @@ const __rpc = async (id, args) => {
   }
   throw new Error("http 500");
 };
+const __busy = () => !!document.querySelector(` + "`" + geminiStopSel + "`" + `);
+const __mainID = () => { try { return String(localStorage.getItem("` + geminiMainKey + `") || ""); } catch (e) { return ""; } };
 const __ms = t => Array.isArray(t) ? t[0] * 1000 + Math.floor((t[1] || 0) / 1e6) : 0;
 const __tasks = async (statuses, n) => {
   const v = await __rpc("MaZiqc", [n || 30, null, [null, null, 1, null, null, null, null, null, null, 1, null, statuses]]);
@@ -103,10 +148,15 @@ const __allTasks = async n => {
 
 // geminiScript wraps body (an async function body of (ARGS) run inside the page) so its answer, or its failure, is
 // the script's value. The RPCs answer on any of Gemini's pages, so a loaded page already on gemini.google.com is not
-// moved (openJS): a sync then never navigates away under a send waiting in the same tab for its task to show.
+// moved (openJS): a sync then never navigates away under a send waiting in the same tab for its answer. Nor is a
+// Gemini page writing an answer ever reloaded, and its answer says busy, so the tab is not recycled under it.
 func geminiScript(gotoURL string, args any, body string) string {
 	a, _ := json.Marshal(args)
-	return openJS(gotoURL, geminiStay) + fmt.Sprintf(`
+	return fmt.Sprintf(`
+const __geminiBusy = await page.evaluate((stop) => location.hostname === "gemini.google.com" && !!document.querySelector(stop), %q).catch(() => false);
+if (!__geminiBusy) {
+%s
+}
 const __out = await page.evaluate(async (ARGS) => {
 %s
   try {
@@ -115,8 +165,11 @@ const __out = await page.evaluate(async (ARGS) => {
     return { error: String((e && e.message) || e) };
   }
 }, %s);
+if (__out && typeof __out === "object" && !__out.error) {
+  __out.busy = await page.evaluate((stop) => !!document.querySelector(stop), %q).catch(() => false);
+}
 return __out;
-`, geminiPrelude, body, a)
+`, geminiStopSel, openJS(gotoURL, geminiStay), geminiPrelude, body, a, geminiStopSel)
 }
 
 // geminiStay is any gemini.google.com page (openJS).
@@ -172,13 +225,16 @@ type geminiTask struct {
 	Status string `json:"status"`
 }
 
+// listSessions is the main chat, the account's other conversations (side chats of main) and its tasks.
 func (geminiSite) listSessions(ctx context.Context, a *Adapter, credential string) ([]provider.RemoteSession, error) {
 	var r struct {
 		Error string       `json:"error"`
+		Main  string       `json:"main"`
+		Chats []geminiTask `json:"chats"`
 		Tasks []geminiTask `json:"tasks"`
 	}
-	script := geminiScript(geminiOrigin+"/app", nil, `
-    return { tasks: await __allTasks(30) };
+	script := geminiScript(geminiOrigin+"/app", map[string]any{"chats": geminiMaxChats}, `
+    return { main: __mainID(), chats: await __tasks([1], ARGS.chats), tasks: await __allTasks(30) };
 `)
 	if err := a.run(ctx, credential, script, &r); err != nil {
 		return nil, err
@@ -186,8 +242,44 @@ func (geminiSite) listSessions(ctx context.Context, a *Adapter, credential strin
 	if err := geminiError(r.Error); err != nil {
 		return nil, err
 	}
-	seen := map[string]bool{}
-	out := make([]provider.RemoteSession, 0, len(r.Tasks))
+	mainID := strings.TrimPrefix(strings.TrimSpace(r.Main), "c_")
+	mainURL := geminiOrigin + "/app"
+	if mainID != "" {
+		mainURL += "/" + mainID
+	}
+	out := []provider.RemoteSession{{
+		ExternalID: "main",
+		Title:      geminiMainTitle,
+		Kind:       protocol.KindMain,
+		CanSend:    true,
+		Ref:        map[string]string{"url": mainURL},
+	}}
+	seen := map[string]bool{"main": true}
+	for _, t := range r.Chats {
+		id := strings.TrimSpace(t.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if id == mainID {
+			// The main chat's own conversation is main, not a side chat of it.
+			out[0].LastActivityMs = t.At
+			continue
+		}
+		title := strings.TrimSpace(t.Title)
+		if title == "" {
+			title = "Gemini 对话"
+		}
+		out = append(out, provider.RemoteSession{
+			ExternalID:       id,
+			Title:            title,
+			Kind:             protocol.KindSide,
+			ParentExternalID: "main",
+			LastActivityMs:   t.At,
+			CanSend:          true,
+			Ref:              map[string]string{"url": geminiOrigin + "/app/" + id},
+		})
+	}
 	for _, t := range r.Tasks {
 		id := strings.TrimSpace(t.ID)
 		if id == "" || seen[id] {
@@ -217,14 +309,18 @@ type geminiMessage struct {
 	Text  string `json:"text"`
 }
 
-// geminiTurnsJS reads ARGS.task's newest ARGS.turns turns into messages (oldest first, within a byte budget, as
-// dotsMessagesJS does); a running task's newest answer is left out until it is done, so a half-written answer is
-// never kept.
+// geminiTurnsJS reads ARGS.task's (the main chat's for "main") newest ARGS.turns turns into messages (oldest first,
+// within a byte budget, as dotsMessagesJS does); a running task's newest answer is left out until it is done, so a
+// half-written answer is never kept.
 const geminiTurnsJS = `
-    const v = await __rpc("hNvQHb", ["c_" + ARGS.task, ARGS.turns, null, 1, [0], [4], null, 1]);
+    // The main chat reads the conversation the page keeps for it, and nothing before its first send.
+    const isMain = ARGS.task === "main";
+    const task = isMain ? __mainID() : ARGS.task;
+    if (!task) return { messages: [] };
+    const v = await __rpc("hNvQHb", ["c_" + task, ARGS.turns, null, 1, [0], [4], null, 1]);
     const turns = ((v && v[0]) || []).filter(t => Array.isArray(t) && Array.isArray(t[0]));
-    if (!v || (!turns.length && !ARGS.allowEmpty)) throw new Error("no task");
-    const running = ARGS.checkRunning ? (await __tasks([2], 30)).some(t => t.id === ARGS.task) : false;
+    if (!v || (!turns.length && !isMain)) throw new Error("no task");
+    const running = ARGS.checkRunning && !isMain ? (await __tasks([2], 30)).some(t => t.id === task) : false;
     const all = [];
     turns.slice().reverse().forEach((t, i, arr) => {
       const at = __ms(t[4]);
@@ -256,7 +352,7 @@ func geminiTarget(session provider.SessionRef) string {
 
 func (geminiSite) listMessages(ctx context.Context, a *Adapter, credential string, session provider.SessionRef, opts provider.ListOptions) (provider.RemotePage, error) {
 	id := geminiTarget(session)
-	if id == "" || id == "main" {
+	if id == "" {
 		return provider.RemotePage{}, &provider.Error{Code: provider.CodeNotFound}
 	}
 	turns := (opts.Limit + 1) / 2
@@ -297,120 +393,23 @@ func (geminiSite) listMessages(ctx context.Context, a *Adapter, credential strin
 	return provider.RemotePage{Messages: out}, nil
 }
 
-const geminiComposerSel = `rich-textarea div.ql-editor[contenteditable="true"]`
-const geminiSendSel = `button[aria-label="发送"]:not([disabled]), button[aria-label="Send message" i]:not([disabled]), button.send-button:not([disabled])`
-
 func (geminiSite) send(ctx context.Context, a *Adapter, credential string, session provider.SessionRef, msg provider.Outgoing) (provider.SendResult, error) {
 	text := strings.TrimSpace(msg.Text)
 	if text == "" {
 		return provider.SendResult{}, errors.New("empty message")
 	}
 	id := geminiTarget(session)
-	if id == "" || id == "main" {
+	if id == "" {
 		return provider.SendResult{}, &provider.Error{Code: provider.CodeNotFound}
 	}
-	args, _ := json.Marshal(map[string]any{"text": text})
-	// Typed into the task's own conversation once it is on the page (typed earlier, the text stays a draft that is
-	// never sent), into a composer cleared of any draft Gemini kept for the conversation, then sent: sent once the
-	// page shows a new turn of the user's with this text. Each look is its own short evaluate, and the whole send
-	// stays well inside the driver's limit. Still in the composer after the wait, it did not go: the draft is cleared
-	// and the send refused, so it can be sent again.
-	script := fmt.Sprintf(`
-const ARGS0 = %s;
-await page.goto(%q);
-await page.waitForLoadState("domcontentloaded").catch(() => {});
-const signedIn = await page.evaluate(() => {
-%s
-  return __humanCheck() ? "human check" :
-    location.hostname === "gemini.google.com" && !!(window.WIZ_global_data && window.WIZ_global_data.SNlM0e);
-});
-if (signedIn === "human check") {
-  return { error: "human check" };
-} else if (!signedIn) {
-  return { error: "auth" };
-} else {
-  const sel = %q;
-  const norm = t => String(t || "").replace(/\s+/g, " ").trim();
-  const look = () => page.evaluate((sel) => ({
-    turns: document.querySelectorAll("user-query").length,
-    last: (([...document.querySelectorAll("user-query .query-text, user-query")].pop() || {}).innerText) || "",
-    draft: ((document.querySelector(sel) || {}).innerText) || "",
-  }), sel);
-  await page.waitForSelector("loc=css:" + sel, { state: "visible", timeout: 15000 });
-  let before = await look();
-  for (let i = 0; i < 15 && before.turns === 0; i++) {
-    await new Promise(r => setTimeout(r, 1000));
-    before = await look();
-  }
-  if (before.turns === 0) {
-    return { error: "no task" };
-  } else {
-    // Gemini puts back a draft it kept for the conversation a moment after the page shows: wait for the composer to
-    // settle, empty it, type, and send only when it holds exactly this text.
-    const sleep = ms => new Promise(r => setTimeout(r, ms));
-    const settle = async () => {
-      let prev = null;
-      for (let i = 0, same = 0; i < 12 && same < 2; i++) {
-        const d = (await look()).draft;
-        same = d === prev ? same + 1 : 0;
-        prev = d;
-        await sleep(400);
-      }
-    };
-    const setDraft = async (t) => {
-      await page.click("loc=css:" + sel).catch(() => {});
-      await page.evaluate((sel) => {
-        const el = document.querySelector(sel);
-        if (!el) return;
-        el.focus();
-        const r = document.createRange();
-        r.selectNodeContents(el);
-        const s = getSelection();
-        s.removeAllRanges();
-        s.addRange(r);
-        document.execCommand("delete");
-      }, sel);
-      if (t) await page.keyboard.insertText(t);
-      await sleep(400);
-      return norm((await look()).draft) === norm(t);
-    };
-    await settle();
-    let ready = await setDraft(ARGS0.text);
-    if (!ready) {
-      await settle();
-      ready = await setDraft(ARGS0.text);
-    }
-    if (!ready) {
-      await setDraft("");
-      return { error: "not sent" };
-    }
-    const clicked = await page.click("loc=css:" + %q, { timeout: 3000 }).then(() => true).catch(() => false);
-    if (!clicked) await page.press("loc=css:" + sel, "Enter");
-    const want = norm(ARGS0.text);
-    let now = before;
-    for (let i = 0; i < 15; i++) {
-      await new Promise(r => setTimeout(r, 1000));
-      now = await look();
-      if (now.turns > before.turns && norm(now.last).includes(want)) break;
-    }
-    if (now.turns > before.turns && norm(now.last).includes(want)) {
-      return { sent: true, clicked };
-    } else if (norm(now.draft).includes(want)) {
-      await setDraft("");
-      return { clicked, error: "not sent" };
-    } else {
-      return { sent: false, clicked };
-    }
-  }
-}
-`, args, geminiOrigin+"/app/"+id, geminiHumanCheckJS, geminiComposerSel, geminiSendSel)
 	var r struct {
-		Error   string `json:"error"`
-		Sent    bool   `json:"sent"`
-		Clicked bool   `json:"clicked"`
-		ID      string `json:"id"`
+		Error    string `json:"error"`
+		Sent     bool   `json:"sent"`
+		Clicked  bool   `json:"clicked"`
+		Answered bool   `json:"answered"`
+		ID       string `json:"id"`
 	}
-	if err := a.runSend(ctx, credential, script, &r); err != nil {
+	if err := a.runSend(ctx, credential, geminiSendScript(id, text), &r); err != nil {
 		var pe *provider.Error
 		if errors.As(err, &pe) && pe.Code == provider.CodeAuthFailed {
 			return provider.SendResult{}, err
@@ -423,8 +422,9 @@ if (signedIn === "human check") {
 	case "human check", "http 429":
 		// Refused before anything was typed: nothing went out.
 		return provider.SendResult{}, geminiError(r.Error)
-	case "not sent":
-		// Still in the composer after the wait, and cleared from it: it did not go, and can be sent again.
+	case "busy", "not sent":
+		// Gemini still writing an answer in the conversation, or the message still in the composer after the wait
+		// (cleared from it): it did not go, and can be sent again.
 		return provider.SendResult{}, &provider.Error{Code: provider.CodeUpstreamError, Retryable: true}
 	}
 	if !r.Sent {
@@ -434,5 +434,188 @@ if (signedIn === "human check") {
 		}
 		return provider.SendResult{Status: provider.Unconfirmed, Error: code}, nil
 	}
-	return provider.SendResult{Status: provider.Sent, ExternalID: r.ID}, nil
+	ext := ""
+	if r.ID != "" {
+		ext = r.ID + ":u" // as listMessages names the user's turn
+	}
+	return provider.SendResult{Status: provider.Sent, ExternalID: ext}, nil
+}
+
+// geminiSendScript sends text into conversation id ("main" for the main chat). Each look is its own short evaluate.
+//
+//  1. A Gemini page in the tab still writing an answer is left only once it is written (or the wait is over): the
+//     page leaving would lose that turn.
+//  2. The conversation is opened: id's, the main chat's kept one, or a new conversation in 对话 mode for a main chat
+//     that has none yet (or whose conversation is gone).
+//  3. An answer still being written there is waited for; still writing after the wait, the send is refused (busy):
+//     Gemini takes no other message in the conversation meanwhile.
+//  4. The text is typed into a composer cleared of any draft Gemini kept for the conversation, and sent once the
+//     composer holds exactly it. It went once the page shows a new turn of the user's with this text; still in the
+//     composer a few seconds later (Gemini did not take the click), it is sent again with Enter; still there after
+//     the wait, it did not go: the draft is cleared and the send refused (not sent).
+//  5. A new main conversation's id is kept as the main chat's. The send then waits for the answer to be written
+//     (geminiAnswerWaitMs) and, once it is, reads the turn back from Gemini's own record to name it.
+func geminiSendScript(id, text string) string {
+	args, _ := json.Marshal(map[string]any{"text": text, "id": id, "answerWaitMs": geminiAnswerWaitMs})
+	return fmt.Sprintf(`
+const ARGS0 = %s;
+const MAIN_KEY = %q, SEL = %q, SEND = %q, STOP = %q, QUERY = %q, QUERY_TEXT = %q, CHAT_MODE = %q;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const norm = t => String(t || "").replace(/\s+/g, " ").trim();
+const onGemini = async () => /^https:\/\/gemini\.google\.com\//.test(String(await Promise.resolve().then(() => page.url()).catch(() => "")));
+const busy = () => page.evaluate((stop) => !!document.querySelector(stop), STOP).catch(() => false);
+const waitIdle = async (ms) => {
+  const end = Date.now() + ms;
+  while (await busy()) {
+    if (Date.now() >= end) return false;
+    await sleep(1000);
+  }
+  return true;
+};
+// 1. Not under an answer being written in this tab.
+if (await onGemini()) await waitIdle(30000);
+// 2. The conversation.
+let target = ARGS0.id === "main" ? "" : ARGS0.id;
+if (ARGS0.id === "main") {
+  if (!(await onGemini())) {
+    await page.goto("https://gemini.google.com/app");
+    await page.waitForLoadState("domcontentloaded").catch(() => {});
+  }
+  target = await page.evaluate((k) => { try { return String(localStorage.getItem(k) || ""); } catch (e) { return ""; } }, MAIN_KEY).catch(() => "");
+}
+const fresh = !target;
+await page.goto("https://gemini.google.com/app" + (target ? "/" + target : ""));
+await page.waitForLoadState("domcontentloaded").catch(() => {});
+const signedIn = await page.evaluate(() => {
+%s
+  return __humanCheck() ? "human check" :
+    location.hostname === "gemini.google.com" && !!(window.WIZ_global_data && window.WIZ_global_data.SNlM0e);
+});
+if (signedIn === "human check") return { error: "human check" };
+if (!signedIn) return { error: "auth" };
+const look = () => page.evaluate(([sel, query, queryText]) => {
+  const qs = [...document.querySelectorAll(query)];
+  const lastQ = qs[qs.length - 1];
+  const lines = lastQ ? [...lastQ.querySelectorAll(queryText)] : [];
+  return {
+    turns: qs.length,
+    last: lines.length ? lines.map(l => l.innerText).join("\n") : ((lastQ || {}).innerText || ""),
+    draft: ((document.querySelector(sel) || {}).innerText) || "",
+    path: String(location.pathname),
+  };
+}, [SEL, QUERY, QUERY_TEXT]);
+await page.waitForSelector("loc=css:" + SEL, { state: "visible", timeout: 15000 });
+let before = await look();
+if (!fresh) {
+  for (let i = 0; i < 15 && before.turns === 0; i++) {
+    await sleep(1000);
+    before = await look();
+  }
+  if (before.turns === 0) {
+    if (ARGS0.id !== "main") return { error: "no task" };
+    // The main chat's conversation is gone: a new one.
+    await page.goto("https://gemini.google.com/app");
+    await page.waitForLoadState("domcontentloaded").catch(() => {});
+    await page.waitForSelector("loc=css:" + SEL, { state: "visible", timeout: 15000 });
+    before = await look();
+    before.fresh = true;
+  }
+}
+const isNew = fresh || !!before.fresh;
+if (isNew) {
+  // A new conversation is a chat, not a task.
+  await page.click("loc=css:" + CHAT_MODE, { timeout: 3000 }).catch(() => {});
+}
+// 3. Not while Gemini still writes an answer in the conversation.
+if (!(await waitIdle(20000))) return { error: "busy" };
+// 4. Gemini puts back a draft it kept for the conversation a moment after the page shows: wait for the composer to
+// settle, empty it, type, and send only when it holds exactly this text.
+const settle = async () => {
+  let prev = null;
+  for (let i = 0, same = 0; i < 12 && same < 2; i++) {
+    const d = (await look()).draft;
+    same = d === prev ? same + 1 : 0;
+    prev = d;
+    await sleep(400);
+  }
+};
+const setDraft = async (t) => {
+  await page.click("loc=css:" + SEL).catch(() => {});
+  await page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return;
+    el.focus();
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    const s = getSelection();
+    s.removeAllRanges();
+    s.addRange(r);
+    document.execCommand("delete");
+  }, SEL);
+  if (t) await page.keyboard.insertText(t);
+  await sleep(400);
+  return norm((await look()).draft) === norm(t);
+};
+await settle();
+let ready = await setDraft(ARGS0.text);
+if (!ready) {
+  await settle();
+  ready = await setDraft(ARGS0.text);
+}
+if (!ready) {
+  await setDraft("");
+  return { error: "not sent" };
+}
+const want = norm(ARGS0.text);
+const went = (now) => (now.turns > before.turns || (isNew && now.turns > 0)) && norm(now.last).includes(want);
+const clicked = await page.click("loc=css:" + SEND, { timeout: 3000 }).then(() => true).catch(() => false);
+if (!clicked) await page.press("loc=css:" + SEL, "Enter");
+let now = before, pressed = !clicked;
+for (let i = 0; i < 20; i++) {
+  await sleep(1000);
+  now = await look();
+  if (went(now)) break;
+  if (!pressed && i >= 3 && norm(now.draft).includes(want) && !(await busy())) {
+    // Gemini did not take the click: the text is still in the composer.
+    pressed = true;
+    await page.press("loc=css:" + SEL, "Enter").catch(() => {});
+  }
+}
+if (!went(now)) {
+  if (norm(now.draft).includes(want)) {
+    await setDraft("");
+    return { clicked, error: "not sent" };
+  }
+  return { sent: false, clicked };
+}
+// 5. Sent: wait for the answer, then name the turn (and keep a new main conversation's id: the page shows its address
+// only once Gemini made the conversation).
+const answered = await waitIdle(ARGS0.answerWaitMs);
+const found = await page.evaluate(async ([want, path, fresh]) => {
+%s
+  const n = t => String(t || "").replace(/\s+/g, " ").trim();
+  const turnOf = async (conv) => {
+    const v = await __rpc("hNvQHb", ["c_" + conv, 3, null, 1, [0], [4], null, 1]);
+    const t = ((v && v[0]) || []).find(t => Array.isArray(t) && Array.isArray(t[0]) && n(t[2] && t[2][0] && t[2][0][0]).includes(want));
+    return t ? String(t[0][1] || "") : "";
+  };
+  try {
+    let conv = (String(location.pathname).match(/\/app\/([0-9a-f]{8,})/) || [])[1] || "";
+    if (conv) return { conv, turn: await turnOf(conv) };
+    if (!fresh) return { conv: "", turn: "" };
+    // A new conversation the address does not show yet: the newest chat with this turn.
+    for (const c of await __tasks([1], 3)) {
+      const turn = await turnOf(c.id);
+      if (turn) return { conv: c.id, turn };
+    }
+  } catch (e) {}
+  return { conv: "", turn: "" };
+}, [want, "", isNew]).catch(() => ({ conv: "", turn: "" }));
+const conv = found.conv, turn = found.turn;
+if (isNew && ARGS0.id === "main" && conv) {
+  await page.evaluate(([k, v]) => { try { localStorage.setItem(k, v); } catch (e) {} }, [MAIN_KEY, conv]).catch(() => {});
+}
+return { sent: true, clicked, answered, id: turn, conversation: conv };
+`, args, geminiMainKey, geminiComposerSel, geminiSendSel, geminiStopSel, geminiQuerySel, geminiQueryTextSel, geminiChatModeSel,
+		geminiHumanCheckJS, geminiPrelude)
 }
