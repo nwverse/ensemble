@@ -1018,7 +1018,7 @@ func (a *accounts) inboxSection(l lang, acct protocol.Account) wire.Section {
 		Footer: l.t("打开后，这个账号的每个对话在收件箱里占一行，有新回复就冒出来，内容会交给 Persona 的「消息分拣」模型排序。",
 			"On: each chat of this account is a row in the Inbox, new replies show up, and Persona's message-triage model sorts them."),
 		Items: []wire.Component{{Type: "segmented", Name: fieldInbox, Value: val, Choices: []wire.Choice{
-			{Value: "on", Title: l.t("进收件箱", "In the Inbox")}, {Value: "off", Title: l.t("不进", "Not in the Inbox")}},
+			{Value: "on", Title: l.t("进收件箱", "In the Inbox")}, {Value: "off", Title: l.t("不进", "Not in Inbox")}},
 			Action: &wire.Action{ID: actInbox}}}}
 }
 
