@@ -18,13 +18,15 @@ type Memory struct {
 	sessions map[string]Session
 	messages map[string]map[string]Message // by session key, then external id
 	outbox   map[string]Outbox
+	leases   map[string]FollowLease
 	settings map[string]string
 }
 
 // NewMemory is an empty in-memory store.
 func NewMemory() *Memory {
 	return &Memory{accounts: map[string]Account{}, sessions: map[string]Session{},
-		messages: map[string]map[string]Message{}, outbox: map[string]Outbox{}, settings: map[string]string{}}
+		messages: map[string]map[string]Message{}, outbox: map[string]Outbox{}, leases: map[string]FollowLease{},
+		settings: map[string]string{}}
 }
 
 var _ Store = (*Memory)(nil)
@@ -122,6 +124,12 @@ func (m *Memory) RemoveAccount(_ context.Context, id string, deleteData bool, no
 	if !deleteData {
 		a.Status, a.UpdatedAt = AccountRemoved, now
 		m.accounts[id] = a
+		for lid, l := range m.leases {
+			if l.AccountID == id && l.RevokedAt == 0 {
+				l.RevokedAt, l.RevokeReason, l.UpdatedAt = now, "account_removed", now
+				m.leases[lid] = l
+			}
+		}
 		return nil
 	}
 	delete(m.accounts, id)
@@ -134,6 +142,11 @@ func (m *Memory) RemoveAccount(_ context.Context, id string, deleteData bool, no
 	for cid, o := range m.outbox {
 		if o.AccountID == id {
 			delete(m.outbox, cid)
+		}
+	}
+	for lid, l := range m.leases {
+		if l.AccountID == id {
+			delete(m.leases, lid)
 		}
 	}
 	return nil
@@ -633,6 +646,118 @@ func (m *Memory) PutSetting(_ context.Context, key, value string) error {
 	defer m.mu.Unlock()
 	m.settings[key] = value
 	return nil
+}
+
+func compareFollowLeasesDesc(a, b FollowLease) int {
+	return cmp.Or(cmp.Compare(b.CreatedAt, a.CreatedAt), strings.Compare(b.LeaseID, a.LeaseID))
+}
+
+func (m *Memory) PutFollowLease(_ context.Context, l FollowLease) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if l.UpdatedAt == 0 {
+		l.UpdatedAt = l.CreatedAt
+	}
+	for id, old := range m.leases {
+		if old.SessionKey == l.SessionKey && id != l.LeaseID && old.RevokedAt == 0 {
+			old.RevokedAt, old.RevokeReason, old.UpdatedAt = l.CreatedAt, "replaced", l.CreatedAt
+			m.leases[id] = old
+		}
+	}
+	m.leases[l.LeaseID] = l
+	return nil
+}
+
+func (m *Memory) FollowLease(_ context.Context, leaseID string) (FollowLease, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l, ok := m.leases[leaseID]
+	return l, ok, nil
+}
+
+func (m *Memory) ActiveFollowLease(_ context.Context, sessionKey string, now int64) (FollowLease, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var best FollowLease
+	found := false
+	for _, l := range m.leases {
+		if l.SessionKey != sessionKey || !l.IsActive(now) {
+			continue
+		}
+		if !found || compareFollowLeasesDesc(l, best) < 0 {
+			best = l
+			found = true
+		}
+	}
+	return best, found, nil
+}
+
+func (m *Memory) AccountFollowLeases(_ context.Context, accountID string) ([]FollowLease, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []FollowLease
+	for _, l := range m.leases {
+		if l.AccountID == accountID {
+			out = append(out, l)
+		}
+	}
+	slices.SortFunc(out, compareFollowLeasesDesc)
+	return out, nil
+}
+
+func (m *Memory) ConsumeFollowLease(_ context.Context, sessionKey string, unattended bool, now int64) (FollowLease, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var best FollowLease
+	found := false
+	for _, l := range m.leases {
+		if l.SessionKey != sessionKey || !l.IsActive(now) || (unattended && !l.AllowBackground) {
+			continue
+		}
+		if !found || compareFollowLeasesDesc(l, best) < 0 {
+			best = l
+			found = true
+		}
+	}
+	if !found {
+		return FollowLease{}, false, nil
+	}
+	best.UsedTurns++
+	best.UpdatedAt = now
+	m.leases[best.LeaseID] = best
+	return best, true, nil
+}
+
+func (m *Memory) RevokeFollowLease(_ context.Context, leaseID, reason string, now int64) (FollowLease, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l, ok := m.leases[leaseID]
+	if !ok || l.RevokedAt != 0 {
+		return FollowLease{}, false, nil
+	}
+	if reason == "" {
+		reason = "manual"
+	}
+	l.RevokedAt, l.RevokeReason, l.UpdatedAt = now, reason, now
+	m.leases[leaseID] = l
+	return l, true, nil
+}
+
+func (m *Memory) RevokeAccountFollowLeases(_ context.Context, accountID, reason string, now int64) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if reason == "" {
+		reason = "revoked"
+	}
+	n := 0
+	for id, l := range m.leases {
+		if l.AccountID == accountID && l.RevokedAt == 0 {
+			l.RevokedAt, l.RevokeReason, l.UpdatedAt = now, reason, now
+			m.leases[id] = l
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (m *Memory) Import(_ context.Context, rows Import) error {

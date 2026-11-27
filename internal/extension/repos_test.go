@@ -204,8 +204,8 @@ func TestBindReposFlow(t *testing.T) {
 
 func TestRepoToolsAreGated(t *testing.T) {
 	h, club, fd, id := startDuet(t)
-	if !strings.Contains(string(pac.Manifest), `"club_agent_*"`) {
-		t.Fatal("the manifest no longer confirms club_agent_* on the phone")
+	if !strings.Contains(string(pac.Manifest), `"club_agent_repo_authorize"`) || !strings.Contains(string(pac.Manifest), `"club_agent_repo_bind"`) {
+		t.Fatal("the manifest no longer confirms club_agent_repo_authorize and club_agent_repo_bind on the phone")
 	}
 	var reads, writes wire.ConnectorTools
 	_ = h.Call("connector.tools.list", wire.ConnectorParams{Contribution: Connector}, &reads)
@@ -332,6 +332,52 @@ func TestRepoToolsAreGated(t *testing.T) {
 	fd.stop = ""
 	if out, err = do(toolRepoAuthorize, args); err != nil || !strings.Contains(out, "已挂好并读回确认") {
 		t.Errorf("authorize granted: %q %v", out, err)
+	}
+
+	// follow and auto: repository authorization and binding stay in confirm_always, never consume a FollowLease,
+	// never set Bypass=true in audit logs, and are always denied in unattended background calls.
+	space, _ := club.Space(context.Background(), core.DefaultSpace)
+	sessions, _ := space.Sessions(context.Background())
+	mainKey := sessions.Sessions[0].SessionKey
+	setControl(t, club, id, core.ControlFollow)
+	lease, err := space.GrantFollowLease(context.Background(), protocol.GrantFollowLeaseParams{
+		AccountID:       id,
+		SessionKey:      mainKey,
+		TTL:             "2h",
+		MaxTurns:        10,
+		AllowBackground: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, lvl := range []core.Control{core.ControlFollow, core.ControlAuto} {
+		setControl(t, club, id, lvl)
+		for _, tool := range []string{toolRepoBind, toolRepoAuthorize} {
+			raw, _ := json.Marshal(args)
+			var dRes wire.ConnectorDescribeResult
+			if err := h.Call("connector.actions.describe", wire.ConnectorCallParams{
+				Contribution: Connector,
+				Name:         tool,
+				Args:         raw,
+				TrackKind:    "background",
+			}, &dRes); err == nil {
+				t.Fatalf("level=%s tool=%s allowed in background", lvl, tool)
+			}
+			if _, err := describe(tool, args); err != nil {
+				t.Fatalf("level=%s tool=%s describe failed: %v", lvl, tool, err)
+			}
+			if _, err := do(tool, args); err != nil {
+				t.Fatalf("level=%s tool=%s do failed: %v", lvl, tool, err)
+			}
+		}
+	}
+	if curLease, ok, _ := space.Store().FollowLease(context.Background(), lease.LeaseID); !ok || curLease.UsedTurns != 0 {
+		t.Fatalf("repo tools must not consume FollowLease turns: %+v", curLease)
+	}
+	for _, a := range space.AuditEntries() {
+		if (a.Tool == toolRepoBind || a.Tool == toolRepoAuthorize) && a.Bypass {
+			t.Fatalf("repo tool audit entry must never mark Bypass=true: %+v", a)
+		}
 	}
 }
 

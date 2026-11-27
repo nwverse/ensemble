@@ -694,7 +694,7 @@ func TestInboxManifestRules(t *testing.T) {
 			t.Errorf("the Inbox connector must give the assistant no tools of its own: %q", c)
 		}
 	}
-	if len(inbox.ConfirmAlways) != 0 || len(club.ConfirmAlways) != 1 || club.ConfirmAlways[0] != "club_agent_*" {
+	if len(inbox.ConfirmAlways) != 0 || !slices.Equal(club.ConfirmAlways, []string{"club_agent_repo_authorize", "club_agent_repo_bind"}) {
 		t.Errorf("confirm_always: club %v, inbox %v", club.ConfirmAlways, inbox.ConfirmAlways)
 	}
 	if d := m.Configuration.Properties["inbox_conversations"].Default; d != false {
@@ -1364,7 +1364,7 @@ func TestManifestAsksForNotifyAndTheHubBuild(t *testing.T) {
 	if d := m.Configuration.Properties["inbox_push"].Default; d != true {
 		t.Errorf("inbox_push default: %v", d)
 	}
-	if pac.Version() != "0.7.12" {
+	if pac.Version() != "0.7.13" {
 		t.Errorf("version %s", pac.Version())
 	}
 }

@@ -16,18 +16,24 @@ import (
 	"github.com/nwverse/ensemble/internal/core"
 	"github.com/nwverse/ensemble/internal/protocol"
 	"github.com/nwverse/ensemble/internal/provider/browser"
+	"github.com/nwverse/ensemble/internal/store"
 )
 
-// Connector is the id of the connector this extension contributes for the assistant's tools (design §6.4, first
-// phase): club_agents_list and club_agent_read are reads; club_agent_send, club_agent_start and club_agent_interrupt
-// are writes, which the hub runs only after its gate lets them through. The manifest lists them all in
-// confirm_always, so every write is confirmed on the user's phone whatever the gate's rules say: the "auto" level is
-// not offered in this phase, and a scheduled task or background follow-up, with nobody there to confirm, can only
-// read.
+// Connector is the id of the connector this extension contributes for the assistant's tools: club_agents_list,
+// club_agent_read and club_agent_repos_list are reads; club_agent_send, club_agent_start, club_agent_interrupt,
+// club_agent_repo_bind and club_agent_repo_authorize are writes, which the hub runs only after its gate lets them
+// through. The manifest lists club_agent_repo_authorize and club_agent_repo_bind in confirm_always, so repository
+// authorization and binding are always confirmed on the user's phone whatever the gate's rules say.
 //
-// What the assistant sees is decided per account by its assistant_control level (core.Decide): an account at "off"
-// (every new account) is left out of every answer as if it did not exist; "read" lists and reads; "confirm" also
-// writes, each write confirmed.
+// What the assistant sees and may do is decided per account by its 5-level assistant_control (core.DecideWithLease):
+//   - "off" (every new and imported account): hidden from every answer as if it did not exist;
+//   - "read": list and read only;
+//   - "confirm": list, read, and write with per-call confirmation;
+//   - "follow": list, read, and continue turns in a session holding an active FollowLease (bounded by max_turns and
+//     expires_at, with optional background follow-up when allow_background is true); writes without an active matching
+//     lease degrade to "confirm" (or are denied when unattended);
+//   - "auto": list, read, and write without per-turn confirmation (guarded by quota pre-check, LocalUnconfirmed
+//     protection, per-session burst rate limiting, and audit logging; repository tools and OpManage are never bypassed).
 const Connector = "club"
 
 // Tool names.
@@ -140,22 +146,49 @@ func (t *tools) status(ctx context.Context, _ wire.ConnectorParams) (wire.Connec
 	return wire.ConnectorStatus{State: wire.ConnectorStateOk, Account: fmt.Sprintf("%d 个账号交给助手", len(accts))}, nil
 }
 
+// isUnattended reports whether a connector call originates from an unattended/background track where no human is
+// present to confirm interactive prompts.
+func isUnattended(track, trackKind string) bool {
+	tk := strings.ToLower(strings.TrimSpace(trackKind))
+	switch tk {
+	case "background", "cron", "scheduled", "unattended", "headless", "autonomous", "subtask", "job":
+		return true
+	}
+	tr := strings.ToLower(strings.TrimSpace(track))
+	switch tr {
+	case "background", "cron", "scheduled", "unattended", "headless", "autonomous":
+		return true
+	}
+	for _, prefix := range []string{"cron:", "bg:", "background:", "schedule:", "scheduled:", "job:", "subtask:"} {
+		if strings.HasPrefix(tr, prefix) || strings.HasPrefix(tk, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // session finds a session the assistant may do op on: one of an account it can see, at a level that allows op.
 func (t *tools) session(ctx context.Context, key string, op core.Operation) (*core.Space, protocol.Session, core.Control, error) {
+	space, sess, level, _, _, err := t.sessionWithLease(ctx, key, op, false, "")
+	return space, sess, level, err
+}
+
+func (t *tools) sessionWithLease(ctx context.Context, key string, op core.Operation, unattended bool, toolName string) (*core.Space, protocol.Session, core.Control, *store.FollowLease, core.Verdict, error) {
 	if key == "" {
-		return nil, protocol.Session{}, "", protocol.Invalid("session_key is required")
+		return nil, protocol.Session{}, "", nil, core.Deny, protocol.Invalid("session_key is required")
 	}
 	space, _, levels, err := t.visible(ctx)
 	if err != nil {
-		return nil, protocol.Session{}, "", err
+		return nil, protocol.Session{}, "", nil, core.Deny, err
 	}
 	if active, _ := space.AssistantSessionKeys(ctx); active[key] {
-		return nil, protocol.Session{}, "", protocol.NotFound("没有这个会话，或用户没有把它交给助手")
+		return nil, protocol.Session{}, "", nil, core.Deny, protocol.NotFound("没有这个会话，或用户没有把它交给助手")
 	}
 	sessions, err := space.Sessions(ctx)
 	if err != nil {
-		return nil, protocol.Session{}, "", err
+		return nil, protocol.Session{}, "", nil, core.Deny, err
 	}
+	now := t.club.Now().UnixMilli()
 	for _, s := range sessions.Sessions {
 		if s.SessionKey != key {
 			continue
@@ -164,20 +197,58 @@ func (t *tools) session(ctx context.Context, key string, op core.Operation) (*co
 		if !ok {
 			break // an account at "off" does not exist for the assistant
 		}
-		if core.Decide(level, op, false) == core.Deny {
-			return nil, protocol.Session{}, "", protocol.Invalid(fmt.Sprintf("用户只允许对这个账号%s", levelWords(level)))
+		var leasePtr *store.FollowLease
+		if l, has, err := space.ActiveFollowLease(ctx, s.SessionKey); err == nil && has {
+			leaseCopy := l
+			leasePtr = &leaseCopy
 		}
-		return space, s, level, nil
+		verdict := core.DecideWithLease(level, op, unattended, s.SessionKey, leasePtr, now)
+		if verdict == core.Deny {
+			guard, reason := "level_denied", "denied_by_control_level"
+			msg := fmt.Sprintf("用户只允许对这个账号%s", levelWords(level))
+			if unattended && op.Writes() {
+				if level == core.ControlFollow {
+					if leasePtr != nil && !leasePtr.AllowBackground {
+						guard, reason = "background_not_allowed", "lease_background_off"
+						msg = "这个会话的跟进租约未开启后台跟进，后台任务不能发送或打断"
+					} else {
+						guard, reason = "lease_unavailable_unattended", "no_active_background_lease"
+						msg = "这个会话没有生效中的后台跟进租约（或租约已到期、轮次已用完），后台任务不能发送或打断"
+					}
+				} else {
+					guard, reason = "unattended_write_denied", "unattended_write"
+					msg = "后台无人值守任务不能对这个账号执行写操作"
+				}
+			}
+			space.RecordAudit(core.AuditEntry{
+				TimeMs:     now,
+				AccountID:  s.AccountID,
+				SessionKey: s.SessionKey,
+				Tool:       toolName,
+				Operation:  op,
+				Level:      level,
+				Unattended: unattended,
+				Verdict:    core.Deny,
+				Guard:      guard,
+				Reason:     reason,
+			})
+			return nil, protocol.Session{}, "", nil, core.Deny, protocol.Invalid(msg)
+		}
+		return space, s, level, leasePtr, verdict, nil
 	}
-	return nil, protocol.Session{}, "", protocol.NotFound("没有这个会话，或用户没有把它交给助手")
+	return nil, protocol.Session{}, "", nil, core.Deny, protocol.NotFound("没有这个会话，或用户没有把它交给助手")
 }
 
 func levelWords(c core.Control) string {
 	switch c {
 	case core.ControlRead:
 		return "列出和读，不能发送、派活或打断"
-	case core.ControlConfirm, core.ControlAuto:
+	case core.ControlConfirm:
 		return "列出、读，写操作逐次确认"
+	case core.ControlFollow:
+		return "列出、读，持有跟进租约的会话可连续跟进，其余写操作逐次确认"
+	case core.ControlAuto:
+		return "列出、读，写操作直接放行（受安全护栏与仓库强制确认约束）"
 	}
 	return "不可见"
 }
@@ -239,15 +310,48 @@ func (t *tools) call(ctx context.Context, p wire.ConnectorCallParams) (wire.Conn
 	return wire.ConnectorCallResult{}, ext.UnknownMethod(p.Name)
 }
 
+type listedFollowLease struct {
+	LeaseID         string `json:"lease_id"`
+	SessionKey      string `json:"session_key"`
+	SessionTitle    string `json:"session_title,omitempty"`
+	Status          string `json:"status"`
+	MaxTurns        int    `json:"max_turns"`
+	UsedTurns       int    `json:"used_turns"`
+	RemainingTurns  int    `json:"remaining_turns"`
+	ExpiresAt       string `json:"expires_at"`
+	AllowBackground bool   `json:"allow_background"`
+	Note            string `json:"note,omitempty"`
+}
+
+func toListedFollowLease(l protocol.FollowLease) listedFollowLease {
+	var exp string
+	if l.ExpiresAt > 0 {
+		exp = time.UnixMilli(l.ExpiresAt).UTC().Format(time.RFC3339)
+	}
+	return listedFollowLease{
+		LeaseID:         l.LeaseID,
+		SessionKey:      l.SessionKey,
+		SessionTitle:    l.SessionTitle,
+		Status:          l.Status,
+		MaxTurns:        l.MaxTurns,
+		UsedTurns:       l.UsedTurns,
+		RemainingTurns:  l.RemainingTurns,
+		ExpiresAt:       exp,
+		AllowBackground: l.AllowBackground,
+		Note:            l.Note,
+	}
+}
+
 type listedSession struct {
-	SessionKey   string `json:"session_key"`
-	Title        string `json:"title"`
-	Kind         string `json:"kind,omitempty"`
-	CanSend      bool   `json:"can_send"`
-	Unread       int    `json:"unread"`
-	LastAt       string `json:"last_at,omitempty"`
-	CanStart     bool   `json:"can_start"`
-	CanInterrupt bool   `json:"can_interrupt"`
+	SessionKey   string             `json:"session_key"`
+	Title        string             `json:"title"`
+	Kind         string             `json:"kind,omitempty"`
+	CanSend      bool               `json:"can_send"`
+	Unread       int                `json:"unread"`
+	LastAt       string             `json:"last_at,omitempty"`
+	CanStart     bool               `json:"can_start"`
+	CanInterrupt bool               `json:"can_interrupt"`
+	FollowLease  *listedFollowLease `json:"follow_lease,omitempty"`
 }
 
 type listedQuota struct {
@@ -265,9 +369,10 @@ type listedAccount struct {
 	Status           string `json:"status"`
 	AssistantControl string `json:"assistant_control"`
 	// Problem is the account's last error in words, for the assistant to pass on to the user.
-	Problem  string          `json:"problem,omitempty"`
-	Quota    *listedQuota    `json:"quota,omitempty"`
-	Sessions []listedSession `json:"sessions"`
+	Problem      string              `json:"problem,omitempty"`
+	Quota        *listedQuota        `json:"quota,omitempty"`
+	FollowLeases []listedFollowLease `json:"follow_leases"`
+	Sessions     []listedSession     `json:"sessions"`
 }
 
 func (t *tools) list(ctx context.Context, a listArgs) (wire.ConnectorCallResult, error) {
@@ -288,8 +393,23 @@ func (t *tools) list(ctx context.Context, a listArgs) (wire.ConnectorCallResult,
 		if a.Provider != "" && acct.Provider != a.Provider {
 			continue
 		}
+		acctLevel := levels[acct.AccountID]
 		la := listedAccount{AccountID: acct.AccountID, Provider: acct.Provider, Name: accountName(acct),
-			Status: acct.Status, AssistantControl: string(levels[acct.AccountID]), Sessions: []listedSession{}}
+			Status: acct.Status, AssistantControl: string(acctLevel),
+			FollowLeases: []listedFollowLease{}, Sessions: []listedSession{}}
+		leaseBySession := map[string]listedFollowLease{}
+		if leasesRes, err := space.ListFollowLeases(ctx, protocol.ListFollowLeasesParams{AccountID: acct.AccountID, ActiveOnly: true}); err == nil {
+			for _, fl := range leasesRes.Leases {
+				if active[fl.SessionKey] {
+					continue
+				}
+				lf := toListedFollowLease(fl)
+				if acctLevel != core.ControlFollow {
+					lf.Status = "staged_until_follow"
+				}
+				leaseBySession[fl.SessionKey] = lf
+			}
+		}
 		if acct.Quota != nil {
 			lq := &listedQuota{State: acct.Quota.State, Percent: acct.Quota.Percent, Source: acct.Quota.Source}
 			if acct.Quota.ResetsAt > 0 {
@@ -314,6 +434,11 @@ func (t *tools) list(ctx context.Context, a listArgs) (wire.ConnectorCallResult,
 				Unread: s.UnreadCount, CanStart: canStart, CanInterrupt: canInterrupt}
 			if s.RankTimeMs > 0 {
 				ls.LastAt = time.UnixMilli(s.RankTimeMs).UTC().Format(time.RFC3339)
+			}
+			if lf, ok := leaseBySession[s.SessionKey]; ok {
+				lfCopy := lf
+				ls.FollowLease = &lfCopy
+				la.FollowLeases = append(la.FollowLeases, lfCopy)
 			}
 			la.Sessions = append(la.Sessions, ls)
 		}
@@ -412,6 +537,7 @@ func waitFor(ctx context.Context, club *core.Club, key string, d time.Duration) 
 func supported(method string) bool { return !slices.Contains(protocol.ClubStubMethods, method) }
 
 func (t *tools) describe(ctx context.Context, p wire.ConnectorCallParams) (wire.ConnectorDescribeResult, error) {
+	unattended := isUnattended(p.Track, p.TrackKind)
 	switch p.Name {
 	case toolRepoBind, toolRepoAuthorize:
 		return t.repoDescribe(ctx, p)
@@ -420,8 +546,11 @@ func (t *tools) describe(ctx context.Context, p wire.ConnectorCallParams) (wire.
 		if err := args(p.Args, &a); err != nil {
 			return wire.ConnectorDescribeResult{}, err
 		}
-		_, sess, _, err := t.sendable(ctx, a.SessionKey, a.Text, core.OpSend)
+		space, sess, level, lease, verdict, err := t.sendableWithLease(ctx, a.SessionKey, a.Text, core.OpSend, unattended, toolSend)
 		if err != nil {
+			return wire.ConnectorDescribeResult{}, err
+		}
+		if err := checkSessionGuards(ctx, space, sess, level, unattended, toolSend, core.OpSend); err != nil {
 			return wire.ConnectorDescribeResult{}, err
 		}
 		actionName := "以你的身份发给 " + providerName("zh", sess.Provider) + "「" + sess.Title + "」"
@@ -431,6 +560,9 @@ func (t *tools) describe(ctx context.Context, p wire.ConnectorCallParams) (wire.
 			} else {
 				actionName += "（额度偏低）"
 			}
+		}
+		if level == core.ControlFollow && lease != nil && verdict == core.Allow {
+			actionName += fmt.Sprintf("（跟进租约生效：剩余 %d/%d 轮）", lease.RemainingTurns(), lease.MaxTurns)
 		}
 		return wire.ConnectorDescribeResult{Action: wire.ConnectorAction{Name: actionName,
 			Visible: providerName("zh", sess.Provider)}, Summary: strings.TrimSpace(a.Text)}, nil
@@ -442,7 +574,7 @@ func (t *tools) describe(ctx context.Context, p wire.ConnectorCallParams) (wire.
 		if !supported(protocol.MethodClubSessionsStart) {
 			return wire.ConnectorDescribeResult{}, protocol.Unsupported("这个版本的 club 还不能新开会话")
 		}
-		acct, err := t.account(ctx, a.AccountID, core.OpStart)
+		space, acct, level, err := t.accountWithSpace(ctx, a.AccountID, core.OpStart, unattended, toolStart)
 		if err != nil {
 			return wire.ConnectorDescribeResult{}, err
 		}
@@ -450,7 +582,30 @@ func (t *tools) describe(ctx context.Context, p wire.ConnectorCallParams) (wire.
 			return wire.ConnectorDescribeResult{}, protocol.Invalid("text is required")
 		}
 		if err := exhausted(acct.Quota, t.club.Now().UnixMilli()); err != nil {
+			space.RecordAudit(core.AuditEntry{
+				AccountID:  acct.AccountID,
+				Tool:       toolStart,
+				Operation:  core.OpStart,
+				Level:      level,
+				Unattended: unattended,
+				Verdict:    core.Deny,
+				Guard:      "quota_exhausted",
+				Reason:     protocol.ReasonQuotaExhausted,
+			})
 			return wire.ConnectorDescribeResult{}, err
+		}
+		if ok, waitMs := space.CheckBurstLimit("start:" + acct.AccountID); !ok {
+			space.RecordAudit(core.AuditEntry{
+				AccountID:  acct.AccountID,
+				Tool:       toolStart,
+				Operation:  core.OpStart,
+				Level:      level,
+				Unattended: unattended,
+				Verdict:    core.Deny,
+				Guard:      "burst_rate_limit",
+				Reason:     fmt.Sprintf("retry_after_%dms", waitMs),
+			})
+			return wire.ConnectorDescribeResult{}, burstRateLimitError(waitMs)
 		}
 		actionName := "以你的身份在 " + accountName(acct) + " 新开会话"
 		if acct.Quota != nil && acct.Quota.State == protocol.QuotaLow {
@@ -474,14 +629,31 @@ func (t *tools) describe(ctx context.Context, p wire.ConnectorCallParams) (wire.
 			}
 			op = core.OpSend
 		}
-		_, sess, _, err := t.sendable(ctx, a.SessionKey, a.Then, op)
+		space, sess, level, lease, verdict, err := t.sendableWithLease(ctx, a.SessionKey, a.Then, op, unattended, toolInterrupt)
 		if err != nil {
 			return wire.ConnectorDescribeResult{}, err
 		}
 		if strings.TrimSpace(a.Then) != "" {
+			if !sess.CanSend {
+				return wire.ConnectorDescribeResult{}, protocol.Conflict("这个会话是只读的，不能发消息")
+			}
 			if err := exhausted(sess.Quota, t.club.Now().UnixMilli()); err != nil {
+				space.RecordAudit(core.AuditEntry{
+					AccountID:  sess.AccountID,
+					SessionKey: sess.SessionKey,
+					Tool:       toolInterrupt,
+					Operation:  op,
+					Level:      level,
+					Unattended: unattended,
+					Verdict:    core.Deny,
+					Guard:      "quota_exhausted",
+					Reason:     protocol.ReasonQuotaExhausted,
+				})
 				return wire.ConnectorDescribeResult{}, err
 			}
+		}
+		if err := checkSessionGuards(ctx, space, sess, level, unattended, toolInterrupt, op); err != nil {
+			return wire.ConnectorDescribeResult{}, err
 		}
 		name := "打断 " + providerName("zh", sess.Provider) + "「" + sess.Title + "」"
 		if op == core.OpSend {
@@ -494,30 +666,106 @@ func (t *tools) describe(ctx context.Context, p wire.ConnectorCallParams) (wire.
 				name += "（额度偏低）"
 			}
 		}
+		if level == core.ControlFollow && lease != nil && verdict == core.Allow {
+			name += fmt.Sprintf("（跟进租约生效：剩余 %d/%d 轮）", lease.RemainingTurns(), lease.MaxTurns)
+		}
 		return wire.ConnectorDescribeResult{Action: wire.ConnectorAction{Name: name, Visible: providerName("zh", sess.Provider)},
 			Summary: strings.TrimSpace(a.Then)}, nil
 	}
 	return wire.ConnectorDescribeResult{}, ext.UnknownMethod(p.Name)
 }
 
+func burstRateLimitError(waitMs int64) error {
+	secs := max(1, (waitMs+999)/1000)
+	return protocol.Conflict(fmt.Sprintf("这个会话短时间内发送过于频繁（触发单会话突发频率限制，%d 秒内最多 %d 次），已暂停发送以防死循环刷屏，请约 %d 秒后再试。",
+		core.BurstWindowMs/1000, core.BurstMaxWrites, secs)).Because(protocol.ReasonRateLimited)
+}
+
+func unconfirmedSendError() error {
+	return protocol.Conflict("这个会话上一条消息尚未确认是否送达（local_status=unconfirmed），为避免重复自动发送已拦截。请先用 club_agent_read 检查会话最新消息，或在账号页点「立即同步」确认状态后再试。").
+		Because(protocol.ReasonSendUnconfirmed)
+}
+
+// checkSessionGuards enforces LocalUnconfirmed protection and per-session burst rate-limit pre-check before a write.
+func checkSessionGuards(ctx context.Context, space *core.Space, sess protocol.Session, level core.Control, unattended bool, toolName string, op core.Operation) error {
+	if row, unconfirmed, err := space.HasUnconfirmedSend(ctx, sess.SessionKey); err != nil {
+		return err
+	} else if unconfirmed {
+		space.RecordAudit(core.AuditEntry{
+			AccountID:  sess.AccountID,
+			SessionKey: sess.SessionKey,
+			Tool:       toolName,
+			Operation:  op,
+			Level:      level,
+			Unattended: unattended,
+			Verdict:    core.Deny,
+			Guard:      "local_unconfirmed",
+			Reason:     row.ClientID,
+		})
+		return unconfirmedSendError()
+	}
+	if ok, waitMs := space.CheckBurstLimit(sess.SessionKey); !ok {
+		space.RecordAudit(core.AuditEntry{
+			AccountID:  sess.AccountID,
+			SessionKey: sess.SessionKey,
+			Tool:       toolName,
+			Operation:  op,
+			Level:      level,
+			Unattended: unattended,
+			Verdict:    core.Deny,
+			Guard:      "burst_rate_limit",
+			Reason:     fmt.Sprintf("retry_after_%dms", waitMs),
+		})
+		return burstRateLimitError(waitMs)
+	}
+	return nil
+}
+
 // sendable is a session the assistant may write text to (text may be empty for an interrupt without then).
 func (t *tools) sendable(ctx context.Context, key, text string, op core.Operation) (*core.Space, protocol.Session, core.Control, error) {
-	space, sess, level, err := t.session(ctx, key, op)
+	space, sess, level, _, _, err := t.sendableWithLease(ctx, key, text, op, false, "")
+	return space, sess, level, err
+}
+
+func (t *tools) sendableWithLease(ctx context.Context, key, text string, op core.Operation, unattended bool, toolName string) (*core.Space, protocol.Session, core.Control, *store.FollowLease, core.Verdict, error) {
+	space, sess, level, lease, verdict, err := t.sessionWithLease(ctx, key, op, unattended, toolName)
 	if err != nil {
-		return nil, protocol.Session{}, "", err
+		return nil, protocol.Session{}, "", nil, core.Deny, err
 	}
 	if op == core.OpSend {
 		if !sess.CanSend {
-			return nil, protocol.Session{}, "", protocol.Conflict("这个会话是只读的，不能发消息")
+			space.RecordAudit(core.AuditEntry{
+				AccountID:  sess.AccountID,
+				SessionKey: sess.SessionKey,
+				Tool:       toolName,
+				Operation:  op,
+				Level:      level,
+				Unattended: unattended,
+				Verdict:    core.Deny,
+				Guard:      "session_read_only",
+				Reason:     protocol.ReasonSessionReadOnly,
+			})
+			return nil, protocol.Session{}, "", nil, core.Deny, protocol.Conflict("这个会话是只读的，不能发消息")
 		}
 		if strings.TrimSpace(text) == "" {
-			return nil, protocol.Session{}, "", protocol.Invalid("text is required")
+			return nil, protocol.Session{}, "", nil, core.Deny, protocol.Invalid("text is required")
 		}
 		if err := exhausted(sess.Quota, t.club.Now().UnixMilli()); err != nil {
-			return nil, protocol.Session{}, "", err
+			space.RecordAudit(core.AuditEntry{
+				AccountID:  sess.AccountID,
+				SessionKey: sess.SessionKey,
+				Tool:       toolName,
+				Operation:  op,
+				Level:      level,
+				Unattended: unattended,
+				Verdict:    core.Deny,
+				Guard:      "quota_exhausted",
+				Reason:     protocol.ReasonQuotaExhausted,
+			})
+			return nil, protocol.Session{}, "", nil, core.Deny, err
 		}
 	}
-	return space, sess, level, nil
+	return space, sess, level, lease, verdict, nil
 }
 
 // exhausted refuses a send when the account's quota is known to be used up, giving a clear prompt before sending.
@@ -538,23 +786,46 @@ func exhausted(q *protocol.Quota, now int64) error {
 }
 
 func (t *tools) account(ctx context.Context, id string, op core.Operation) (protocol.Account, error) {
-	_, accts, levels, err := t.visible(ctx)
+	_, acct, _, err := t.accountWithSpace(ctx, id, op, false, "")
+	return acct, err
+}
+
+func (t *tools) accountWithSpace(ctx context.Context, id string, op core.Operation, unattended bool, toolName string) (*core.Space, protocol.Account, core.Control, error) {
+	space, accts, levels, err := t.visible(ctx)
 	if err != nil {
-		return protocol.Account{}, err
+		return nil, protocol.Account{}, "", err
 	}
 	for _, a := range accts {
 		if a.AccountID == id {
-			if core.Decide(levels[id], op, false) == core.Deny {
-				return protocol.Account{}, protocol.Invalid(fmt.Sprintf("用户只允许对这个账号%s", levelWords(levels[id])))
+			level := levels[id]
+			if core.Decide(level, op, unattended) == core.Deny {
+				guard, reason := "level_denied", "denied_by_control_level"
+				msg := fmt.Sprintf("用户只允许对这个账号%s", levelWords(level))
+				if unattended && op.Writes() {
+					guard, reason = "unattended_write_denied", "unattended_write"
+					msg = "后台无人值守任务不能对这个账号执行写操作"
+				}
+				space.RecordAudit(core.AuditEntry{
+					AccountID:  a.AccountID,
+					Tool:       toolName,
+					Operation:  op,
+					Level:      level,
+					Unattended: unattended,
+					Verdict:    core.Deny,
+					Guard:      guard,
+					Reason:     reason,
+				})
+				return nil, protocol.Account{}, "", protocol.Invalid(msg)
 			}
-			return a, nil
+			return space, a, level, nil
 		}
 	}
-	return protocol.Account{}, protocol.NotFound("没有这个账号，或用户没有把它交给助手")
+	return nil, protocol.Account{}, "", protocol.NotFound("没有这个账号，或用户没有把它交给助手")
 }
 
 func (t *tools) do(ctx context.Context, p wire.ConnectorDoParams) (wire.ConnectorCallResult, error) {
 	// The checks again: the level may have changed between the card and the user's yes.
+	unattended := isUnattended(p.Track, p.TrackKind)
 	switch p.Name {
 	case toolRepoBind, toolRepoAuthorize:
 		return t.repoDo(ctx, p)
@@ -563,19 +834,53 @@ func (t *tools) do(ctx context.Context, p wire.ConnectorDoParams) (wire.Connecto
 		if err := args(p.Args, &a); err != nil {
 			return wire.ConnectorCallResult{}, err
 		}
-		return t.send(ctx, a.SessionKey, a.Text, p.RequestID, "")
+		return t.sendWithContext(ctx, a.SessionKey, a.Text, p.RequestID, "", unattended, toolSend)
 	case toolStart:
 		var a startArgs
 		if err := args(p.Args, &a); err != nil {
 			return wire.ConnectorCallResult{}, err
 		}
-		acct, err := t.account(ctx, a.AccountID, core.OpStart)
+		space, acct, level, err := t.accountWithSpace(ctx, a.AccountID, core.OpStart, unattended, toolStart)
 		if err != nil {
 			return wire.ConnectorCallResult{}, err
 		}
 		if err := exhausted(acct.Quota, t.club.Now().UnixMilli()); err != nil {
+			space.RecordAudit(core.AuditEntry{
+				AccountID:  acct.AccountID,
+				Tool:       toolStart,
+				Operation:  core.OpStart,
+				Level:      level,
+				Unattended: unattended,
+				Verdict:    core.Deny,
+				Guard:      "quota_exhausted",
+				Reason:     protocol.ReasonQuotaExhausted,
+			})
 			return wire.ConnectorCallResult{}, err
 		}
+		if ok, waitMs := space.RecordBurstWrite("start:"+acct.AccountID, p.RequestID); !ok {
+			space.RecordAudit(core.AuditEntry{
+				AccountID:  acct.AccountID,
+				Tool:       toolStart,
+				Operation:  core.OpStart,
+				Level:      level,
+				Unattended: unattended,
+				Verdict:    core.Deny,
+				Guard:      "burst_rate_limit",
+				Reason:     fmt.Sprintf("retry_after_%dms", waitMs),
+			})
+			return wire.ConnectorCallResult{}, burstRateLimitError(waitMs)
+		}
+		verdict := core.Decide(level, core.OpStart, unattended)
+		space.RecordAudit(core.AuditEntry{
+			AccountID:  acct.AccountID,
+			Tool:       toolStart,
+			Operation:  core.OpStart,
+			Level:      level,
+			Unattended: unattended,
+			Verdict:    verdict,
+			Bypass:     level == core.ControlAuto,
+			Reason:     "start_session",
+		})
 		var res json.RawMessage
 		if err := call(ctx, t.club, protocol.MethodClubSessionsStart, map[string]any{"account_id": a.AccountID,
 			"text": a.Text, "title": a.Title, "client_id": clientID(p.RequestID)}, &res); err != nil {
@@ -591,9 +896,17 @@ func (t *tools) do(ctx context.Context, p wire.ConnectorDoParams) (wire.Connecto
 			if strings.TrimSpace(a.Then) == "" {
 				return wire.ConnectorCallResult{}, protocol.Unsupported("这个 Agent 不能打断")
 			}
-			return t.send(ctx, a.SessionKey, a.Then, p.RequestID, "没有打断成功（这个 Agent 不能打断），新指令排在当前这一轮之后。")
+			return t.sendWithContext(ctx, a.SessionKey, a.Then, p.RequestID, "没有打断成功（这个 Agent 不能打断），新指令排在当前这一轮之后。", unattended, toolInterrupt)
 		}
-		if _, _, _, err := t.session(ctx, a.SessionKey, core.OpInterrupt); err != nil {
+		op := core.OpInterrupt
+		if strings.TrimSpace(a.Then) != "" {
+			op = core.OpSend
+		}
+		space, sess, level, _, _, err := t.sendableWithLease(ctx, a.SessionKey, a.Then, op, unattended, toolInterrupt)
+		if err != nil {
+			return wire.ConnectorCallResult{}, err
+		}
+		if err := t.authorizeAndAuditSessionWrite(ctx, space, sess, level, core.OpInterrupt, unattended, p.RequestID, toolInterrupt); err != nil {
 			return wire.ConnectorCallResult{}, err
 		}
 		if err := call(ctx, t.club, protocol.MethodClubSessionsInterrupt, map[string]any{"session_key": a.SessionKey}, nil); err != nil {
@@ -602,16 +915,138 @@ func (t *tools) do(ctx context.Context, p wire.ConnectorDoParams) (wire.Connecto
 		if strings.TrimSpace(a.Then) == "" {
 			return wire.ConnectorCallResult{Text: "已打断。"}, nil
 		}
-		return t.send(ctx, a.SessionKey, a.Then, p.RequestID, "已打断。")
+		return t.sendAuthorized(ctx, space, sess, a.Then, p.RequestID, "已打断。")
 	}
 	return wire.ConnectorCallResult{}, ext.UnknownMethod(p.Name)
 }
 
+func (t *tools) authorizeAndAuditSessionWrite(ctx context.Context, space *core.Space, sess protocol.Session, level core.Control, op core.Operation, unattended bool, requestID, toolName string) error {
+	// If this requestID was already enqueued in outbox, allow idempotent replay without re-checking unconfirmed or burst guards.
+	if requestID != "" {
+		if existing, ok, err := space.Store().Outbox(ctx, clientID(requestID)); err == nil && ok && existing.SessionKey == sess.SessionKey {
+			return nil
+		}
+	}
+	if row, unconfirmed, err := space.HasUnconfirmedSend(ctx, sess.SessionKey); err != nil {
+		return err
+	} else if unconfirmed {
+		space.RecordAudit(core.AuditEntry{
+			AccountID:  sess.AccountID,
+			SessionKey: sess.SessionKey,
+			Tool:       toolName,
+			Operation:  op,
+			Level:      level,
+			Unattended: unattended,
+			Verdict:    core.Deny,
+			Guard:      "local_unconfirmed",
+			Reason:     row.ClientID,
+		})
+		return unconfirmedSendError()
+	}
+	if ok, waitMs := space.RecordBurstWrite(sess.SessionKey, requestID); !ok {
+		space.RecordAudit(core.AuditEntry{
+			AccountID:  sess.AccountID,
+			SessionKey: sess.SessionKey,
+			Tool:       toolName,
+			Operation:  op,
+			Level:      level,
+			Unattended: unattended,
+			Verdict:    core.Deny,
+			Guard:      "burst_rate_limit",
+			Reason:     fmt.Sprintf("retry_after_%dms", waitMs),
+		})
+		return burstRateLimitError(waitMs)
+	}
+	switch level {
+	case core.ControlFollow:
+		consumed, ok, err := space.ConsumeFollowLease(ctx, sess.SessionKey, unattended, requestID)
+		if err != nil {
+			return err
+		}
+		if ok {
+			space.RecordAudit(core.AuditEntry{
+				AccountID:  sess.AccountID,
+				SessionKey: sess.SessionKey,
+				Tool:       toolName,
+				Operation:  op,
+				Level:      level,
+				Unattended: unattended,
+				Verdict:    core.Allow,
+				LeaseID:    consumed.LeaseID,
+				LeaseUsed:  consumed.UsedTurns,
+				LeaseMax:   consumed.MaxTurns,
+				Reason:     "follow_lease_consumed",
+			})
+			return nil
+		}
+		if unattended {
+			space.RecordAudit(core.AuditEntry{
+				AccountID:  sess.AccountID,
+				SessionKey: sess.SessionKey,
+				Tool:       toolName,
+				Operation:  op,
+				Level:      level,
+				Unattended: true,
+				Verdict:    core.Deny,
+				Guard:      "lease_unavailable_unattended",
+				Reason:     "no_active_background_lease",
+			})
+			return protocol.Invalid("这个会话没有生效中的后台跟进租约（或租约已到期、轮次已用完），后台任务不能发送或打断")
+		}
+		space.RecordAudit(core.AuditEntry{
+			AccountID:  sess.AccountID,
+			SessionKey: sess.SessionKey,
+			Tool:       toolName,
+			Operation:  op,
+			Level:      level,
+			Unattended: false,
+			Verdict:    core.Confirm,
+			Guard:      "follow_fallback_confirm",
+			Reason:     "no_active_lease_confirmed_once",
+		})
+	case core.ControlAuto:
+		space.RecordAudit(core.AuditEntry{
+			AccountID:  sess.AccountID,
+			SessionKey: sess.SessionKey,
+			Tool:       toolName,
+			Operation:  op,
+			Level:      level,
+			Unattended: unattended,
+			Verdict:    core.Allow,
+			Bypass:     true,
+			Reason:     "auto_bypass_allowed",
+		})
+	default:
+		space.RecordAudit(core.AuditEntry{
+			AccountID:  sess.AccountID,
+			SessionKey: sess.SessionKey,
+			Tool:       toolName,
+			Operation:  op,
+			Level:      level,
+			Unattended: unattended,
+			Verdict:    core.Confirm,
+			Reason:     "confirmed_by_owner",
+		})
+	}
+	return nil
+}
+
 func (t *tools) send(ctx context.Context, key, text, requestID, before string) (wire.ConnectorCallResult, error) {
-	space, sess, _, err := t.sendable(ctx, key, text, core.OpSend)
+	return t.sendWithContext(ctx, key, text, requestID, before, false, toolSend)
+}
+
+func (t *tools) sendWithContext(ctx context.Context, key, text, requestID, before string, unattended bool, toolName string) (wire.ConnectorCallResult, error) {
+	space, sess, level, _, _, err := t.sendableWithLease(ctx, key, text, core.OpSend, unattended, toolName)
 	if err != nil {
 		return wire.ConnectorCallResult{}, err
 	}
+	if err := t.authorizeAndAuditSessionWrite(ctx, space, sess, level, core.OpSend, unattended, requestID, toolName); err != nil {
+		return wire.ConnectorCallResult{}, err
+	}
+	return t.sendAuthorized(ctx, space, sess, text, requestID, before)
+}
+
+func (t *tools) sendAuthorized(ctx context.Context, space *core.Space, sess protocol.Session, text, requestID, before string) (wire.ConnectorCallResult, error) {
 	msg, err := space.Send(ctx, protocol.SendParams{SessionKey: sess.SessionKey, ClientID: clientID(requestID), Text: text})
 	if err != nil {
 		return wire.ConnectorCallResult{}, err
