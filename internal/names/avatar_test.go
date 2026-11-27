@@ -6,12 +6,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
 
-// productHosts are the sites each provider's code talks to (its API, sign-in or the page it drives), which is where
-// its product's icon may come from; a provider missing here may have no icon.
+// productHosts are the hosts each product's icon may come from: the site the provider's code talks to (its API,
+// sign-in or the page it drives), its maker's branding path, the App Store's image server for its own app, or the
+// image CDN of its own page; a provider missing here may have no icon.
 var productHosts = map[string][]string{
 	"claude_duet":  {"is1-ssl.mzstatic.com"},                 // the App Store artwork of its own app, com.anthropic.aibo
 	"muse":         {"muse.ai"},                              // browser.SiteMuse: https://muse.ai/
@@ -23,7 +25,7 @@ var productHosts = map[string][]string{
 }
 
 // Every service's avatar is, in order: its own picture when it has one (https, or an image data URL), else its
-// product's official icon (https, on the product's own site), else its tile and letters. The letters are always
+// product's official icon (https, from one of the product's own hosts), else its tile and letters. The letters are always
 // there for while a picture loads and when it fails.
 func TestAvatarOrderPerService(t *testing.T) {
 	own := map[string]bool{"https://images.example.com/bot.png": true, "data:image/png;base64,iVBORw0KGgo=": true,
@@ -64,12 +66,21 @@ func TestAvatarOrderPerService(t *testing.T) {
 			ok = ok || u.Hostname() == h || strings.HasSuffix(u.Hostname(), "."+h)
 		}
 		if !ok {
-			t.Errorf("%s: icon %q is not on the product's own site %v", p, icon, productHosts[p])
+			t.Errorf("%s: icon %q is not on one of the product's own hosts %v", p, icon, productHosts[p])
 		}
 		if ext := strings.ToLower(filepath.Ext(u.Path)); ext != ".png" && ext != ".ico" {
 			t.Errorf("%s: icon %q is not a PNG or ICO", p, icon)
 		}
 	}
+}
+
+// imageQueryValues are the only parameters an icon's query may have, each once, and the values each may take.
+var imageQueryValues = map[string]*regexp.Regexp{
+	"w":   regexp.MustCompile(`^[0-9]{1,4}$`),
+	"h":   regexp.MustCompile(`^[0-9]{1,4}$`),
+	"fit": regexp.MustCompile(`^(pad|fill|scale|crop|thumb)$`),
+	"bg":  regexp.MustCompile(`^rgb:[0-9a-f]{6}$`),
+	"fm":  regexp.MustCompile(`^(png|jpg|webp)$`),
 }
 
 // imageQuery says whether an icon's query is only an image server's fixed size, fit, ground and format (empty for
@@ -79,10 +90,9 @@ func imageQuery(q string) bool {
 	if err != nil {
 		return false
 	}
-	for k := range v {
-		switch k {
-		case "w", "h", "fit", "bg", "fm":
-		default:
+	for k, vs := range v {
+		re, ok := imageQueryValues[k]
+		if !ok || len(vs) != 1 || !re.MatchString(vs[0]) {
 			return false
 		}
 	}
@@ -107,10 +117,14 @@ func TestDuetAndDotsAreTheirOwn(t *testing.T) {
 		t.Errorf("ChatGPT dots' icon is not its own dot, padded on a ground: %s", Icon("dots"))
 	}
 	for _, p := range []string{"claude_duet", "dots"} {
-		h := strings.ToLower(Icon(p))
-		if strings.Contains(h, "claude.ai") || strings.Contains(h, "chatgpt.com") || strings.Contains(h, "openai.com") ||
-			strings.Contains(h, "favicon") || strings.Contains(h, "apple-touch-icon") {
-			t.Errorf("%s: icon %s is its maker's", p, Icon(p))
+		u, err := url.Parse(Icon(p))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, maker := range []string{"claude.ai", "claude.com", "anthropic.com", "chatgpt.com", "openai.com"} {
+			if h := strings.ToLower(u.Hostname()); h == maker || strings.HasSuffix(h, "."+maker) {
+				t.Errorf("%s: icon %s is its maker's", p, Icon(p))
+			}
 		}
 	}
 }
