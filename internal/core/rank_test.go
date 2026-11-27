@@ -2,7 +2,10 @@ package core
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,11 +29,20 @@ func (p *timeless) ListSessions(context.Context, string) ([]provider.RemoteSessi
 	p.clk.mu.Lock()
 	now := p.clk.t.UnixMilli()
 	p.clk.mu.Unlock()
-	return []provider.RemoteSession{
+	out := []provider.RemoteSession{
 		{ExternalID: "main", Title: "Muse", Kind: protocol.KindMain, CanSend: true},
 		{ExternalID: "side", Title: "旁聊", Kind: protocol.KindSide, ParentExternalID: "main", CanSend: true,
 			LastActivityMs: now, ActivityApprox: true},
-	}, nil
+		// A chat the list gives no time either, with only the agent's greeting: none of it is unread when found.
+		{ExternalID: "greet", Title: "Hello", Kind: protocol.KindSide, ParentExternalID: "main", CanSend: true},
+	}
+	// Enough side chats dated "今天" (read as now, so always due) to fill a sync's 20 reads: the main chat, which no
+	// date tells changed, must still be read at every sync.
+	for i := range 20 {
+		out = append(out, provider.RemoteSession{ExternalID: fmt.Sprintf("today-%02d", i), Title: "今天", Kind: protocol.KindSide,
+			ParentExternalID: "main", CanSend: true, LastActivityMs: now, ActivityApprox: true})
+	}
+	return out, nil
 }
 func (p *timeless) ListMessages(_ context.Context, _ string, ref provider.SessionRef, _ provider.ListOptions) (provider.RemotePage, error) {
 	p.mu.Lock()
@@ -45,11 +57,11 @@ func (p *timeless) add(session string, m provider.RemoteMessage) {
 
 // say is a message as a site's page gives it: in page order (Position), with no time (at 0) or its own.
 func say(id, role, text string, at int64) provider.RemoteMessage {
-	pos++
-	return provider.RemoteMessage{ExternalID: id, Role: role, Blocks: []protocol.Block{protocol.TextBlock(text)}, CreateTimeMs: at, Position: pos}
+	return provider.RemoteMessage{ExternalID: id, Role: role, Blocks: []protocol.Block{protocol.TextBlock(text)}, CreateTimeMs: at,
+		Position: sayPos.Add(1)}
 }
 
-var pos int64
+var sayPos atomic.Int64
 
 // Syncing a site that gives no times, round after round with nothing new, leaves every conversation where it was in
 // Persona's Messages page: its rankTimeMs, preview and unread count do not move (the main chat was stamped with the
@@ -58,8 +70,9 @@ var pos int64
 func TestIdleSyncsKeepRankAndNewMessagesMoveIt(t *testing.T) {
 	clk := &clock{t: time.UnixMilli(1_800_000_000_000)}
 	p := &timeless{fake: newFake(), clk: clk, msgs: map[string][]provider.RemoteMessage{
-		"main": {say("u1", protocol.RoleUser, "ping", 0), say("a1", protocol.RoleAssistant, "pong", 0)},
-		"side": {say("s1", protocol.RoleAssistant, "旁聊回复", 0)},
+		"main":  {say("u1", protocol.RoleUser, "ping", 0), say("a1", protocol.RoleAssistant, "pong", 0)},
+		"side":  {say("s1", protocol.RoleAssistant, "旁聊回复", 0)},
+		"greet": {say("g1", protocol.RoleAssistant, "你好，我是 Muse", 0), say("g2", protocol.RoleAssistant, "有什么可以帮你？", 0)},
 	}}
 	club := New(Options{Version: "test", Registry: provider.NewRegistry(p), Now: clk.Now, FollowUps: []time.Duration{}, WatchLimit: -1})
 	t.Cleanup(club.Close)
@@ -100,9 +113,14 @@ func TestIdleSyncsKeepRankAndNewMessagesMoveIt(t *testing.T) {
 		clk.t = clk.t.Add(d)
 		return clk.t.UnixMilli()
 	}
+	// 23 chats, 20 reads a sync: two rounds read them all.
+	space.SyncAll(ctx)
 	space.SyncAll(ctx)
 	first := list()
-	if len(first) != 2 || first[mainKey].PreviewText != "pong" || first[mainKey].PreviewIsMine || first[sideKey].PreviewText != "旁聊回复" {
+	if g := first[SessionKey("muse", acct.AccountID, "greet")]; g.UnreadCount != 0 || g.PreviewText != "有什么可以帮你？" {
+		t.Fatalf("a chat found with only the agent's messages counts them unread: %+v", g)
+	}
+	if len(first) != 23 || first[mainKey].PreviewText != "pong" || first[mainKey].PreviewIsMine || first[sideKey].PreviewText != "旁聊回复" {
 		t.Fatalf("first sync: %+v", first)
 	}
 	for _, s := range first {
@@ -126,7 +144,7 @@ func TestIdleSyncsKeepRankAndNewMessagesMoveIt(t *testing.T) {
 				t.Fatalf("round %d: idle %s moved: %+v, was %+v", round, k, got, was)
 			}
 		}
-		if o := order(); o[0] != firstOrder[0] || o[1] != firstOrder[1] {
+		if o := order(); !slices.Equal(o, firstOrder) {
 			t.Fatalf("round %d: order %v, was %v", round, o, firstOrder)
 		}
 	}
