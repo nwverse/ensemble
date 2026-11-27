@@ -149,8 +149,13 @@ const __duetMain = async () => {
     if (m && !ids.includes(m[1])) ids.push(m[1]);
   }
   for (const id of ids) {
-    const c = await __api("/v1/code/channels/" + encodeURIComponent(id));
-    if (c && c.channel && c.channel.template === "aibo") return id;
+    try {
+      const c = await __api("/v1/code/channels/" + encodeURIComponent(id));
+      if (c && c.channel && c.channel.template === "aibo") return id;
+    } catch (e) {
+      // A channel that does not answer is not the main one; a refused page is signed out.
+      if (String(e.message) === "auth") throw e;
+    }
   }
   return "";
 };
@@ -420,5 +425,9 @@ return found ? (found.error ? { clicked, error: found.error } : { sent: true, cl
 		ID    string `json:"id"`
 	}
 	err := a.runSend(ctx, credential, script, &r)
+	if err == nil && r.Error == "no thread" {
+		// The main chat's channel was not found: refused before anything was typed.
+		return provider.SendResult{}, dotsError(r.Error)
+	}
 	return sendOutcome(err, r.Error, r.Sent, r.ID)
 }

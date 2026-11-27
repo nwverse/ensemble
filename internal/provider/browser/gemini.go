@@ -456,24 +456,29 @@ func (geminiSite) send(ctx context.Context, a *Adapter, credential string, sessi
 //  5. A new main conversation's id is kept as the main chat's. The send then waits for the answer to be written
 //     (geminiAnswerWaitMs) and, once it is, reads the turn back from Gemini's own record to name it.
 func geminiSendScript(id, text string) string {
-	args, _ := json.Marshal(map[string]any{"text": text, "id": id, "answerWaitMs": geminiAnswerWaitMs})
+	args, _ := json.Marshal(map[string]any{"text": text, "id": id, "answerWaitMs": geminiAnswerWaitMs,
+		"budgetMs": int((geminiSendTimeout - 10*time.Second) / time.Millisecond)})
 	return fmt.Sprintf(`
 const ARGS0 = %s;
 const MAIN_KEY = %q, SEL = %q, SEND = %q, STOP = %q, QUERY = %q, QUERY_TEXT = %q, CHAT_MODE = %q;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Every wait is held to what is left of the run (ARGS0.budgetMs from its start), so it ends with an answer.
+const T0 = Date.now();
+const left = () => Math.max(0, ARGS0.budgetMs - (Date.now() - T0));
 const norm = t => String(t || "").replace(/\s+/g, " ").trim();
 const onGemini = async () => /^https:\/\/gemini\.google\.com\//.test(String(await Promise.resolve().then(() => page.url()).catch(() => "")));
 const busy = () => page.evaluate((stop) => !!document.querySelector(stop), STOP).catch(() => false);
 const waitIdle = async (ms) => {
-  const end = Date.now() + ms;
+  const end = Date.now() + Math.min(ms, left());
   while (await busy()) {
     if (Date.now() >= end) return false;
     await sleep(1000);
   }
   return true;
 };
-// 1. Not under an answer being written in this tab.
-if (await onGemini()) await waitIdle(30000);
+// 1. Not under an answer being written in this tab: still writing after the wait, the page is not left (that
+// would lose the turn it answers) and the send is refused.
+if ((await onGemini()) && !(await waitIdle(30000))) return { error: "busy" };
 // 2. The conversation.
 let target = ARGS0.id === "main" ? "" : ARGS0.id;
 if (ARGS0.id === "main") {
@@ -484,8 +489,11 @@ if (ARGS0.id === "main") {
   target = await page.evaluate((k) => { try { return String(localStorage.getItem(k) || ""); } catch (e) { return ""; } }, MAIN_KEY).catch(() => "");
 }
 const fresh = !target;
-await page.goto("https://gemini.google.com/app" + (target ? "/" + target : ""));
-await page.waitForLoadState("domcontentloaded").catch(() => {});
+const here = String(await Promise.resolve().then(() => page.url()).catch(() => "")).replace(/[?#].*$/, "");
+if (fresh || here !== "https://gemini.google.com/app/" + target) {
+  await page.goto("https://gemini.google.com/app" + (target ? "/" + target : ""));
+  await page.waitForLoadState("domcontentloaded").catch(() => {});
+}
 const signedIn = await page.evaluate(() => {
 %s
   return __humanCheck() ? "human check" :
@@ -507,7 +515,7 @@ const look = () => page.evaluate(([sel, query, queryText]) => {
 await page.waitForSelector("loc=css:" + SEL, { state: "visible", timeout: 15000 });
 let before = await look();
 if (!fresh) {
-  for (let i = 0; i < 15 && before.turns === 0; i++) {
+  for (let i = 0; i < 15 && before.turns === 0 && left() > 0; i++) {
     await sleep(1000);
     before = await look();
   }
@@ -532,7 +540,7 @@ if (!(await waitIdle(20000))) return { error: "busy" };
 // settle, empty it, type, and send only when it holds exactly this text.
 const settle = async () => {
   let prev = null;
-  for (let i = 0, same = 0; i < 12 && same < 2; i++) {
+  for (let i = 0, same = 0; i < 12 && same < 2 && left() > 0; i++) {
     const d = (await look()).draft;
     same = d === prev ? same + 1 : 0;
     prev = d;
@@ -567,11 +575,12 @@ if (!ready) {
   return { error: "not sent" };
 }
 const want = norm(ARGS0.text);
-const went = (now) => (now.turns > before.turns || (isNew && now.turns > 0)) && norm(now.last).includes(want);
+before = { ...(await look()), fresh: before.fresh };
+const went = (now) => (now.turns > before.turns || (isNew && now.turns > 0)) && norm(now.last) === want;
 const clicked = await page.click("loc=css:" + SEND, { timeout: 3000 }).then(() => true).catch(() => false);
 if (!clicked) await page.press("loc=css:" + SEL, "Enter");
 let now = before, pressed = !clicked;
-for (let i = 0; i < 20; i++) {
+for (let i = 0; i < 20 && left() > 0; i++) {
   await sleep(1000);
   now = await look();
   if (went(now)) break;
@@ -588,9 +597,20 @@ if (!went(now)) {
   }
   return { sent: false, clicked };
 }
-// 5. Sent: wait for the answer, then name the turn (and keep a new main conversation's id: the page shows its address
-// only once Gemini made the conversation).
-const answered = await waitIdle(ARGS0.answerWaitMs);
+// 5. Sent. A new main conversation's id is kept as soon as the page shows its address, before the answer is waited
+// for, so a run cut short still keeps it.
+const pathID = async () => ((await look()).path.match(/\/app\/([0-9a-f]{8,})/) || [])[1] || "";
+let kept = "";
+if (isNew && ARGS0.id === "main") {
+  for (let i = 0; i < 10 && !kept && left() > 0; i++) {
+    kept = await pathID();
+    if (!kept) await sleep(500);
+  }
+  if (kept) await page.evaluate(([k, v]) => { try { localStorage.setItem(k, v); } catch (e) {} }, [MAIN_KEY, kept]).catch(() => {});
+}
+// Then the answer is waited for (leaving the page before it is written loses the turn), and the turn named from
+// Gemini's record.
+const answered = await waitIdle(Math.min(ARGS0.answerWaitMs, left() - 8000));
 const found = await page.evaluate(async ([want, path, fresh]) => {
 %s
   const n = t => String(t || "").replace(/\s+/g, " ").trim();
@@ -612,7 +632,7 @@ const found = await page.evaluate(async ([want, path, fresh]) => {
   return { conv: "", turn: "" };
 }, [want, "", isNew]).catch(() => ({ conv: "", turn: "" }));
 const conv = found.conv, turn = found.turn;
-if (isNew && ARGS0.id === "main" && conv) {
+if (isNew && ARGS0.id === "main" && conv && conv !== kept) {
   await page.evaluate(([k, v]) => { try { localStorage.setItem(k, v); } catch (e) {} }, [MAIN_KEY, conv]).catch(() => {});
 }
 return { sent: true, clicked, answered, id: turn, conversation: conv };

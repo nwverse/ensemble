@@ -172,6 +172,11 @@ func TestClaudeDuetSite(t *testing.T) {
 		!strings.Contains(d.gotReqs[len(d.gotReqs)-1].Script, "__duetMain()") {
 		t.Fatalf("main without its channel: %v", err)
 	}
+	// No main channel found on the page: refused, not left unconfirmed (nothing was typed).
+	none := siteDriver(t, map[string]any{"since: startedAt": map[string]any{"error": "no thread"}})
+	if _, err := New(SiteClaudeDuet, none).Send(ctx, cred, provider.SessionRef{ExternalID: "main"}, provider.Outgoing{Text: "hi"}, provider.SendContext{}); provider.CodeOf(err) != provider.CodeNotFound {
+		t.Fatalf("main without a channel: %v", err)
+	}
 	// A session that is neither the main chat nor a channel is not found.
 	if _, err := a.ListMessages(ctx, cred, provider.SessionRef{ExternalID: "other"}, provider.ListOptions{}); provider.CodeOf(err) != provider.CodeNotFound {
 		t.Fatalf("ListMessages on another session: %v", err)
@@ -286,9 +291,9 @@ globalThis.performance = { getEntriesByType: () => [
 ` + duetPrelude + `
 return { main: await __duetMain() };
 `
+	// chan_other does not answer (404): it is not the main chat, and the lookup goes on.
 	r := runTabScript(t, script, "https://claude.ai/duet", "complete", map[string]string{
-		"/v1/code/channels/chan_aibo":  `{"channel":{"id":"chan_aibo","template":"aibo","name":"Aibo"}}`,
-		"/v1/code/channels/chan_other": `{"channel":{"id":"chan_other","template":""}}`,
+		"/v1/code/channels/chan_aibo": `{"channel":{"id":"chan_aibo","template":"aibo","name":"Aibo"}}`,
 	})
 	if string(r.Value) != `{"main":"chan_aibo"}` {
 		t.Fatalf("main = %s", r.Value)

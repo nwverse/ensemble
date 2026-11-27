@@ -256,3 +256,35 @@ func TestGeminiReadsKeepAPageWritingAnAnswer(t *testing.T) {
 		t.Fatalf("an idle page after a failed read is loaded again: %+v", r)
 	}
 }
+
+// A page still writing an answer after the wait is not left: the send is refused before it opens its conversation.
+func TestGeminiSendDoesNotLeaveAPageStillWritingAnAnswer(t *testing.T) {
+	r := runGeminiScript(t, geminiSendScript("79c7d8b1b42ae8ad", "hi"), geminiPage{Href: "https://gemini.google.com/app/other", Turns: []string{"a"}, BusyLooks: 1000, ClickTakes: true})
+	if r.Value["error"] != "busy" || r.called("goto") != 0 || r.called("type") != 0 {
+		t.Fatalf("%+v", r)
+	}
+	// Already on the conversation: it is not loaded again.
+	r = runGeminiScript(t, geminiSendScript("79c7d8b1b42ae8ad", "hi"), geminiPage{Href: geminiConv, Turns: []string{"a"}, ClickTakes: true, Record: "r_1"})
+	if r.Value["sent"] != true || r.called("goto") != 0 {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// A newest turn that only contains the text (a click not taken, an earlier "hi there") is not taken for it.
+func TestGeminiSendWantsTheExactTurn(t *testing.T) {
+	r := runGeminiScript(t, geminiSendScript("79c7d8b1b42ae8ad", "hi"), geminiPage{Href: geminiConv, Turns: []string{"hi there"}, EnterTakes: false})
+	if r.Value["error"] != "not sent" {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// The main chat's new conversation is kept before the answer is waited for: a run that ends while Gemini still
+// answers (the wait over) still keeps it, and reports the message sent.
+func TestGeminiSendKeepsMainBeforeTheAnswer(t *testing.T) {
+	r := runGeminiScript(t, geminiSendScript("main", "hello"), geminiPage{
+		Href: "https://gemini.google.com/app", ClickTakes: true, AnswerLooks: 100000, NewID: "fda91e50c7161da9",
+	})
+	if r.Value["sent"] != true || r.Value["answered"] != false || r.Storage[geminiMainKey] != "fda91e50c7161da9" {
+		t.Fatalf("%+v", r)
+	}
+}
