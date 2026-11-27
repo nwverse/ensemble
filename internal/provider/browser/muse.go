@@ -495,3 +495,217 @@ func museActivityMs(label string, now time.Time) int64 {
 	}
 	return 0
 }
+
+var (
+	museUsedPctRe = regexp.MustCompile(`(?i)(?:已使用\s*([0-9]+(?:\.[0-9]+)?)\s*%|([0-9]+(?:\.[0-9]+)?)\s*%\s*used)`)
+	museResetCNRe = regexp.MustCompile(`重置时间[：:]\s*([0-9]{1,2})月([0-9]{1,2})日`)
+	museResetENRe = regexp.MustCompile(`(?i)resets?(?:\s+on)?\s+([A-Za-z]{3,9}\s+[0-9]{1,2})`)
+)
+
+// readQuota reads Muse's real weekly usage and extra credit allowance from Settings -> General -> Usage on muse.ai,
+// intercepting the Next.js server action payload (with exact percentUsed, resetsAt, quotaStatus, topupBalance/Total)
+// and falling back to the rendered dialog text when React serves cached state. Always closes the dialog before returning.
+func (museSite) readQuota(ctx context.Context, a *Adapter, credential string) ([]provider.QuotaReading, error) {
+	script := siteScript(a.site.AppURL, `^https://muse\.ai/`, nil, fmt.Sprintf(`
+await page.waitForFunction(() => %s, undefined, { timeout: 6000 }).catch(() => {});
+const signedIn = await page.evaluate(() => {
+%s
+  return { ok: %s, err: %s };
+});
+if (!signedIn.ok) return { error: signedIn.err };
+await page.evaluate(() => {
+  if (!window.__pacOrigFetch) {
+    window.__pacOrigFetch = window.fetch;
+    window.__pacSub = null;
+    window.fetch = async function(...args) {
+      const res = await window.__pacOrigFetch.apply(this, args);
+      try {
+        const reqBody = args[1] && typeof args[1].body === "string" ? args[1].body : "";
+        if (reqBody.includes("includeAgreement")) {
+          const text = await res.clone().text().catch(() => "");
+          for (const line of text.split("\n")) {
+            const idx = line.indexOf("{");
+            if (idx < 0) continue;
+            try {
+              const obj = JSON.parse(line.slice(idx));
+              if (obj && obj.subscription) { window.__pacSub = obj.subscription; break; }
+            } catch (e) {}
+          }
+        }
+      } catch (e) {}
+      return res;
+    };
+  } else {
+    window.__pacSub = null;
+  }
+});
+let out = { unavailable: true };
+try {
+  const btnSel = 'loc=css:button[aria-label="设置"], button[aria-label="Settings" i]';
+  await page.waitForSelector(btnSel, { state: "visible", timeout: 4000 }).catch(() => {});
+  await page.click(btnSel).catch(() => {});
+  await new Promise(r => setTimeout(r, 400));
+  await page.evaluate(() => {
+    const match = (el) => {
+      const t = (el.innerText || "").trim();
+      return t.startsWith("设置") || /^Settings(?:\s|$)/i.test(t);
+    };
+    const primary = [...document.querySelectorAll('[role="menu"] [role="menuitem"], [role="menu"] button')];
+    let hit = primary.find(match);
+    if (!hit) {
+      const leaves = [...document.querySelectorAll('[role="menu"] div')].filter(el => el.children.length === 0);
+      hit = leaves.find(match);
+    }
+    if (hit) hit.click();
+  });
+  await page.waitForFunction(() => {
+    if (window.__pacSub) return true;
+    const d = document.querySelector('[role="dialog"]');
+    return !!(d && /已使用\s*\d|%%\s*used/i.test(d.innerText || ""));
+  }, undefined, { timeout: 6000 }).catch(() => {});
+  out = await page.evaluate(() => {
+    const sub = window.__pacSub;
+    const d = document.querySelector('[role="dialog"]');
+    const text = d ? String(d.innerText || "").slice(0, 2000) : "";
+    if (sub && sub.usage) {
+      return {
+        source: "action",
+        percentUsed: typeof sub.usage.percentUsed === "number" ? sub.usage.percentUsed : null,
+        resetsAt: typeof sub.usage.resetsAt === "number" ? sub.usage.resetsAt : 0,
+        quotaStatus: String(sub.usage.quotaStatus || ""),
+        topupBalance: typeof sub.topupBalance === "number" ? sub.topupBalance : 0,
+        topupTotal: typeof sub.topupTotal === "number" ? sub.topupTotal : 0,
+      };
+    }
+    if (text) return { source: "dom", text };
+    return { unavailable: true };
+  });
+} finally {
+  await page.keyboard.press("Escape").catch(() => {});
+  await new Promise(r => setTimeout(r, 150));
+  await page.keyboard.press("Escape").catch(() => {});
+}
+return out;
+`, museSignedInJS, challengeJS, museSignedInJS, museSignedOutJS))
+
+	var r struct {
+		Error        string   `json:"error"`
+		Unavailable  bool     `json:"unavailable"`
+		Source       string   `json:"source"`
+		PercentUsed  *float64 `json:"percentUsed"`
+		ResetsAt     float64  `json:"resetsAt"`
+		QuotaStatus  string   `json:"quotaStatus"`
+		TopupBalance float64  `json:"topupBalance"`
+		TopupTotal   float64  `json:"topupTotal"`
+		Text         string   `json:"text"`
+	}
+	if err := a.run(ctx, credential, script, &r); err != nil {
+		return nil, nil
+	}
+	if r.Error == "http 429" {
+		return nil, dotsError(r.Error)
+	}
+	if r.Error != "" || r.Unavailable {
+		return nil, nil
+	}
+	return parseMuseQuota(r.Source, r.PercentUsed, r.ResetsAt, r.QuotaStatus, r.TopupBalance, r.TopupTotal, r.Text, time.Now()), nil
+}
+
+func parseMuseQuota(source string, pctUsed *float64, resetsAt float64, quotaStatus string, topupBal, topupTotal float64, domText string, now time.Time) []provider.QuotaReading {
+	var used float64
+	hasUsed := false
+	var resetMs int64
+	if source == "action" && pctUsed != nil {
+		used = *pctUsed
+		hasUsed = true
+		if resetsAt >= 1e11 {
+			resetMs = int64(resetsAt)
+		} else if resetsAt > 0 {
+			resetMs = int64(resetsAt * 1000)
+		}
+	} else if domText != "" {
+		if m := museUsedPctRe.FindStringSubmatch(domText); m != nil {
+			raw := m[1]
+			if raw == "" {
+				raw = m[2]
+			}
+			if v, err := strconv.ParseFloat(raw, 64); err == nil {
+				used = v
+				hasUsed = true
+			}
+		}
+		if m := museResetCNRe.FindStringSubmatch(domText); m != nil {
+			mo, _ := strconv.Atoi(m[1])
+			d, _ := strconv.Atoi(m[2])
+			resetMs = nextMonthDayMs(now, time.Month(mo), d)
+		} else if m := museResetENRe.FindStringSubmatch(domText); m != nil {
+			for _, layout := range []string{"Jan 2", "January 2"} {
+				if t, err := time.Parse(layout, strings.TrimSpace(m[1])); err == nil {
+					resetMs = nextMonthDayMs(now, t.Month(), t.Day())
+					break
+				}
+			}
+		}
+	}
+	if !hasUsed && topupTotal <= 0 {
+		return nil
+	}
+	if used < 0 {
+		used = 0
+	}
+	if used > 100 {
+		used = 100
+	}
+	statusUpper := strings.ToUpper(strings.TrimSpace(quotaStatus))
+	statusExhausted := statusUpper == "EXHAUSTED" || statusUpper == "DEPLETED" || statusUpper == "EXCEEDED" || statusUpper == "LIMITED"
+	hasExtraCredit := topupTotal > 0 && topupBal > 0
+
+	var out []provider.QuotaReading
+	if hasUsed {
+		rem := 100 - used
+		exhausted := (statusExhausted || rem <= 0) && !hasExtraCredit
+		// When weekly allowance is 100% used but non-expiring extra credits remain, omit the 0% weekly bucket so
+		// core does not falsely block sends while extra credits are still available.
+		if rem > 0 || !hasExtraCredit {
+			out = append(out, provider.QuotaReading{
+				Kind:       protocol.QuotaKindWindow,
+				Window:     "week",
+				Limit:      100,
+				Remaining:  rem,
+				ResetsAt:   resetMs,
+				Exhausted:  exhausted,
+				SourceNote: "muse:settings/usage",
+			})
+		}
+	}
+	if hasExtraCredit {
+		rem := topupBal
+		if rem > topupTotal {
+			rem = topupTotal
+		}
+		out = append(out, provider.QuotaReading{
+			Kind:       protocol.QuotaKindCredits,
+			Limit:      topupTotal,
+			Remaining:  rem,
+			SourceNote: "muse:settings/usage",
+		})
+	}
+	return out
+}
+
+func nextMonthDayMs(now time.Time, mo time.Month, day int) int64 {
+	if mo < 1 || mo > 12 || day < 1 || day > 31 {
+		return 0
+	}
+	t := time.Date(now.Year(), mo, day, 23, 59, 59, 0, now.Location())
+	if t.Month() != mo || t.Day() != day {
+		return 0
+	}
+	if !t.After(now) {
+		t = time.Date(now.Year()+1, mo, day, 23, 59, 59, 0, now.Location())
+		if t.Month() != mo || t.Day() != day {
+			return 0
+		}
+	}
+	return t.UnixMilli()
+}

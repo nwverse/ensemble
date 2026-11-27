@@ -346,6 +346,10 @@ func quotaSourceLabel(l lang, prov string, q *protocol.Quota) string {
 		return l.t("真实数据 · Claude 网页端用量", "Real data · Claude web usage")
 	case "dots:wham/usage":
 		return l.t("真实数据 · ChatGPT 网页端用量", "Real data · ChatGPT web usage")
+	case "muse:settings/usage":
+		return l.t("真实数据 · Muse 网页端用量", "Real data · Muse web usage")
+	case "gemini:usage":
+		return l.t("真实数据 · Gemini 网页端用量", "Real data · Gemini web usage")
 	case "groq:headers":
 		return l.t("真实数据 · Groq 实时额度反馈", "Real data · Groq live allowance")
 	case "cue:headers":
@@ -359,7 +363,7 @@ func quotaSourceLabel(l lang, prov string, q *protocol.Quota) string {
 
 func quotaEstimateSourceShort(l lang, prov string) string {
 	switch prov {
-	case grokBot, "claude_duet", "dots", groq.Name:
+	case grokBot, "claude_duet", "dots", providerMuse, "gemini_tasks", groq.Name:
 		return l.t("等待读取真实额度（暂按本地记录估算）", "Waiting for first real allowance reading (local estimate meanwhile)")
 	default:
 		return l.t("本地发送记录估算（服务未公开实时额度）", "Local send-count estimate (service does not expose real-time allowance)")
@@ -369,11 +373,11 @@ func quotaEstimateSourceShort(l lang, prov string) string {
 func quotaEstimateMethod(l lang, prov string) string {
 	switch prov {
 	case providerMuse:
-		return l.t("Muse 网页端采用加密长连接，未提供实时剩余额度查询（侧栏「云电脑」页面只是静态快照）。这里按本机记录的 5 小时/24 小时发送条数估算；如果触发限流，会自动切为真实限流状态并显示恢复时间。",
-			"Muse web uses an encrypted stream and provides no real-time allowance view (its cloud computer page is a static snapshot). Estimated from local 5h/24h sends; switches to live cooldown if rate limited.")
+		return l.t("支持从已登录的 muse.ai 设置页「使用情况」读取每周实时用量、重置时间与额外额度；点上面的「立即同步」即可拉取，拉取前先展示本地发送计数。",
+			"Supports live weekly usage, reset time, and extra credits from signed-in muse.ai Settings › Usage; tap Sync now above to fetch.")
 	case "gemini_tasks":
-		return l.t("Gemini 网页端不返回具体剩余次数，这里按本机记录的 5 小时/24 小时发送条数估算；触发限流时会自动显示恢复时间。",
-			"Gemini web does not report numeric remaining allowance. Estimated from local 5h/24h sends; switches to live cooldown if rate limited.")
+		return l.t("支持从已登录的 gemini.google.com/usage 读取当前与每周实时用量和重置时间；点上面的「立即同步」即可拉取，拉取前先展示本地发送计数。",
+			"Supports live current and weekly usage with reset times from signed-in gemini.google.com/usage; tap Sync now above to fetch.")
 	case cue.Name:
 		return l.t("Manus 未提供余额查询；这里按本机记录的 5 小时/24 小时发送条数估算，收到对方限流提示时会自动显示真实额度。",
 			"Manus offers no balance query; estimated from local 5h/24h sends, upgrading automatically when live rate-limit data arrives.")
@@ -384,8 +388,8 @@ func quotaEstimateMethod(l lang, prov string) string {
 		return l.t("支持读取 Grok Bot 官方实时用量和重置时间；点上面的「立即同步」即可拉取最新额度，拉取前先展示本地发送计数。",
 			"Supports live Grok Bot usage and reset time; tap Sync now above to fetch the latest reading.")
 	case "claude_duet":
-		return l.t("支持从已登录的 claude.ai 读取 5 小时与每周实时额度；点上面的「立即同步」即可拉取，拉取前先展示本地发送计数。",
-			"Supports live 5-hour and weekly usage from signed-in claude.ai; tap Sync now above to fetch.")
+		return l.t("支持从已登录的 claude.ai 读取 5 小时、每周与 Duet 专属实时额度；点上面的「立即同步」即可拉取，拉取前先展示本地发送计数。",
+			"Supports live 5-hour, weekly, and Duet credit usage from signed-in claude.ai; tap Sync now above to fetch.")
 	case "dots":
 		return l.t("支持从已登录的 chatgpt.com 读取当前时段实时额度；点上面的「立即同步」即可拉取，拉取前先展示本地发送计数。",
 			"Supports live rate-limit windows from signed-in chatgpt.com; tap Sync now above to fetch.")

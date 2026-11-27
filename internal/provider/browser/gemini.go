@@ -639,3 +639,132 @@ return { sent: true, clicked, answered, id: turn, conversation: conv };
 `, args, geminiMainKey, geminiComposerSel, geminiSendSel, geminiStopSel, geminiQuerySel, geminiQueryTextSel, geminiChatModeSel,
 		geminiHumanCheckJS, geminiPrelude)
 }
+
+// readQuota reads Gemini's real usage windows (Current usage + Weekly limit and their reset times) from
+// https://gemini.google.com/usage?hl=en inside an isolated temporary page (task.newPage) so the active Gemini chat
+// tab is never navigated away or disturbed while answering.
+func (geminiSite) readQuota(ctx context.Context, a *Adapter, credential string) ([]provider.QuotaReading, error) {
+	script := fmt.Sprintf(`
+if (typeof task === "undefined" || !task || typeof task.newPage !== "function") {
+  return { unavailable: true };
+}
+const __busy = async () => page.evaluate((stop) => location.hostname === "gemini.google.com" && !!document.querySelector(stop), %q).catch(() => false);
+const qp = await task.newPage();
+let out = { unavailable: true };
+try {
+  await qp.goto("https://gemini.google.com/usage?hl=en");
+  await qp.waitForFunction(() => {
+    const el = document.querySelector("main") || document.body;
+    const t = (el && el.innerText) || "";
+    return /%%\s*used|已使用\s*\d|Usage limits|用量限额/i.test(t);
+  }, undefined, { timeout: 10000 }).catch(() => {});
+  out = await qp.evaluate(() => {
+    const url = String(location.href || "");
+    if (/accounts\.google\.com/i.test(url)) return { error: "auth" };
+    if (/\/sorry\b/i.test(String(location.pathname || ""))) return { error: "human check" };
+    const main = document.querySelector("main") || document.body;
+    const text = String((main && main.innerText) || "");
+    const now = new Date();
+    const parseReset = (line) => {
+      if (!line) return 0;
+      let m = line.match(/Resets(?:\s+tomorrow)?\s+at\s+(\d{1,2}):(\d{2})(?:\s*(AM|PM))?/i);
+      if (m) {
+        let h = parseInt(m[1], 10), min = parseInt(m[2], 10);
+        const ap = (m[3] || "").toUpperCase();
+        if (ap === "PM" && h < 12) h += 12;
+        if (ap === "AM" && h === 12) h = 0;
+        const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, min, 0, 0);
+        if (/tomorrow/i.test(line) || d.getTime() <= now.getTime()) d.setDate(d.getDate() + 1);
+        return d.getTime();
+      }
+      m = line.match(/Resets(?:\s+on)?\s+([A-Za-z]{3,9})\s+(\d{1,2})(?:,?\s*(\d{4}))?\s+at\s+(\d{1,2}):(\d{2})(?:\s*(AM|PM))?/i);
+      if (m) {
+        const months = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+        const mo = months[m[1].slice(0, 3).toLowerCase()];
+        if (mo !== undefined) {
+          let h = parseInt(m[4], 10), min = parseInt(m[5], 10);
+          const ap = (m[6] || "").toUpperCase();
+          if (ap === "PM" && h < 12) h += 12;
+          if (ap === "AM" && h === 12) h = 0;
+          let yr = m[3] ? parseInt(m[3], 10) : now.getFullYear();
+          let d = new Date(yr, mo, parseInt(m[2], 10), h, min, 0, 0);
+          if (!m[3] && d.getTime() < now.getTime() - 86400000) d = new Date(yr + 1, mo, parseInt(m[2], 10), h, min, 0, 0);
+          return d.getTime();
+        }
+      }
+      return 0;
+    };
+    const lines = text.split("\n").map(s => s.trim()).filter(Boolean);
+    const readBlock = (headerRe) => {
+      const idx = lines.findIndex(l => headerRe.test(l));
+      if (idx < 0) return null;
+      let used = null, resetsAt = 0;
+      for (let i = idx + 1; i < Math.min(lines.length, idx + 6); i++) {
+        const l = lines[i];
+        if (/^(Weekly limit|Current usage|Get |Usage settings|每周限额|当前用量|用量设置)/i.test(l)) break;
+        const pm = l.match(/(\d+(?:\.\d+)?)\s*%%\s*used/i) || l.match(/已使用\s*(\d+(?:\.\d+)?)\s*%%/);
+        if (pm && used === null) used = parseFloat(pm[1]);
+        if (!resetsAt && /Resets/i.test(l)) resetsAt = parseReset(l);
+      }
+      if (used === null) return null;
+      return { used, resetsAt };
+    };
+    const current = readBlock(/^(Current usage|当前用量)$/i);
+    const weekly = readBlock(/^(Weekly limit|每周限额)$/i);
+    if (!current && !weekly) return { unavailable: true };
+    return { current, weekly };
+  });
+} finally {
+  await qp.close().catch(() => {});
+}
+// Tell recycleScript if the main Gemini chat tab is still answering so tab recycling never drops a live reply.
+if (out && typeof out === "object") out.busy = await __busy();
+return out;
+`, geminiStopSel)
+	var r struct {
+		Error       string             `json:"error"`
+		Unavailable bool               `json:"unavailable"`
+		Current     *geminiUsageWindow `json:"current"`
+		Weekly      *geminiUsageWindow `json:"weekly"`
+	}
+	if err := a.run(ctx, credential, script, &r); err != nil {
+		return nil, nil
+	}
+	if r.Error == "http 429" {
+		return nil, dotsError(r.Error)
+	}
+	if r.Error != "" || r.Unavailable {
+		return nil, nil
+	}
+	var out []provider.QuotaReading
+	appendWindow := func(w *geminiUsageWindow, window string) {
+		if w == nil || w.Used == nil {
+			return
+		}
+		used := *w.Used
+		if used < 0 {
+			used = 0
+		}
+		if used > 100 {
+			used = 100
+		}
+		rem := 100 - used
+		out = append(out, provider.QuotaReading{
+			Kind:       protocol.QuotaKindWindow,
+			Window:     window,
+			Limit:      100,
+			Remaining:  rem,
+			ResetsAt:   int64(w.ResetsAt),
+			Exhausted:  rem <= 0,
+			SourceNote: "gemini:usage",
+		})
+	}
+	appendWindow(r.Current, "5h")
+	appendWindow(r.Weekly, "week")
+	return out, nil
+}
+
+type geminiUsageWindow struct {
+	Used     *float64 `json:"used"`
+	ResetsAt float64  `json:"resetsAt"`
+}
