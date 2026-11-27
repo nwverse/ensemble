@@ -63,6 +63,7 @@ func settingsPath(l lang) string {
 const (
 	settingBrowser  = "用电脑上的浏览器连接网页版助手"
 	settingRuntime  = "让这些账号可以当主助手"
+	settingInbox    = "把 AI 对话放进收件箱"
 	settingMuse2API = "自建 Muse 转接服务的地址"
 )
 
@@ -108,6 +109,7 @@ const (
 	actControl          = "control"
 	actAssistantBackend = "assistant_backend"
 	actQuotaDisplay     = "quota_display"
+	actInbox            = "inbox"
 	actRename           = "rename"
 	actPair             = "pair"
 	actGrokStart        = "grok_start"
@@ -125,6 +127,7 @@ const (
 	fieldControl          = "assistant_control"
 	fieldAssistantBackend = "assistant_backend"
 	fieldQuotaDisplay     = "quota_display"
+	fieldInbox            = "inbox"
 )
 
 // What the core takes (core/space.go): a credential of 8 to 8192 characters, a name of at most 80 UTF-16 units. The
@@ -158,8 +161,8 @@ var retryableLogin = []string{"NETWORK_ERROR", "UPSTREAM_ERROR", "RATE_LIMITED"}
 
 // accountsPage is the accounts UI. runtimeOn says whether the main assistant bridge runs (the setting
 // assistant_runtime), which decides whether an account's 主助手 switch does anything.
-func accountsPage(club *core.Club, hub *atomic.Pointer[ext.Hub], drv browser.Driver, runtimeOn *atomic.Bool) ext.Page {
-	a := &accounts{club: club, hub: hub, browser: drv, runtimeOn: runtimeOn}
+func accountsPage(club *core.Club, hub *atomic.Pointer[ext.Hub], drv browser.Driver, runtimeOn *atomic.Bool, inboxCfg func() inboxConfig) ext.Page {
+	a := &accounts{club: club, hub: hub, browser: drv, runtimeOn: runtimeOn, inboxCfg: inboxCfg}
 	return ext.Page{Render: a.render, Action: a.action, Image: a.servePicture}
 }
 
@@ -214,6 +217,7 @@ type accounts struct {
 	hub       *atomic.Pointer[ext.Hub]
 	browser   browser.Driver
 	runtimeOn *atomic.Bool
+	inboxCfg  func() inboxConfig
 }
 
 func (a *accounts) runtimeEnabled() bool { return a.runtimeOn == nil || a.runtimeOn.Load() }
@@ -885,7 +889,7 @@ func (a *accounts) accountView(ctx context.Context, r *ext.UIRequest, l lang, st
 			{Type: "button", Title: l.t("改名", "Rename"), Action: &wire.Action{ID: actRename, Submit: true}},
 		}}
 
-	sections := []wire.Section{info, rename, assistantSection(l, acct, control), a.mainAssistantSection(l, acct)}
+	sections := []wire.Section{info, rename, assistantSection(l, acct, control), a.inboxSection(l, acct), a.mainAssistantSection(l, acct)}
 
 	pause := wire.Component{Type: "button", Title: l.t("暂停同步", "Pause"), Action: &wire.Action{ID: actPause,
 		Confirm: l.t("暂停后不再拉取它的新对话，也不能给它发消息，随时可以恢复。", "While paused, no new chats are fetched and nothing can be sent; resume any time.")}}
@@ -943,6 +947,26 @@ func assistantSection(l lang, acct protocol.Account, control core.Control) wire.
 			"Off: the Persona assistant does not see it (new accounts start so). Read: it can read the chats to sum up and remind you. Confirm: it can also write for you, asking on your phone before each message."),
 		Items: []wire.Component{{Type: "segmented", Name: fieldControl, Choices: controlChoices(l, control), Value: string(control),
 			Action: &wire.Action{ID: actControl}}}}
+}
+
+// inboxSection is 对话进收件箱: whether this account's chats are rows in Persona's Inbox. The extension's own switch
+// decides whether any are; while it is off the section only says where to turn it on.
+func (a *accounts) inboxSection(l lang, acct protocol.Account) wire.Section {
+	title := l.t("收件箱：这个账号的对话要不要出现在 Persona 收件箱", "Inbox: should this account's chats appear in Persona's Inbox")
+	if a.inboxCfg == nil || !a.inboxCfg().On {
+		return wire.Section{Title: title, Items: []wire.Component{{Type: "text", Text: l.t("现在是关着的：先到 ", "Off now: first switch on ") + settingsPath(l) +
+			l.t(" 里打开「"+settingInbox+"」。", " → \""+settingInbox+"\".")}}}
+	}
+	val := "on"
+	if acct.InboxOff {
+		val = "off"
+	}
+	return wire.Section{Title: title,
+		Footer: l.t("打开后，这个账号的每个对话在收件箱里占一行，有新回复就冒出来，内容会交给 Persona 的「消息分拣」模型排序。",
+			"On: each chat of this account is a row in the Inbox, new replies show up, and Persona's message-triage model sorts them."),
+		Items: []wire.Component{{Type: "segmented", Name: fieldInbox, Value: val, Choices: []wire.Choice{
+			{Value: "on", Title: l.t("进收件箱", "In the Inbox")}, {Value: "off", Title: l.t("不进", "Not in the Inbox")}},
+			Action: &wire.Action{ID: actInbox}}}}
 }
 
 // controlChoices are the 助手指挥 levels to choose from; the automatic one only for an account that already has it.
@@ -1337,6 +1361,15 @@ func (a *accounts) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionRe
 			return done(l.t("已设为主助手：在 Persona 对话里选它，就能直接跟它聊", "Now a main assistant: pick it in Persona's chats to talk to it"))
 		}
 		return done(l.t("已不再当主助手：Persona 对话里不会再列出它", "No longer a main assistant: Persona's chats stop offering it"))
+	case actInbox:
+		on := strings.TrimSpace(r.Values[fieldInbox]) == "on"
+		if err := update(map[string]any{"inbox": on}); err != nil {
+			return failed(err, "")
+		}
+		if on {
+			return done(l.t("这个账号的对话会进收件箱", "This account's chats go to the Inbox"))
+		}
+		return done(l.t("这个账号的对话不再进收件箱", "This account's chats stay out of the Inbox"))
 	case actQuotaDisplay:
 		disp := strings.TrimSpace(r.Values[fieldQuotaDisplay])
 		if err := update(map[string]any{"quota_display": disp}); err != nil {

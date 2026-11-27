@@ -178,18 +178,23 @@ func TestContributionNamesSayWhatEachIs(t *testing.T) {
 	if err := json.Unmarshal(pac.Manifest, &m); err != nil {
 		t.Fatal(err)
 	}
-	if len(m.Contributes.AgentSources) != 1 || len(m.Contributes.Connectors) != 1 {
+	if len(m.Contributes.AgentSources) != 1 || len(m.Contributes.Connectors) != 2 {
 		t.Fatalf("%+v", m.Contributes)
 	}
-	source, conn := m.Contributes.AgentSources[0], m.Contributes.Connectors[0]
-	if source.ID != Contribution || conn.ID != Connector {
-		t.Fatalf("ids changed: %q %q", source.ID, conn.ID)
+	source, conn, inbox := m.Contributes.AgentSources[0], m.Contributes.Connectors[0], m.Contributes.Connectors[1]
+	if source.ID != Contribution || conn.ID != Connector || inbox.ID != InboxConnector {
+		t.Fatalf("ids changed: %q %q %q", source.ID, conn.ID, inbox.ID)
 	}
-	if source.Name != productName+" 的账号和对话" || conn.Name != "让 Persona 助手使用 "+productName {
-		t.Fatalf("names: %q, %q", source.Name, conn.Name)
+	if source.Name != productName+" 的账号和对话" || conn.Name != "让 Persona 助手使用 "+productName || inbox.Name != productName+" 的 AI 对话" {
+		t.Fatalf("names: %q, %q, %q", source.Name, conn.Name, inbox.Name)
 	}
-	if source.Name == conn.Name || source.Name == m.Name || conn.Name == m.Name {
-		t.Fatalf("contributions read alike: %q %q %q", m.Name, source.Name, conn.Name)
+	names := []string{m.Name, source.Name, conn.Name, inbox.Name}
+	for i := range names {
+		for j := i + 1; j < len(names); j++ {
+			if names[i] == names[j] {
+				t.Fatalf("contributions read alike: %q", names)
+			}
+		}
 	}
 }
 

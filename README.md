@@ -144,6 +144,35 @@ one space (`default`) in the data directory the hub gives it, laid out as serve'
 `import` and `accounts` work on it too; its providers go out through the HTTP client that takes the hub's egress
 proxy. Without a data directory (run by hand) it keeps everything in memory.
 
+#### Chats in Persona's Inbox
+
+Off by default. The setting `inbox_conversations` ("把 AI 对话放进收件箱") makes each chat of the paired accounts one row in
+Persona's Inbox, through a second connector, `ensemble` (it gives the assistant no tools; `club` and its `club_agent_*` tools,
+every send confirmed on the phone, are unchanged). Each account's page has its own switch (on unless turned off), separate from
+"助手指挥".
+
+- **The row**: thread = the session key; title = account · chat name; preview = the newest reply; unread follows the chat's
+  unread count; `last` = the newest message's id, so a repeated sync adds nothing. A chat whose newest message is the owner's own
+  is filed as replied. Chats quiet for a day or more when the switch went on come in already read, and only the last 8 days (at most
+  100 chats) are listed. A chat that backs the Persona assistant itself is left out.
+- **Load**: building the rows reads only what club has already synced. It never calls a provider and never syncs, so browser-backed
+  accounts get no extra page loads. The hub is told (`connector.changed`, at most every 5 s) only when a row really changed.
+- **Choices**: when the newest reply ends in a list of choices (`A：…` / `B：…`, or `1.` / `2.` after a question, plus up to two
+  short closing lines such as "leave it for now"), the row is marked Needs You and its detail page (`ui` `inbox-chat`) draws each
+  choice as a button. A tap asks first, then sends that text as the owner's next message through the chat's outbox
+  (`internal/extension/options.go`).
+- **Replying**: `inbox_reply` (on) lets the owner answer from the Inbox; the Send press is the confirmation, as for every Inbox
+  source, and it goes out through the same outbox as any send (one client id per reply, so a retry sends once). Switched off, rows
+  are read-only and a reply has to go through the assistant, which asks on the phone each time.
+- **Subscription** (advanced): `inbox_via_subscription` turns off the Inbox's own reading and serves the same rows from the
+  read-only catalog tool `conversations` of source `ensemble`, for a `things` subscription:
+
+  ```json
+  {"mode": "things", "tool": "conversations", "args": {}, "items_path": "$.things", "kind": "sub_message", "group_by": "thread"}
+  ```
+
+  Only the Inbox takes a `things` subscription's rows (not the knowledge base).
+
 ## Providers
 
 | | Cue | Grok Bot | Groq | muse2api |

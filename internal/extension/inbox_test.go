@@ -1,0 +1,686 @@
+package extension
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/nwverse/persona/sdk/go/ext"
+	"github.com/nwverse/persona/sdk/go/exttest"
+	"github.com/nwverse/persona/sdk/go/wire"
+
+	pac "github.com/nwverse/ensemble"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider/echo"
+)
+
+// inboxProvider is a fake service whose chats and replies the test scripts, counting every call that reaches it.
+// Nothing here is a real account or a real conversation.
+type inboxProvider struct {
+	*echo.Provider
+	mu       sync.Mutex
+	script   map[string][]provider.RemoteMessage // by external session id
+	sends    []provider.Outgoing
+	calls    atomic.Int64 // every adapter call
+	failSend bool
+	status   provider.SendStatus
+}
+
+func newInboxProvider() *inboxProvider {
+	return &inboxProvider{Provider: echo.New(), script: map[string][]provider.RemoteMessage{}, status: provider.Sent}
+}
+
+func (p *inboxProvider) Name() string { return "echo" }
+
+func (p *inboxProvider) say(session, role, id, text string, at int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.script[session] = append(p.script[session], provider.RemoteMessage{ExternalID: id, Role: role,
+		Blocks: []protocol.Block{protocol.TextBlock(text)}, CreateTimeMs: at, Position: at})
+}
+
+func (p *inboxProvider) ListSessions(ctx context.Context, cred string) ([]provider.RemoteSession, error) {
+	p.calls.Add(1)
+	return p.Provider.ListSessions(ctx, cred)
+}
+
+func (p *inboxProvider) ListMessages(ctx context.Context, cred string, ref provider.SessionRef, o provider.ListOptions) (provider.RemotePage, error) {
+	p.calls.Add(1)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if m, ok := p.script[ref.ExternalID]; ok {
+		return provider.RemotePage{Messages: append([]provider.RemoteMessage(nil), m...)}, nil
+	}
+	return p.Provider.ListMessages(ctx, cred, ref, o)
+}
+
+func (p *inboxProvider) Send(ctx context.Context, cred string, ref provider.SessionRef, m provider.Outgoing, sc provider.SendContext) (provider.SendResult, error) {
+	p.calls.Add(1)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.failSend {
+		return provider.SendResult{}, &provider.Error{Code: "REFUSED", HTTPStatus: 400}
+	}
+	p.sends = append(p.sends, m)
+	if p.status == provider.Unconfirmed {
+		return provider.SendResult{Status: provider.Unconfirmed, Error: "UNCONFIRMED"}, nil
+	}
+	return provider.SendResult{Status: provider.Sent, ExternalID: "u-" + m.ClientID}, nil
+}
+
+func (p *inboxProvider) sent() []provider.Outgoing {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]provider.Outgoing(nil), p.sends...)
+}
+
+type inboxEnv struct {
+	t     *testing.T
+	h     *exttest.Host
+	club  *core.Club
+	space *core.Space
+	prov  *inboxProvider
+	now   *atomic.Int64
+	ids   []string // account ids
+}
+
+func (e *inboxEnv) clock() time.Time { return time.UnixMilli(e.now.Load()) }
+
+// newInbox starts the extension with the fake service, two accounts (one chat each, "main" and the read-only "notes").
+func newInboxEnv(t *testing.T, cfg string) *inboxEnv {
+	t.Helper()
+	e := &inboxEnv{t: t, prov: newInboxProvider(), now: &atomic.Int64{}}
+	e.now.Store(time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC).UnixMilli())
+	e.prov.Provider.Now = e.clock
+	e.club = core.New(core.Options{Registry: provider.NewRegistry(e.prov), FollowUps: []time.Duration{}, Now: e.clock})
+	e.h = startHost(t, pac.Manifest, exttest.Serve(t, Program(e.club, pac.Version())), json.RawMessage(cfg))
+	ctx := context.Background()
+	var err error
+	if e.space, err = e.club.Space(ctx, core.DefaultSpace); err != nil {
+		t.Fatal(err)
+	}
+	for _, cred := range []string{"echo-fixture-one", "echo-fixture-two"} {
+		a, err := e.space.AddAccount(ctx, protocol.AddAccountParams{Provider: echo.Name, Credential: cred})
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.ids = append(e.ids, a.AccountID)
+	}
+	e.sync() // the chats exist before anything is said in them: what comes later is news, not a backfill
+	e.now.Add(10 * 60_000)
+	return e
+}
+
+func (e *inboxEnv) collect() []wire.ConnectorInboxThing {
+	e.t.Helper()
+	var res wire.ConnectorCollectResult
+	if err := e.h.Call("connector.inbox.collect", wire.ConnectorParams{Contribution: InboxConnector}, &res); err != nil {
+		e.t.Fatalf("inbox.collect: %v", err)
+	}
+	return res.Things
+}
+
+func (e *inboxEnv) reply(p wire.ConnectorInboxReply) error {
+	p.Contribution = InboxConnector
+	return e.h.Call("connector.inbox.reply", p, nil)
+}
+
+func (e *inboxEnv) sync() {
+	e.t.Helper()
+	for _, id := range e.ids {
+		if err := e.space.SyncAccount(context.Background(), id); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+}
+
+func (e *inboxEnv) sessionKey(accountIdx int, ext string) string {
+	e.t.Helper()
+	return core.SessionKey(echo.Name, e.ids[accountIdx], ext)
+}
+
+func thingOfThread(things []wire.ConnectorInboxThing, thread string) *wire.ConnectorInboxThing {
+	for i := range things {
+		if things[i].Thread == thread {
+			return &things[i]
+		}
+	}
+	return nil
+}
+
+const inboxOn = `{"demo_echo":true,"inbox_conversations":true}`
+
+func TestInboxOffByDefault(t *testing.T) {
+	e := newInboxEnv(t, `{"demo_echo":true}`)
+	e.prov.say("main", protocol.RoleAssistant, "m1", "hello", e.now.Load())
+	e.sync()
+	if got := e.collect(); len(got) != 0 {
+		t.Fatalf("inbox.collect with the switch off: %+v", got)
+	}
+	var st wire.ConnectorStatus
+	if err := e.h.Call("connector.status", wire.ConnectorParams{Contribution: InboxConnector}, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.State != wire.ConnectorStateNotConfigured || len(st.Guide) == 0 {
+		t.Fatalf("status with the switch off: %+v", st)
+	}
+	var cr wire.ConnectorCallResult
+	if err := e.h.Call("connector.catalog.call", wire.ConnectorCatalogCallParams{Contribution: InboxConnector, Source: InboxConnector,
+		Tool: toolConversations}, &cr); err != nil || strings.Contains(cr.Text, "agent") {
+		t.Fatalf("catalog.call with the switch off: %q %v", cr.Text, err)
+	}
+	for _, ev := range e.h.Events() {
+		if strings.HasSuffix(ev.Name, "changed") && strings.Contains(string(ev.Params), InboxConnector) {
+			t.Fatalf("told the hub of a change with the switch off: %+v", ev)
+		}
+	}
+}
+
+func TestInboxRowPerChat(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	now := e.now.Load()
+	e.prov.say("main", protocol.RoleUser, "u1", "run the report", now-60_000)
+	e.prov.say("main", protocol.RoleAssistant, "m2", "The report is ready.\nIt has 3 sections.", now-30_000)
+	e.sync()
+	things := e.collect()
+	// the demo provider lists "main" and the read-only "notes" for each of the two accounts
+	if len(things) != 4 {
+		t.Fatalf("want a row for each of 4 chats, got %d: %+v", len(things), things)
+	}
+	key := e.sessionKey(0, "main")
+	row := thingOfThread(things, key)
+	if row == nil {
+		t.Fatalf("no row for %s", key)
+	}
+	if row.Kind != kindAgentReply || row.Last != "m:m2" || !strings.HasSuffix(row.Title, " · Echo") || !strings.HasPrefix(row.Title, row.Sender+" · ") {
+		t.Fatalf("row: %+v", row)
+	}
+	if row.Preview != "The report is ready. It has 3 sections." || row.Extra == nil || row.Extra.RuleTier != wire.ConnectorTierFyi {
+		t.Fatalf("preview or fallback tier: %+v", row)
+	}
+	if !row.CanReply || row.ReplyTo == "" || row.Done != "" {
+		t.Fatalf("reply: %+v", row)
+	}
+	if !strings.Contains(row.Context, "我：run the report") || !strings.Contains(row.Context, "外部数据") {
+		t.Fatalf("context: %q", row.Context)
+	}
+	var tags []string
+	for _, tg := range row.Tags {
+		tags = append(tags, tg.Key+"="+tg.Value)
+	}
+	if strings.Join(tags, ",") != "chat="+key+",sender="+e.ids[0] {
+		t.Fatalf("tags: %v", tags)
+	}
+	if notes := thingOfThread(things, e.sessionKey(0, "notes")); notes == nil || notes.CanReply {
+		t.Fatalf("a read-only chat must not offer a reply: %+v", notes)
+	}
+}
+
+func TestInboxReadAndRepliedState(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	now := e.now.Load()
+	e.prov.say("main", protocol.RoleAssistant, "m1", "first", now-120_000)
+	e.sync()
+	key := e.sessionKey(0, "main")
+	if row := thingOfThread(e.collect(), key); row == nil || row.Read || row.Last != "m:m1" {
+		t.Fatalf("a first reply in an existing chat is unread: %+v", row)
+	}
+	e.now.Add(60_000)
+	e.prov.say("main", protocol.RoleAssistant, "m2", "second", e.now.Load())
+	e.sync()
+	row := thingOfThread(e.collect(), key)
+	if row == nil || row.Read || row.Last != "m:m2" {
+		t.Fatalf("a new reply should be unread with a new last: %+v", row)
+	}
+	last := row.Last
+	// the same messages again change nothing
+	e.sync()
+	if again := thingOfThread(e.collect(), key); again.Last != last || again.Read {
+		t.Fatalf("a repeated sync moved the row: %+v", again)
+	}
+	// seen in the Agents page: read
+	if err := e.space.MarkRead(context.Background(), protocol.MarkReadParams{SessionKey: key}); err != nil {
+		t.Fatal(err)
+	}
+	if row := thingOfThread(e.collect(), key); !row.Read {
+		t.Fatalf("a chat marked read: %+v", row)
+	}
+}
+
+func TestInboxDoesNotFloodWhenSwitchedOn(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	now := e.now.Load()
+	// an unread reply from two days ago, before the switch could have been seen on
+	e.prov.say("main", protocol.RoleAssistant, "old", "old news", now-48*3600_000)
+	e.sync()
+	ctx := context.Background()
+	_ = e.space.Store().PutSetting(ctx, "inboxSince", "")
+	e.collect() // the switch is seen on now
+	if since := e.space.InboxSince(ctx); since == 0 {
+		t.Fatal("the first collect with the switch on should remember when")
+	}
+	e.now.Add(3600_000)
+	e.prov.say("main", protocol.RoleAssistant, "new", "fresh", e.now.Load())
+	e.sync()
+	key := e.sessionKey(0, "main")
+	_ = e.space.Store().MarkRead(ctx, key, 1) // an unread count left over from the old reply would show as unread
+	if row := thingOfThread(e.collect(), key); row == nil || row.Last != "m:new" {
+		t.Fatalf("%+v", row)
+	}
+	// the old one, in a chat that stays quiet, is already read
+	e.prov.say("main", protocol.RoleAssistant, "old2", "x", now-47*3600_000)
+}
+
+func TestInboxWindowAndCap(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	now := e.now.Load()
+	e.prov.say("main", protocol.RoleAssistant, "m1", "recent", now-1000)
+	e.sync()
+	e.now.Add(9 * 24 * 3600_000) // the chat is now 9 days old
+	if got := e.collect(); len(got) != 0 {
+		t.Fatalf("chats older than the window should not be rows: %d", len(got))
+	}
+}
+
+func TestInboxSkipsAssistantBackingChatsAndOffAccounts(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	e.prov.say("main", protocol.RoleAssistant, "m1", "hi", e.now.Load())
+	e.sync()
+	ctx := context.Background()
+	backing := e.sessionKey(0, "main")
+	if err := e.space.SetAssistantSessionKeys(ctx, []string{backing}); err != nil {
+		t.Fatal(err)
+	}
+	things := e.collect()
+	if thingOfThread(things, backing) != nil {
+		t.Fatal("a chat that backs the Persona assistant must stay out of the Inbox")
+	}
+	// the per-account switch, through the page's action
+	res := act(t, e.h, pageState{Page: pageAccount, Account: e.ids[1]}, actInbox, map[string]string{fieldInbox: "off"})
+	if res == nil {
+		t.Fatal("no result")
+	}
+	things = e.collect()
+	for _, th := range things {
+		if strings.Contains(th.Thread, e.ids[1]) {
+			t.Fatalf("an account switched off still has a row: %s", th.Thread)
+		}
+	}
+	if thingOfThread(things, e.sessionKey(0, "notes")) == nil {
+		t.Fatal("the other account's chats should stay")
+	}
+	act(t, e.h, pageState{Page: pageAccount, Account: e.ids[1]}, actInbox, map[string]string{fieldInbox: "on"})
+	if got := e.collect(); len(got) != 3 {
+		t.Fatalf("switched on again: %d rows", len(got))
+	}
+}
+
+// The inbox switch and the assistant's control level are separate: neither reads or changes the other.
+func TestInboxDoesNotTouchAssistantControl(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	ctx := context.Background()
+	before, _ := e.space.AssistantControl(ctx, e.ids[0])
+	act(t, e.h, pageState{Page: pageAccount, Account: e.ids[0]}, actInbox, map[string]string{fieldInbox: "off"})
+	act(t, e.h, pageState{Page: pageAccount, Account: e.ids[0]}, actInbox, map[string]string{fieldInbox: "on"})
+	after, _ := e.space.AssistantControl(ctx, e.ids[0])
+	if before != core.ControlOff || after != before {
+		t.Fatalf("assistant control moved: %q -> %q", before, after)
+	}
+	e.prov.say("main", protocol.RoleAssistant, "m1", "hi", e.now.Load())
+	e.sync()
+	if thingOfThread(e.collect(), e.sessionKey(0, "main")) == nil {
+		t.Fatal("an account the assistant may not see should still be in the Inbox")
+	}
+}
+
+func TestInboxRoutesAreExclusive(t *testing.T) {
+	collect := func(e *inboxEnv) int { return len(e.collect()) }
+	catalog := func(e *inboxEnv) (n int, kinds bool) {
+		var cr wire.ConnectorCallResult
+		if err := e.h.Call("connector.catalog.call", wire.ConnectorCatalogCallParams{Contribution: InboxConnector, Source: InboxConnector,
+			Tool: toolConversations}, &cr); err != nil {
+			e.t.Fatal(err)
+		}
+		var out struct {
+			Things []wire.ConnectorInboxThing `json:"things"`
+		}
+		if err := json.Unmarshal([]byte(cr.Text), &out); err != nil {
+			e.t.Fatal(err)
+		}
+		for _, th := range out.Things {
+			if th.Thread == "" || th.Last == "" {
+				e.t.Fatalf("a subscription row needs a thread and a last: %+v", th)
+			}
+			kinds = kinds || th.Kind != ""
+		}
+		return len(out.Things), kinds
+	}
+	direct := newInboxEnv(t, inboxOn)
+	direct.prov.say("main", protocol.RoleAssistant, "m1", "hi", direct.now.Load())
+	direct.sync()
+	if n, _ := catalog(direct); n != 0 || collect(direct) != 4 {
+		t.Fatalf("direct: catalog %d, collect %d", n, collect(direct))
+	}
+	via := newInboxEnv(t, `{"demo_echo":true,"inbox_conversations":true,"inbox_via_subscription":true}`)
+	via.prov.say("main", protocol.RoleAssistant, "m1", "hi", via.now.Load())
+	via.sync()
+	n, kinds := catalog(via)
+	if n != 4 || kinds || collect(via) != 0 {
+		t.Fatalf("via subscription: catalog %d (kinds %v), collect %d", n, kinds, collect(via))
+	}
+	var bad wire.ConnectorCallResult
+	err := via.h.Call("connector.catalog.call", wire.ConnectorCatalogCallParams{Contribution: InboxConnector, Source: InboxConnector, Tool: "inbox_things"}, &bad)
+	var ee *ext.Error
+	if !errors.As(err, &ee) || ee.Code != wire.ConnectorErrorCodeNotReadOnly {
+		t.Fatalf("a tool that is not in the catalog must be refused as not_read_only: %v", err)
+	}
+}
+
+// Reading the Inbox rows is reading what club has stored: nothing reaches the provider, so the browser accounts are
+// not loaded by it.
+func TestInboxCollectNeverCallsTheProvider(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	e.prov.say("main", protocol.RoleAssistant, "m1", "hi", e.now.Load())
+	e.sync()
+	before := e.prov.calls.Load()
+	for range 50 {
+		e.collect()
+		var cr wire.ConnectorCallResult
+		_ = e.h.Call("connector.catalog.call", wire.ConnectorCatalogCallParams{Contribution: InboxConnector, Source: InboxConnector, Tool: toolConversations}, &cr)
+		var st wire.ConnectorStatus
+		_ = e.h.Call("connector.status", wire.ConnectorParams{Contribution: InboxConnector}, &st)
+	}
+	if after := e.prov.calls.Load(); after != before {
+		t.Fatalf("the Inbox's reads called the provider %d times", after-before)
+	}
+}
+
+func TestInboxReplySendsOnceThroughTheOutbox(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	e.prov.say("main", protocol.RoleAssistant, "m1", "ok?", e.now.Load())
+	e.sync()
+	key := e.sessionKey(0, "main")
+	if err := e.reply(wire.ConnectorInboxReply{Thread: key, Text: "yes please", ClientID: "app-send-1"}); err != nil {
+		t.Fatal(err)
+	}
+	sent := e.prov.sent()
+	if len(sent) != 1 || sent[0].Text != "yes please" {
+		t.Fatalf("sent: %+v", sent)
+	}
+	// the hub retrying the same send, with or without its own id, reaches the service once
+	_ = e.reply(wire.ConnectorInboxReply{Thread: key, Text: "yes please", ClientID: "app-send-1"})
+	_ = e.reply(wire.ConnectorInboxReply{Thread: key, Text: "again", ItemID: "i1", Last: "m:m1"})
+	_ = e.reply(wire.ConnectorInboxReply{Thread: key, Text: "again", ItemID: "i1", Last: "m:m1"})
+	if sent := e.prov.sent(); len(sent) != 2 {
+		t.Fatalf("a retry must not send twice: %+v", sent)
+	}
+}
+
+func TestInboxReplyRefusals(t *testing.T) {
+	e := newInboxEnv(t, `{"demo_echo":true,"inbox_conversations":true,"inbox_reply":false}`)
+	e.prov.say("main", protocol.RoleAssistant, "m1", "hi", e.now.Load())
+	e.sync()
+	key := e.sessionKey(0, "main")
+	for _, row := range e.collect() {
+		if row.CanReply || row.ReplyTo != "" {
+			t.Fatalf("inbox_reply is off but the row offers a reply: %+v", row)
+		}
+	}
+	const secret = "reply-body-that-must-not-leak"
+	if err := e.reply(wire.ConnectorInboxReply{Thread: key, Text: secret}); err == nil {
+		t.Fatal("reply with inbox_reply off")
+	}
+	on := newInboxEnv(t, inboxOn)
+	on.prov.say("main", protocol.RoleAssistant, "m1", "hi", on.now.Load())
+	on.sync()
+	good := on.sessionKey(0, "main")
+	for name, p := range map[string]wire.ConnectorInboxReply{
+		"no such chat":  {Thread: "agent:echo:a000000000000:nope", Text: secret},
+		"read-only":     {Thread: on.sessionKey(0, "notes"), Text: secret},
+		"empty":         {Thread: good, Text: "  \n"},
+		"status change": {Thread: good, Text: secret, Changes: []wire.ConnectorStatusChange{{Ref: "r", Field: "f", Value: "v"}}},
+	} {
+		err := on.reply(p)
+		if err == nil {
+			t.Errorf("%s: no error", name)
+		} else if strings.Contains(err.Error(), secret) {
+			t.Errorf("%s: the error repeats the reply: %v", name, err)
+		}
+	}
+	if err := on.space.SetAssistantSessionKeys(context.Background(), []string{good}); err != nil {
+		t.Fatal(err)
+	}
+	if err := on.reply(wire.ConnectorInboxReply{Thread: good, Text: secret}); err == nil {
+		t.Error("replied into a chat that backs the Persona assistant")
+	}
+	if sent := append(e.prov.sent(), on.prov.sent()...); len(sent) != 0 {
+		t.Fatalf("a refused reply reached the service: %+v", sent)
+	}
+}
+
+func TestInboxReplyUnconfirmedIsNotAnError(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	e.prov.say("main", protocol.RoleAssistant, "m1", "hi", e.now.Load())
+	e.sync()
+	e.prov.mu.Lock()
+	e.prov.status = provider.Unconfirmed
+	e.prov.mu.Unlock()
+	if err := e.reply(wire.ConnectorInboxReply{Thread: e.sessionKey(0, "main"), Text: "maybe"}); err != nil {
+		t.Fatalf("an unconfirmed send must not be reported as a failure (the owner would send it again): %v", err)
+	}
+}
+
+func TestInboxReplyFailureIsAnError(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	e.prov.say("main", protocol.RoleAssistant, "m1", "hi", e.now.Load())
+	e.sync()
+	e.prov.mu.Lock()
+	e.prov.failSend = true
+	e.prov.mu.Unlock()
+	if err := e.reply(wire.ConnectorInboxReply{Thread: e.sessionKey(0, "main"), Text: "will fail"}); err == nil {
+		t.Fatal("a send the service refused should fail")
+	}
+}
+
+func TestInboxChangedEvent(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	count := func() (n int) {
+		for _, ev := range e.h.Events() {
+			if strings.HasSuffix(ev.Name, ".changed") && strings.Contains(string(ev.Params), `"inbox"`) {
+				n++
+			}
+		}
+		return
+	}
+	e.prov.say("main", protocol.RoleAssistant, "m1", "one", e.now.Load())
+	e.sync()
+	deadline := time.Now().Add(3 * time.Second)
+	for count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(300 * time.Millisecond) // let the events of this change settle
+	first := count()
+	if first == 0 {
+		t.Fatalf("a new reply should tell the hub: events %+v", e.h.Events())
+	}
+	e.sync() // nothing changed
+	time.Sleep(200 * time.Millisecond)
+	if count() != first {
+		t.Fatalf("a sync that changed no row told the hub: %d -> %d", first, count())
+	}
+}
+
+func TestInboxManifestRules(t *testing.T) {
+	var m struct {
+		Contributes struct {
+			Connectors []wire.ConnectorItem `json:"connectors"`
+			UI         []wire.UIItem        `json:"ui"`
+		} `json:"contributes"`
+		Configuration struct {
+			Properties map[string]struct {
+				Type    string `json:"type"`
+				Default any    `json:"default"`
+			} `json:"properties"`
+		} `json:"configuration"`
+	}
+	if err := json.Unmarshal(pac.Manifest, &m); err != nil {
+		t.Fatal(err)
+	}
+	var club, inbox *wire.ConnectorItem
+	for i := range m.Contributes.Connectors {
+		switch m.Contributes.Connectors[i].ID {
+		case Connector:
+			club = &m.Contributes.Connectors[i]
+		case InboxConnector:
+			inbox = &m.Contributes.Connectors[i]
+		}
+	}
+	if club == nil || inbox == nil {
+		t.Fatalf("connectors: %+v", m.Contributes.Connectors)
+	}
+	// the host refuses an Inbox connector without these
+	if p := m.Configuration.Properties["triage_rules"]; p.Type != "string" {
+		t.Errorf("an Inbox connector needs a top-level triage_rules string setting: %+v", p)
+	}
+	for _, c := range []string{wire.ConnectorCapabilityInbox, wire.ConnectorCapabilityFallback, wire.ConnectorCapabilityEvents} {
+		found := false
+		for _, have := range inbox.Capabilities {
+			found = found || have == c
+		}
+		if !found {
+			t.Errorf("the Inbox connector lacks %q", c)
+		}
+		if c == wire.ConnectorCapabilityInbox {
+			continue
+		}
+	}
+	for _, k := range inbox.Kinds {
+		if strings.TrimSpace(inbox.KindDescriptions[k]) == "" {
+			t.Errorf("kind %q has no description", k)
+		}
+	}
+	for _, c := range inbox.Capabilities {
+		if c == wire.ConnectorCapabilityTools || c == wire.ConnectorCapabilityActions {
+			t.Errorf("the Inbox connector must give the assistant no tools of its own: %q", c)
+		}
+	}
+	if len(inbox.ConfirmAlways) != 0 || len(club.ConfirmAlways) != 1 || club.ConfirmAlways[0] != "club_agent_*" {
+		t.Errorf("confirm_always: club %v, inbox %v", club.ConfirmAlways, inbox.ConfirmAlways)
+	}
+	if d := m.Configuration.Properties["inbox_conversations"].Default; d != false {
+		t.Errorf("inbox_conversations must default to off: %v", d)
+	}
+	var page *wire.UIItem
+	for i := range m.Contributes.UI {
+		if m.Contributes.UI[i].Placement == wire.PlacementInboxItem {
+			page = &m.Contributes.UI[i]
+		}
+	}
+	if page == nil || page.ID != InboxItemUI || page.Connector != InboxConnector {
+		t.Errorf("the Inbox item page: %+v", page)
+	}
+}
+
+func TestInboxCatalogPassesTheHostCheck(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	var cat wire.ConnectorCatalog
+	if err := e.h.Call("connector.catalog.list", wire.ConnectorParams{Contribution: InboxConnector}, &cat); err != nil {
+		t.Fatal(err)
+	}
+	if err := wire.CheckConnectorCatalog(cat); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range cat.Sources[0].Tools {
+		if strings.Contains(strings.ToLower(tool.Name), "send") || tool.Name == "inbox_things" {
+			t.Errorf("the host refuses a subscription tool named like this: %q", tool.Name)
+		}
+	}
+	recipe, _ := json.Marshal(map[string]any{"mode": "things", "tool": toolConversations, "args": map[string]any{}, "items_path": "$.things",
+		"kind": "sub_message", "group_by": "thread"})
+	if err := wire.ValidateJSON("ConnectorSubscriptionRecipe", recipe); err != nil {
+		t.Fatalf("the documented subscription recipe is not valid: %v", err)
+	}
+}
+
+// The extension's Inbox page draws the choices a reply ends with as buttons; a tap asks first and then sends.
+func TestInboxChoicesAreButtonsThatReplyAfterConfirming(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	now := e.now.Load()
+	e.prov.say("main", protocol.RoleUser, "u1", "what now", now-60_000)
+	e.prov.say("main", protocol.RoleAssistant, "m1", "Two ways forward:\nA：run it now\nB：fix the cause\nleave it for now", now-1000)
+	e.sync()
+	key := e.sessionKey(0, "main")
+	row := thingOfThread(e.collect(), key)
+	if row == nil || row.Tier != wire.ConnectorTierAction {
+		t.Fatalf("a reply that waits for a choice is for the owner: %+v", row)
+	}
+	item := &wire.UIInboxItem{ID: "i1", Extra: map[string]json.RawMessage{"connector": json.RawMessage(`{"thread":"` + key + `"}`)}}
+	call := func(action string, values map[string]string, out any) error {
+		return e.h.Call("ui.render", wire.UIParams{Contribution: InboxItemUI, Placement: wire.PlacementInboxItem, Size: "full", UIVersion: 6,
+			Locale: "zh-Hans", Item: item}, out)
+	}
+	var v wire.View
+	if err := call("", nil, &v); err != nil {
+		t.Fatal(err)
+	}
+	var buttons []wire.Component
+	for _, s := range v.Sections {
+		for _, c := range s.Items {
+			if c.Type == "button" {
+				buttons = append(buttons, c)
+			}
+		}
+	}
+	if len(buttons) != 3 || buttons[0].Title != "A：run it now" || buttons[2].Title != "leave it for now" {
+		t.Fatalf("buttons: %+v", buttons)
+	}
+	for _, b := range buttons {
+		if b.Action == nil || b.Action.Confirm == "" || b.Action.ID != actPick {
+			t.Fatalf("a choice must ask before it sends: %+v", b.Action)
+		}
+	}
+	if len(e.prov.sent()) != 0 {
+		t.Fatal("drawing the page sent something")
+	}
+	var res wire.ActionResult
+	pick := func(vals map[string]string) error {
+		return e.h.Call("ui.action", wire.UIParams{Contribution: InboxItemUI, Placement: wire.PlacementInboxItem, Size: "full", UIVersion: 6,
+			Locale: "zh-Hans", Item: item, Action: actPick, Values: vals}, &res)
+	}
+	if err := pick(map[string]string{valOption: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if sent := e.prov.sent(); len(sent) != 1 || sent[0].Text != "B：fix the cause" {
+		t.Fatalf("sent: %+v", sent)
+	}
+	// a number that is not one of the choices, or text instead of a number, sends nothing
+	_ = pick(map[string]string{valOption: "9"})
+	_ = pick(map[string]string{valOption: "-1"})
+	_ = pick(map[string]string{valOption: "B：fix the cause; delete everything"})
+	if sent := e.prov.sent(); len(sent) != 1 {
+		t.Fatalf("a bad pick sent something: %+v", sent)
+	}
+}
+
+func TestInboxChoicesNeedAReplyThatEndsInThem(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	now := e.now.Load()
+	e.prov.say("main", protocol.RoleAssistant, "m1", "Pick:\nA：one\nB：two", now-5000)
+	e.prov.say("main", protocol.RoleUser, "u1", "A：one", now-1000) // already answered
+	e.sync()
+	row := thingOfThread(e.collect(), e.sessionKey(0, "main"))
+	if row == nil || row.Tier != "" || row.Done != wire.ConnectorDoneReplied {
+		t.Fatalf("a chat the owner has answered is not waiting on them: %+v", row)
+	}
+	// and no reply for a chat that cannot be replied to
+	if row := thingOfThread(e.collect(), e.sessionKey(0, "notes")); row != nil && row.Tier != "" {
+		t.Fatalf("%+v", row)
+	}
+}

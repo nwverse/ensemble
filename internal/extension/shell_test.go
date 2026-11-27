@@ -185,7 +185,7 @@ func TestConnectorChecks(t *testing.T) {
 	club := core.New(core.Options{Registry: provider.NewRegistry()})
 	h := exttest.CheckConnectors(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())))
 	var items []wire.ConnectorItem
-	if err := json.Unmarshal(h.Init.Contributes["connectors"], &items); err != nil || len(items) != 1 || items[0].ID != Connector {
+	if err := json.Unmarshal(h.Init.Contributes["connectors"], &items); err != nil || len(items) != 2 || items[0].ID != Connector || items[1].ID != InboxConnector {
 		t.Fatalf("initialize does not say it has the connector: %s (%v)", h.Init.Contributes["connectors"], err)
 	}
 	// the hub tells an unknown method from one the source cannot do

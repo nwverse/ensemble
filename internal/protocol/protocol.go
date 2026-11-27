@@ -208,9 +208,11 @@ type Account struct {
 	SessionCount      int    `json:"sessionCount"`
 	AssistantControl  string `json:"assistantControl,omitempty"`
 	AssistantBackend  bool   `json:"assistantBackend,omitempty"`
-	ShowQuota         bool   `json:"showQuota,omitempty"`
-	QuotaDisplay      string `json:"quotaDisplay,omitempty"`
-	Quota             *Quota `json:"quota,omitempty"`
+	// InboxOff is true when the owner kept this account's chats out of Persona's Inbox (club's own addition).
+	InboxOff     bool   `json:"inboxOff,omitempty"`
+	ShowQuota    bool   `json:"showQuota,omitempty"`
+	QuotaDisplay string `json:"quotaDisplay,omitempty"`
+	Quota        *Quota `json:"quota,omitempty"`
 	// AvatarURL is the account's own picture, when its service gave one (club's own addition; core.ownAvatar): an
 	// https image or a small image data URL, as a session's avatarUrl is.
 	AvatarURL string `json:"avatarUrl,omitempty"`
@@ -487,8 +489,10 @@ type UpdateAccountParams struct {
 	DisplayName      *string `json:"display_name,omitempty"`
 	AssistantControl *string `json:"assistant_control,omitempty"`
 	AssistantBackend *bool   `json:"assistant_backend,omitempty"`
-	ShowQuota        *bool   `json:"show_quota,omitempty"`
-	QuotaDisplay     *string `json:"quota_display,omitempty"`
+	// Inbox says whether the account's chats go to Persona's Inbox (club's own addition; on unless turned off).
+	Inbox        *bool   `json:"inbox,omitempty"`
+	ShowQuota    *bool   `json:"show_quota,omitempty"`
+	QuotaDisplay *string `json:"quota_display,omitempty"`
 }
 
 // StartSessionParams are club.sessions.start's: opens a new session with its first message.
