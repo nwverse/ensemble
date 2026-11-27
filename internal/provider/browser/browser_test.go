@@ -66,7 +66,7 @@ func TestGenericSiteVerifyListReadSend(t *testing.T) {
 		t.Fatalf("Verify = %+v, err=%v", acct, err)
 	}
 	sessions, err := a.ListSessions(ctx, cred)
-	if err != nil || len(sessions) != 1 || sessions[0].ExternalID != "main" {
+	if err != nil || len(sessions) != 1 || sessions[0].ExternalID != "main" || sessions[0].LastActivityMs != 0 {
 		t.Fatalf("ListSessions = %+v, err=%v", sessions, err)
 	}
 	page, err := a.ListMessages(ctx, cred, sessions[0].SessionRef(), provider.ListOptions{Limit: 10})
@@ -303,5 +303,35 @@ return { main: await __duetMain() };
 	})
 	if string(r.Value) != `{"main":""}` {
 		t.Fatalf("no aibo channel: main = %s", r.Value)
+	}
+}
+
+// A site without scripts of its own reads its chats from the page's links, which carry no time: no row is stamped
+// with the time of the read (which ranked every chat on top at every sync), with chats listed or without.
+func TestGenericSiteListHasNoReadTime(t *testing.T) {
+	ctx := context.Background()
+	cred := EncodeCredential(Credential{MachineID: "mac-2", Backend: "ego"})
+	site := genericSite
+	site.SingleSession = false
+	for _, out := range []string{
+		`{"sessions":[{"id":"abcd1","title":"First","url":"https://agent.example/c/abcd1"},{"id":"abcd2","title":"Second","url":"https://agent.example/c/abcd2"}]}`,
+		`{"sessions":[]}`,
+	} {
+		out := out
+		d := &fakeDriver{name: "ego", answer: func(RunRequest) (RunResult, error) { return RunResult{Backend: "ego", Output: out}, nil }}
+		for round := 0; round < 2; round++ {
+			sessions, err := New(site, d).ListSessions(ctx, cred)
+			if err != nil || len(sessions) == 0 {
+				t.Fatalf("ListSessions on %s = %+v, err=%v", out, sessions, err)
+			}
+			for _, s := range sessions {
+				if s.LastActivityMs != 0 || s.ActivityApprox {
+					t.Fatalf("round %d: %s listed with activity %d (approx %v), want 0", round, s.ExternalID, s.LastActivityMs, s.ActivityApprox)
+				}
+			}
+			if sessions[0].Kind != protocol.KindMain {
+				t.Fatalf("first session = %+v, want main", sessions[0])
+			}
+		}
 	}
 }

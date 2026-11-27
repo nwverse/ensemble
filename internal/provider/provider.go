@@ -37,10 +37,17 @@ type RemoteSession struct {
 	Title            string
 	Kind             string // protocol.KindMain, KindSide, KindTask
 	ParentExternalID string
-	LastActivityMs   int64
-	CanSend          bool
-	AvatarURL        string
-	Ref              map[string]string
+	// LastActivityMs is the session's last activity as the service itself records it, 0 when the list gives no
+	// time. It must never be the time of the read: a list that has no time passes 0, and only the session's messages
+	// (their own times, or the time a new one was first seen) and the owner's sends move its rank.
+	LastActivityMs int64
+	// ActivityApprox says LastActivityMs is only a coarse reading of a relative label ("2h", "今天", a day), which
+	// moves with the clock while nothing happens. It then places a session the club sees for the first time and
+	// tells a sync which sessions to read, but never raises the rank of a session the club already has.
+	ActivityApprox bool
+	CanSend        bool
+	AvatarURL      string
+	Ref            map[string]string
 }
 
 // SessionRef is the session's address.

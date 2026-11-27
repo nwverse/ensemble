@@ -202,8 +202,10 @@ func (m *Memory) putMessage(key string, msg Message, now int64) bool {
 	msg.SessionKey = key
 	msg.Blocks = slices.Clone(msg.Blocks)
 	old, ok := byID[msg.ExternalID]
+	hint := msg.FirstSeenMs
+	msg.FirstSeenMs = 0 // not stored: a message read back compares equal to the one written
 	if msg.CreateTimeMs == 0 {
-		msg.CreateTimeMs = now
+		msg.CreateTimeMs = firstSeen(hint, now)
 		if ok {
 			msg.CreateTimeMs = old.CreateTimeMs
 		}

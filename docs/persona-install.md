@@ -25,6 +25,22 @@ shasum -a 256 -c personal-agent-club-<version>.tar.gz.sha256   # or: sha256sum -
 To hold the program to the hub's own checks without a hub (manifest and package as at install, handshake, error
 codes, every page drawable), run `scripts/persona-test.sh` with a `personad` on `PATH` (or `PERSONAD=/path/to/personad`).
 
+## What 0.7.8 adds
+
+Persona's Messages page can list the agents' conversations among the others, newest message first:
+- **A sync with nothing new moves nothing.** Muse's main chat was ranked at the time of every sync (its row has no
+  date) and so rose to the top each time, and its messages, which carry no time, were re-dated with it; a site
+  without scripts of its own did the same to every chat. A conversation is now ranked by its newest message (its own
+  time, or the time it was first seen) or by the time its service's list really gives; a coarse relative date (Muse's
+  side chats: "2h", "今天") only places a conversation seen for the first time. A message already stored keeps its
+  time, so no reply is counted unread again. A rank an earlier version raised this way is not lowered (Muse gives no
+  message times to correct it from): it stops rising, and the conversation sinks as others get new messages.
+- **Muse's picture is a PNG.** It was muse.ai's `favicon.ico` (an ICO, which iOS and some browsers draw unevenly); it
+  is now the 180×180 icon Muse's own web app manifest lists (`muse.ai/images/pwa_icons/maskable/180.png`), drawn
+  within the manifest's safe zone so the round avatar shows all of it. Every official icon is now a PNG.
+
+No new permissions or configuration fields are added.
+
 ## What 0.7.7 adds
 
 Live real-time quota readings for **Muse**, **Gemini**, and **Claude Duet credit**:
@@ -280,7 +296,7 @@ personad extension show personal-agent-club   # "sandbox": {"active": true, "egr
   goes out through it and the extension needs nothing more.
 - Pictures need no network entry: an account's avatar is its own picture when the service gives one (a Grok Bot's
   bot avatar), else its product's official icon, else its letters (internal/names/avatar.go). The icons are https
-  addresses the products publish (muse.ai, manus.im, groq.com, Google's branding path on www.gstatic.com for Gemini;
+  addresses of PNGs the products publish (muse.ai's web app manifest icon, manus.im, groq.com, Google's branding path on www.gstatic.com for Gemini;
   for Grok Bot and Claude Duet the App Store artwork of each one's own app, whole on a transparent margin; for
   ChatGPT dots the dot chatgpt.com's dots page shows, from its image CDN images.ctfassets.net, padded on a gray ground)
   that the Persona app loads itself on the pages, and the hub fetches as a conversation's `avatarUrl` on the Agents

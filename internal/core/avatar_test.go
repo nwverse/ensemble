@@ -51,9 +51,10 @@ func TestAvatarsHandedToPersona(t *testing.T) {
 		{"claude_duet", nil, "", names.Icon("claude_duet")},
 		{"cue", nil, "", "https://manus.im/apple-icon.png"},
 		{"groq", nil, "", "https://groq.com/apple-touch-icon.png"},
-		{"muse", nil, "", "https://muse.ai/favicon.ico"},
+		{"muse", nil, "", "https://muse.ai/images/pwa_icons/maskable/180.png?v=3"},
 		{"dots", nil, "", names.Icon("dots")},
 		{"gemini_tasks", nil, "", "https://www.gstatic.com/images/branding/product/2x/gemini_96dp.png"},
+		{"muse2api", nil, "", ""},
 		{"echo", nil, "", ""},
 	}
 	for _, c := range cases {

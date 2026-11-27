@@ -47,6 +47,7 @@ type Space struct {
 	syncing        map[string]*flight[struct{}]
 	refreshing     map[string]*flight[string]
 	fetchedAt      map[string]int64
+	readAt         map[string]int64 // when a sync last read each session's messages (fetchedAt also counts failed reads)
 	watching       map[string]context.CancelFunc
 	live           map[string]*liveEntry
 	logins         map[string]*login
@@ -56,7 +57,7 @@ type Space struct {
 
 func newSpace(name string, c *Club, st store.Store, v vault.Vault) *Space {
 	return &Space{name: name, club: c, store: st, vault: v, syncing: map[string]*flight[struct{}]{},
-		refreshing: map[string]*flight[string]{}, fetchedAt: map[string]int64{}, watching: map[string]context.CancelFunc{},
+		refreshing: map[string]*flight[string]{}, fetchedAt: map[string]int64{}, readAt: map[string]int64{}, watching: map[string]context.CancelFunc{},
 		live: map[string]*liveEntry{}, logins: map[string]*login{}, quota: map[string]*quotaState{},
 		quotaCheckedAt: map[string]int64{}}
 }
@@ -567,20 +568,16 @@ func (s *Space) history(ctx context.Context, key string) ([]provider.Turn, error
 
 // storeMessages are a provider's messages as stored; one without a time takes fallbackMs (the session's activity
 // time), else the store keeps its first-seen time.
-func storeMessages(key string, in []provider.RemoteMessage, fallbackMs int64) []store.Message {
+// storeMessages are a page's messages for the store. A message without a time of its own is recorded, the first time
+// the store sees it, at firstSeenMs (the session's activity as its list gave it; 0: the time of the write), and keeps
+// that time afterwards: the estimate is never written over a time already recorded.
+func storeMessages(key string, in []provider.RemoteMessage, firstSeenMs int64) []store.Message {
 	out := make([]store.Message, len(in))
 	for i, m := range in {
 		out[i] = store.Message{SessionKey: key, ExternalID: m.ExternalID, Role: m.Role, Blocks: m.Blocks,
-			CreateTimeMs: cmpOrInt(m.CreateTimeMs, fallbackMs), Position: m.Position}
+			CreateTimeMs: m.CreateTimeMs, Position: m.Position, FirstSeenMs: firstSeenMs}
 	}
 	return out
-}
-
-func cmpOrInt(a, b int64) int64 {
-	if a != 0 {
-		return a
-	}
-	return b
 }
 
 // followUp reads the session again at the follow-up delays, to pick up the agent's answer.

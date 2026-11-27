@@ -91,6 +91,20 @@ type Message struct {
 	Blocks       []protocol.Block
 	CreateTimeMs int64
 	Position     int64
+	// FirstSeenMs, not stored, is the time to record for a message the provider gives no time (CreateTimeMs 0) when
+	// the store does not have it yet (0: the time of the write; never later than it). A message the store already
+	// has keeps the time it was first recorded with, whatever FirstSeenMs says: an estimate read again at every sync
+	// must not rewrite it, which would rank the session anew and count its replies unread again.
+	FirstSeenMs int64
+}
+
+// firstSeen is the time recorded for a new message without a time of its own: the caller's estimate, when it has
+// one no later than now, else now.
+func firstSeen(estimate, now int64) int64 {
+	if estimate > 0 && estimate <= now {
+		return estimate
+	}
+	return now
 }
 
 // Text is the message's searchable text (search_text).
