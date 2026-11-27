@@ -42,6 +42,9 @@ type repoStatus struct {
 	URL        string `json:"url"`
 	Authorized bool   `json:"authorized"`
 	Mounted    bool   `json:"mounted"`
+	// MountedIn names the channels it is mounted in, when the check was not about one channel (repos_list without
+	// channel): Mounted then says it is mounted in any of them.
+	MountedIn []string `json:"mounted_in,omitempty"`
 }
 
 // repoGuide is what the owner does on GitHub for what is left.
@@ -131,6 +134,23 @@ func planRepos(inv provider.RepoInventory, ws provider.Workspace, repos []string
 		}
 	}
 	return p
+}
+
+// checkEverywhere is each repository's status across every channel (main chat included): mounted when any channel
+// has it, with the channels that do.
+func checkEverywhere(inv provider.RepoInventory, repos []string) []repoStatus {
+	out := make([]repoStatus, 0, len(repos))
+	for _, r := range repos {
+		st := repoStatus{URL: r, Authorized: inv.IsAuthorized(r)}
+		for _, w := range inv.Workspaces {
+			if slices.ContainsFunc(w.Repos, func(m string) bool { return provider.SameRepo(m, r) }) {
+				st.Mounted = true
+				st.MountedIn = append(st.MountedIn, w.Name+"（"+w.ID+"）")
+			}
+		}
+		out = append(out, st)
+	}
+	return out
 }
 
 // byOwner groups canonical repositories by their owner, in first-seen order.

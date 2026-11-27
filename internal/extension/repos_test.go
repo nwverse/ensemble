@@ -263,6 +263,34 @@ func TestRepoToolsAreGated(t *testing.T) {
 		!strings.Contains(out, "https://github.com/nwverse/ensemble") {
 		t.Errorf("list at read: %q %v", out, err)
 	}
+	// Without channel, a repository mounted only in a side channel is mounted, and mounted_in names that channel.
+	fd.mu.Lock()
+	fd.channels["chan_01DCDvtmZrq32yBT59hH7XwF"] = []string{"https://github.com/nwverse/ensemble"}
+	fd.mu.Unlock()
+	out, err = call(toolReposList, map[string]any{"account_id": id, "repos": []string{"nwverse/ensemble", "nwverse/openlinkedin"}})
+	var listed struct {
+		Accounts []struct {
+			Check   []repoStatus `json:"check"`
+			CheckIn string       `json:"check_channel"`
+		} `json:"accounts"`
+	}
+	if err == nil {
+		err = json.Unmarshal([]byte(out[:strings.Index(out, "\n")]), &listed)
+	}
+	if err != nil || len(listed.Accounts) != 1 || len(listed.Accounts[0].Check) != 2 || listed.Accounts[0].CheckIn != "" {
+		t.Fatalf("list without channel: %q %v", out, err)
+	}
+	if c := listed.Accounts[0].Check; !c[0].Mounted || !slices.Equal(c[0].MountedIn, []string{"openbilibili（chan_01DCDvtmZrq32yBT59hH7XwF）"}) ||
+		c[1].Mounted || len(c[1].MountedIn) != 0 {
+		t.Errorf("mounted anywhere: %+v", c)
+	}
+	// With a channel, only that channel counts.
+	if out, _ := call(toolReposList, map[string]any{"account_id": id, "channel": "openlinkedin", "repos": []string{"nwverse/ensemble"}}); !strings.Contains(out, `"mounted":false`) || strings.Contains(out, "mounted_in") {
+		t.Errorf("list in a channel: %s", out)
+	}
+	fd.mu.Lock()
+	fd.channels["chan_01DCDvtmZrq32yBT59hH7XwF"] = []string{}
+	fd.mu.Unlock()
 	for _, n := range []string{toolRepoBind, toolRepoAuthorize} {
 		if _, err := describe(n, args); err == nil {
 			t.Errorf("%s described at read", n)

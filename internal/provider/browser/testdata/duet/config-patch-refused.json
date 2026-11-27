@@ -1,0 +1,1 @@
+{"error":{"message":"The Claude GitHub App cannot read one of these repositories.","resource":"github_repo_access_denied","sub_reason":"read_denied","type":"permission_error"},"request_id":"req_011Example","type":"error"}

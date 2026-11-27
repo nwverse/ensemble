@@ -28,7 +28,7 @@ const (
 const describeInventoryWait = 40 * time.Second
 
 var repoReadTool = wire.ConnectorTool{Name: toolReposList,
-	Description: "列出个人 Agent（目前是 Claude Duet）能看到的仓库：Claude GitHub App 已授权的仓库、每个频道（含主聊天）已挂载的仓库；带 repos 时逐个说明是否已授权、是否已挂到 channel。用户要给 Agent 挂仓库、问某个仓库它能不能用时先调它。",
+	Description: "列出个人 Agent（目前是 Claude Duet）能看到的仓库：Claude GitHub App 已授权的仓库、每个频道（含主聊天）已挂载的仓库；带 repos 时逐个说明是否已授权、是否已挂到 channel（不传 channel 时说明挂在哪些频道：mounted 为任一频道已挂，mounted_in 列出频道）。用户要给 Agent 挂仓库、问某个仓库它能不能用时先调它。",
 	InputSchema: schema(`{"type":"object","properties":{"account_id":{"type":"string","description":"只看这个账号；省略时列出所有能挂仓库的账号"},"channel":{"type":"string","description":"频道 id（chan_…）或名字，主聊天写 main"},"repos":{"type":"array","items":{"type":"string"},"description":"要检查的仓库，如 nwverse/openlinkedin 或 https://github.com/nwverse/openlinkedin"}}}`)}
 
 var repoWriteTools = []wire.ConnectorTool{
@@ -139,14 +139,16 @@ func (t *tools) repoList(ctx context.Context, raw json.RawMessage) (wire.Connect
 		}
 		l.Complete, l.Channels, l.GrantURL = inv.Complete, inv.Workspaces, inv.GrantURL
 		if len(repos) > 0 {
-			ws, ok := inv.Workspace(a.Channel)
-			if a.Channel != "" && !ok {
-				l.Error = errNoChannel(a.Channel, inv).Error()
-			}
-			if ok {
+			if strings.TrimSpace(a.Channel) == "" {
+				// No channel named: mounted means mounted in any channel, which mounted_in names.
+				l.Check = checkEverywhere(inv, repos)
+			} else if ws, ok := inv.Workspace(a.Channel); ok {
 				l.CheckIn = ws.Name + "（" + ws.ID + "）"
+				l.Check = planRepos(inv, ws, repos).Statuses
+			} else {
+				l.Error = errNoChannel(a.Channel, inv).Error()
+				l.Check = checkEverywhere(inv, repos)
 			}
-			l.Check = planRepos(inv, ws, repos).Statuses
 		}
 		out = append(out, l)
 	}
