@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/store"
-	"github.com/nwverse/personal-agent-club/internal/vault"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/store"
+	"github.com/nwverse/ensemble/internal/vault"
 )
 
 // DefaultFollowUps are when a sent message's session is synced again, and an unconfirmed send asked about.
@@ -115,6 +115,9 @@ func (c *Club) SetTakeover(fn func(ctx context.Context, accountID, step string) 
 func (c *Club) SetPersonaDir(dir string) { c.opts.PersonaDir = dir }
 
 func (c *Club) now() int64 { return c.opts.Now().UnixMilli() }
+
+// Now is the club's clock (Options.Now), for what is written relative to it ("3 minutes ago").
+func (c *Club) Now() time.Time { return c.opts.Now() }
 
 // Info is club.info's answer.
 func (c *Club) Info() protocol.ClubInfo {

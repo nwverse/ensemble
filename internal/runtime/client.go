@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
 )
 
 // ClubClient abstracts in-process (*core.Club) and out-of-process (`serve` HTTP+SSE) access to club.

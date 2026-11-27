@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider/grokbot"
-	"github.com/nwverse/personal-agent-club/internal/takeover"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider/grokbot"
+	"github.com/nwverse/ensemble/internal/takeover"
 )
 
 // How many takeovers may wait at once, and how long one stays.

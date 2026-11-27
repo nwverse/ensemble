@@ -12,11 +12,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
 )
 
 // Machine describes a computer exposing a browser backend to this Driver.
@@ -97,6 +98,25 @@ type Site struct {
 	SendButtonSel  string // CSS selector for send button (Enter fallback when empty)
 	MessageLogSel  string // CSS selector for message container / rows
 	SignedOutHosts []string
+	// SendTimeout bounds a send's run when it needs longer than a read's (Gemini's waits for the answer, which the
+	// page loses when it is left before the answer is written); 0 for the Adapter's own timeout.
+	SendTimeout time.Duration
+	// impl replaces the generic DOM scripts for a site that needs its own (dots.go, sites.go); nil for the generic
+	// ones.
+	impl siteImpl
+}
+
+// siteImpl is a site's own Verify, ListSessions, ListMessages and Send, run through the Adapter's driver.
+type siteImpl interface {
+	verify(ctx context.Context, a *Adapter, credential string) (provider.RemoteAccount, error)
+	listSessions(ctx context.Context, a *Adapter, credential string) ([]provider.RemoteSession, error)
+	listMessages(ctx context.Context, a *Adapter, credential string, session provider.SessionRef, opts provider.ListOptions) (provider.RemotePage, error)
+	send(ctx context.Context, a *Adapter, credential string, session provider.SessionRef, msg provider.Outgoing) (provider.SendResult, error)
+}
+
+// siteQuotaReader is an optional capability of a siteImpl that reads real usage/quota windows inside the signed-in tab.
+type siteQuotaReader interface {
+	readQuota(ctx context.Context, a *Adapter, credential string) ([]provider.QuotaReading, error)
 }
 
 // Built-in site presets.
@@ -106,11 +126,12 @@ var (
 		Label:          "Muse",
 		AppURL:         "https://muse.ai/",
 		Slot:           "pac-muse",
-		SingleSession:  true,
-		ComposerSel:    `textarea[placeholder="消息"], textarea[name="message"], textarea, div[contenteditable="true"]`,
-		SendButtonSel:  `button[type="submit"], button[aria-label*="Send" i]`,
-		MessageLogSel:  `[role="log"], [data-message-author-role], [data-message-role]`,
+		SingleSession:  false,
+		ComposerSel:    museComposerSel,
+		SendButtonSel:  museSendSel,
+		MessageLogSel:  `[data-message-item][data-message-id]`,
 		SignedOutHosts: []string{"login", "auth"},
+		impl:           museSite{},
 	}
 	SiteClaudeDuet = Site{
 		Provider:       "claude_duet",
@@ -118,32 +139,41 @@ var (
 		AppURL:         "https://claude.ai/duet",
 		Slot:           "pac-duet",
 		SingleSession:  false,
-		ComposerSel:    `div[contenteditable="true"].ProseMirror, [data-testid="chat-input"], [role="textbox"]`,
-		SendButtonSel:  `button[aria-label="Send"], button[aria-label="Send message"], button[aria-label*="Send" i]`,
-		MessageLogSel:  `[role="feed"] article, [data-testid="user-message"], .font-claude-response`,
+		ComposerSel:    duetComposerSel,
+		SendButtonSel:  duetSendSel,
+		MessageLogSel:  `[role="feed"] [role="article"]`,
 		SignedOutHosts: []string{"login"},
+		impl:           duetSite{},
 	}
+	// SiteGeminiTasks is Gemini (gemini.google.com): its main chat (one conversation Ensemble started), the account's
+	// other conversations as side chats and its tasks (the composer's 任务 / Tasks mode), read through the page's own
+	// RPCs and sent through the conversation's composer (gemini.go).
 	SiteGeminiTasks = Site{
 		Provider:       "gemini_tasks",
 		Label:          "Gemini Tasks",
 		AppURL:         "https://gemini.google.com/app",
 		Slot:           "pac-gemini",
 		SingleSession:  false,
-		ComposerSel:    `div.ql-editor[contenteditable="true"], rich-textarea [contenteditable="true"], textarea`,
-		SendButtonSel:  `button[aria-label*="Send" i], button.send-button`,
+		ComposerSel:    geminiComposerSel,
+		SendButtonSel:  geminiSendSel,
 		MessageLogSel:  `user-query, model-response, message-content`,
 		SignedOutHosts: []string{"accounts.google.com"},
+		SendTimeout:    geminiSendTimeout,
+		impl:           geminiSite{},
 	}
+	// SiteDots is ChatGPT's Dot (chatgpt.com/dots/<id>): one session per Dot, read through the page's own
+	// backend-api and sent through its composer (dots.go).
 	SiteDots = Site{
 		Provider:       "dots",
 		Label:          "Dots",
 		AppURL:         "https://chatgpt.com/",
 		Slot:           "pac-dots",
 		SingleSession:  false,
-		ComposerSel:    `#prompt-textarea, textarea[name="prompt-textarea"]`,
-		SendButtonSel:  `button[data-testid="send-button"], button[aria-label="Send prompt"]`,
-		MessageLogSel:  `[data-message-author-role]`,
+		ComposerSel:    dotsComposerSel,
+		SendButtonSel:  dotsSendSel,
+		MessageLogSel:  `article[data-message-id]`,
 		SignedOutHosts: []string{"auth/login"},
+		impl:           dotsSite{},
 	}
 )
 
@@ -152,12 +182,20 @@ type Adapter struct {
 	site    Site
 	driver  Driver
 	timeout time.Duration
+	tabs    *tabs
+	// pictures keeps the pictures a site made in the page (a Dot's own avatar, scaled down to a data URL) by the
+	// picture's key, so a sync that finds the same picture again does not fetch and scale it again (dots.go).
+	pictures *pictureCache
 }
 
 // New creates a browser-backed provider.Adapter for site using driver.
 func New(site Site, driver Driver) *Adapter {
-	return &Adapter{site: site, driver: driver, timeout: 45 * time.Second}
+	return &Adapter{site: site, driver: driver, timeout: 45 * time.Second, tabs: newTabs(DefaultTabRecycle),
+		pictures: newPictureCache(pictureCacheMax)}
 }
+
+// SetTabRecycle changes when the space's tab is closed and reopened (DefaultTabRecycle unless set).
+func (a *Adapter) SetTabRecycle(p TabRecycle) { a.tabs.policy = p }
 
 var _ provider.Adapter = (*Adapter)(nil)
 
@@ -166,7 +204,18 @@ func (a *Adapter) Connection() string { return protocol.ConnectionBrowser }
 func (a *Adapter) Site() Site         { return a.site }
 func (a *Adapter) Driver() Driver     { return a.driver }
 
+// run runs a read script: one that may stay on the page it finds (openJS) and may close the tab once it has its
+// answer (TabRecycle).
 func (a *Adapter) run(ctx context.Context, rawCred, script string, out any) error {
+	return a.exec(ctx, rawCred, script, out, true)
+}
+
+// runSend runs a send script: it never closes the tab, and no read closes the tab while it runs.
+func (a *Adapter) runSend(ctx context.Context, rawCred, script string, out any) error {
+	return a.exec(ctx, rawCred, script, out, false)
+}
+
+func (a *Adapter) exec(ctx context.Context, rawCred, script string, out any, read bool) error {
 	if a.driver == nil {
 		return &provider.Error{Code: provider.CodeUpstreamError}
 	}
@@ -174,12 +223,32 @@ func (a *Adapter) run(ctx context.Context, rawCred, script string, out any) erro
 	if err != nil {
 		return err
 	}
+	lease, err := a.tabs.begin(ctx, cred.MachineID+"\x00"+cred.Backend, read)
+	if err != nil {
+		return &provider.Error{Code: provider.CodeNetworkError, Retryable: true}
+	}
+	if lease.reload {
+		script = reloadScript(script)
+	}
+	if lease.recycle {
+		script = recycleScript(script)
+	}
+	var answer struct {
+		Error       string `json:"error"`
+		TabRecycled bool   `json:"tabRecycled"`
+	}
+	failed := true
+	defer func() { a.tabs.end(lease, failed || answer.Error != "", answer.TabRecycled) }()
+	timeout := a.timeout
+	if !read && a.site.SendTimeout > timeout {
+		timeout = a.site.SendTimeout
+	}
 	res, err := a.driver.Run(ctx, RunRequest{
 		MachineID: cred.MachineID,
 		Backend:   cred.Backend,
 		Slot:      a.site.Slot,
 		Script:    script,
-		TimeoutMS: int(a.timeout / time.Millisecond),
+		TimeoutMS: int(timeout / time.Millisecond),
 	})
 	if err != nil {
 		return &provider.Error{Code: provider.CodeNetworkError, Retryable: true}
@@ -187,14 +256,48 @@ func (a *Adapter) run(ctx context.Context, rawCred, script string, out any) erro
 	if strings.TrimSpace(res.Error) != "" {
 		return &provider.Error{Code: provider.CodeUpstreamError, Retryable: true}
 	}
-	payload := extractJSONLine(res.Output)
+	payload := scriptValue(res.Output)
 	if payload == "" {
 		return &provider.Error{Code: provider.CodeUpstreamError, Retryable: true}
 	}
 	if err := json.Unmarshal([]byte(payload), out); err != nil {
 		return &provider.Error{Code: provider.CodeUpstreamError, Retryable: true}
 	}
+	_ = json.Unmarshal([]byte(payload), &answer)
+	failed = false
 	return nil
+}
+
+// scriptValue is what a site script returned. Persona's browser.run (and LocalEgoDriver, which wraps scripts the
+// same way) answers {"value": <the script's return value>, "error", "url", "title", "console"}; a driver that only
+// relays what the script printed answers it as the last JSON line.
+func scriptValue(output string) string {
+	var hub struct {
+		Value   json.RawMessage `json:"value"`
+		Console string          `json:"console"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(output)), &hub) == nil {
+		if v := strings.TrimSpace(string(hub.Value)); strings.HasPrefix(v, "{") {
+			return v
+		}
+		if line := extractJSONLine(hub.Console); line != "" {
+			return line
+		}
+	}
+	return extractJSONLine(output)
+}
+
+// exactURL is the openJS stay of a page read from its DOM: that very address, nothing else.
+func exactURL(u string) string {
+	return "^" + regexp.QuoteMeta(u) + "$"
+}
+
+func jsonArray(v []string) string {
+	if v == nil {
+		v = []string{}
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
 }
 
 // extractJSONLine finds the last JSON object line in driver stdout (ignoring notice/log lines).
@@ -210,51 +313,53 @@ func extractJSONLine(raw string) string {
 }
 
 func (a *Adapter) Verify(ctx context.Context, credential string) (provider.RemoteAccount, error) {
-	script := fmt.Sprintf(`
-await page.goto(%q);
-await page.waitForLoadState("domcontentloaded").catch(() => {});
+	if a.site.impl != nil {
+		return a.site.impl.verify(ctx, a, credential)
+	}
+	script := openJS(a.site.AppURL, exactURL(a.site.AppURL)) + fmt.Sprintf(`
 await new Promise(r => setTimeout(r, 1500));
+const composer = await page.waitForSelector("loc=css:" + %q, { state: "visible", timeout: 10000 }).then(() => true).catch(() => false);
 const url = await page.url();
 const title = await page.title();
-const signedOut = /\/login\b|accounts\.google\.com/i.test(url);
-console.log(JSON.stringify({ url, title, signedOut }));
-`, a.site.AppURL)
+const signedOut = /\/login\b|accounts\.google\.com/i.test(url) || %s.some(h => url.includes(h));
+return { url, title, signedOut, composer };
+`, a.site.ComposerSel, jsonArray(a.site.SignedOutHosts))
 	var r struct {
 		URL       string `json:"url"`
 		Title     string `json:"title"`
 		SignedOut bool   `json:"signedOut"`
+		Composer  *bool  `json:"composer"`
 	}
 	if err := a.run(ctx, credential, script, &r); err != nil {
 		return provider.RemoteAccount{}, err
 	}
-	if r.SignedOut {
+	// A site that does not redirect a signed-out visitor (muse.ai, gemini.google.com show a landing page) is told
+	// apart by its composer: only a signed-in page has one. An answer without the field is a signed-out one too.
+	if r.SignedOut || r.Composer == nil || !*r.Composer {
 		return provider.RemoteAccount{}, &provider.Error{Code: provider.CodeAuthFailed}
 	}
 	cred, _ := ParseCredential(credential)
-	name := strings.TrimSpace(r.Title)
-	if name == "" {
-		name = a.site.Label
-	}
 	return provider.RemoteAccount{
 		ExternalAccountID: a.site.Provider + ":" + cred.MachineID,
-		DisplayName:       name,
+		Alias:             strings.TrimSpace(r.Title),
 	}, nil
 }
 
 func (a *Adapter) ListSessions(ctx context.Context, credential string) ([]provider.RemoteSession, error) {
+	if a.site.impl != nil {
+		return a.site.impl.listSessions(ctx, a, credential)
+	}
 	if a.site.SingleSession {
+		// No list, so no time: LastActivityMs stays 0 and only the chat's messages move its rank.
 		return []provider.RemoteSession{{
-			ExternalID:     "main",
-			Title:          a.site.Label,
-			Kind:           protocol.KindMain,
-			LastActivityMs: time.Now().UnixMilli(),
-			CanSend:        true,
-			Ref:            map[string]string{"url": a.site.AppURL},
+			ExternalID: "main",
+			Title:      a.site.Label,
+			Kind:       protocol.KindMain,
+			CanSend:    true,
+			Ref:        map[string]string{"url": a.site.AppURL},
 		}}, nil
 	}
-	script := fmt.Sprintf(`
-await page.goto(%q);
-await page.waitForLoadState("domcontentloaded").catch(() => {});
+	script := openJS(a.site.AppURL, exactURL(a.site.AppURL)) + `
 await new Promise(r => setTimeout(r, 1500));
 const items = await page.evaluate(() => {
   const seen = new Set();
@@ -269,8 +374,8 @@ const items = await page.evaluate(() => {
   }
   return out;
 });
-console.log(JSON.stringify({ sessions: items }));
-`, a.site.AppURL)
+return { sessions: items };
+`
 	var r struct {
 		Sessions []struct {
 			ID    string `json:"id"`
@@ -281,16 +386,16 @@ console.log(JSON.stringify({ sessions: items }));
 	if err := a.run(ctx, credential, script, &r); err != nil {
 		return nil, err
 	}
-	now := time.Now().UnixMilli()
+	// The links carry no time: every row's LastActivityMs stays 0 (never the time of the read, which ranked every
+	// chat on top at every sync), and only the chats' messages move their rank.
 	out := make([]provider.RemoteSession, 0, len(r.Sessions)+1)
 	if len(r.Sessions) == 0 {
 		out = append(out, provider.RemoteSession{
-			ExternalID:     "main",
-			Title:          a.site.Label,
-			Kind:           protocol.KindMain,
-			LastActivityMs: now,
-			CanSend:        true,
-			Ref:            map[string]string{"url": a.site.AppURL},
+			ExternalID: "main",
+			Title:      a.site.Label,
+			Kind:       protocol.KindMain,
+			CanSend:    true,
+			Ref:        map[string]string{"url": a.site.AppURL},
 		})
 		return out, nil
 	}
@@ -300,18 +405,20 @@ console.log(JSON.stringify({ sessions: items }));
 			kind = protocol.KindMain
 		}
 		out = append(out, provider.RemoteSession{
-			ExternalID:     s.ID,
-			Title:          s.Title,
-			Kind:           kind,
-			LastActivityMs: now,
-			CanSend:        true,
-			Ref:            map[string]string{"url": s.URL},
+			ExternalID: s.ID,
+			Title:      s.Title,
+			Kind:       kind,
+			CanSend:    true,
+			Ref:        map[string]string{"url": s.URL},
 		})
 	}
 	return out, nil
 }
 
 func (a *Adapter) ListMessages(ctx context.Context, credential string, session provider.SessionRef, opts provider.ListOptions) (provider.RemotePage, error) {
+	if a.site.impl != nil {
+		return a.site.impl.listMessages(ctx, a, credential, session, opts)
+	}
 	targetURL := a.site.AppURL
 	if u := strings.TrimSpace(session.Ref["url"]); u != "" {
 		targetURL = u
@@ -320,9 +427,7 @@ func (a *Adapter) ListMessages(ctx context.Context, credential string, session p
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
-	script := fmt.Sprintf(`
-await page.goto(%q);
-await page.waitForLoadState("domcontentloaded").catch(() => {});
+	script := openJS(targetURL, exactURL(targetURL)) + fmt.Sprintf(`
 await new Promise(r => setTimeout(r, 1500));
 const msgs = await page.evaluate(({ sel, limit }) => {
   const nodes = Array.from(document.querySelectorAll(sel));
@@ -337,8 +442,8 @@ const msgs = await page.evaluate(({ sel, limit }) => {
   }
   return out;
 }, { sel: %q, limit: %d });
-console.log(JSON.stringify({ messages: msgs }));
-`, targetURL, a.site.MessageLogSel, limit)
+return { messages: msgs };
+`, a.site.MessageLogSel, limit)
 	var r struct {
 		Messages []struct {
 			ID   string `json:"id"`
@@ -370,6 +475,9 @@ console.log(JSON.stringify({ messages: msgs }));
 }
 
 func (a *Adapter) Send(ctx context.Context, credential string, session provider.SessionRef, msg provider.Outgoing, _ provider.SendContext) (provider.SendResult, error) {
+	if a.site.impl != nil {
+		return a.site.impl.send(ctx, a, credential, session, msg)
+	}
 	if strings.TrimSpace(msg.Text) == "" {
 		return provider.SendResult{}, errors.New("empty message")
 	}
@@ -389,16 +497,39 @@ const clicked = await page.click("loc=css:" + sendSel, { timeout: 2000 }).then((
 if (!clicked) {
   await page.press("loc=css:" + sel, "Enter");
 }
-console.log(JSON.stringify({ sent: true }));
+return { sent: true };
 `, targetURL, a.site.ComposerSel, msg.Text, a.site.SendButtonSel)
 	var r struct {
 		Sent bool `json:"sent"`
 	}
-	if err := a.run(ctx, credential, script, &r); err != nil {
+	if err := a.runSend(ctx, credential, script, &r); err != nil {
 		return provider.SendResult{Status: provider.Unconfirmed}, err
 	}
 	if !r.Sent {
 		return provider.SendResult{Status: provider.Unconfirmed}, nil
 	}
 	return provider.SendResult{Status: provider.Sent}, nil
+}
+
+var (
+	_ provider.MachineBound = (*Adapter)(nil)
+	_ provider.QuotaReader  = (*Adapter)(nil)
+)
+
+// ReadQuota reads real usage/quota readings from the signed-in web app when the site exposes one (Claude Duet,
+// ChatGPT Dots, Muse, Gemini); returns nil without error when unavailable.
+func (a *Adapter) ReadQuota(ctx context.Context, credential string) ([]provider.QuotaReading, error) {
+	if qr, ok := a.site.impl.(siteQuotaReader); ok {
+		return qr.readQuota(ctx, a, credential)
+	}
+	return nil, nil
+}
+
+// Machine is the computer and backend a credential names (provider.MachineBound).
+func (a *Adapter) Machine(credential string) (string, string) {
+	c, err := ParseCredential(credential)
+	if err != nil {
+		return "", ""
+	}
+	return c.MachineID, c.Backend
 }

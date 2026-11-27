@@ -1,6 +1,7 @@
 // Package extension is the Persona shell: club as a Persona extension program. It contributes the agent source "pac"
 // (the hub's agentsrc.* calls go to the club's default space through the same core.Club.Call the serve shell uses,
-// and the space's changes go back as agentsrc.updated), the accounts page (ui "accounts", accounts.go) and the
+// and the space's changes go back as agentsrc.updated), its pages (the home, its card and the accounts page, all
+// drawn by accounts.go) and the
 // connector "club" carrying the assistant's club_agent_* tools (tools.go). Its data lives in the extension's data
 // directory (storage.go).
 package extension
@@ -9,6 +10,8 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,12 +21,14 @@ import (
 
 	"github.com/nwverse/persona/sdk/go/ext"
 
-	pac "github.com/nwverse/personal-agent-club"
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider/browser"
-	"github.com/nwverse/personal-agent-club/internal/provider/echo"
-	"github.com/nwverse/personal-agent-club/internal/runtime"
+	pac "github.com/nwverse/ensemble"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider/browser"
+	"github.com/nwverse/ensemble/internal/provider/echo"
+	"github.com/nwverse/ensemble/internal/provider/muse2api"
+	"github.com/nwverse/ensemble/internal/provider/web"
+	"github.com/nwverse/ensemble/internal/runtime"
 )
 
 // ID is the extension's id; Contribution is its agent_sources contribution, the prefix of its session ids in
@@ -35,9 +40,27 @@ const (
 
 // Config is the extension's configuration (persona-extension.json "configuration").
 type Config struct {
-	DemoEcho         bool  `json:"demo_echo"`
-	BrowserProviders bool  `json:"browser_providers"`
+	DemoEcho bool `json:"demo_echo"`
+	// BrowserProviders adds Muse, Claude Duet, Gemini Tasks and Dots through a paired computer's browser. On unless
+	// switched off (as the manifest's default says): nothing is reached until an account is paired on a computer.
+	BrowserProviders *bool `json:"browser_providers"`
 	AssistantRuntime *bool `json:"assistant_runtime"`
+	// Muse2APIURL is the address of the owner's muse2api server; set, the muse2api provider is added. The manifest's
+	// "config:muse2api_url:http" lets the egress proxy through to that address only.
+	Muse2APIURL   string `json:"muse2api_url"`
+	Muse2APIModel string `json:"muse2api_model"`
+	// InboxConversations puts each chat of the paired accounts into Persona's Inbox as one row (off unless switched
+	// on); InboxReply lets the owner answer there (on); InboxViaSubscription has a subscription read the rows
+	// instead of the Inbox itself; TriageRules are the owner's own words for sorting them.
+	InboxConversations   bool   `json:"inbox_conversations"`
+	InboxReply           *bool  `json:"inbox_reply"`
+	InboxViaSubscription bool   `json:"inbox_via_subscription"`
+	InboxPush            *bool  `json:"inbox_push"`
+	TriageRules          string `json:"triage_rules"`
+}
+
+func (c Config) browserProvidersEnabled() bool {
+	return c.BrowserProviders == nil || *c.BrowserProviders
 }
 
 func (c Config) assistantRuntimeEnabled() bool {
@@ -56,9 +79,28 @@ func resolveRuntimeSocket() string {
 }
 
 // Program is the extension program serving club. The club is closed when the program ends.
-func Program(club *core.Club, version string) ext.Program {
+func Program(club *core.Club, version string) ext.Program { return program(club, version, nil, nil) }
+
+// program is Program with the phone-alert sender given (tests); nil sends through the hub's notify route with the
+// token the hub gave this run. onRound, if any, is called after each round of alerts.
+func program(club *core.Club, version string, push pushFunc, onRound func()) ext.Program {
+	var hubAPIPtr atomic.Pointer[hubAPI]
+	hubAPIPtr.Store(&hubAPI{})
+	if push == nil {
+		push = hubPush(HTTPClient(), func() hubAPI { return *hubAPIPtr.Load() })
+	}
 	var hubPtr atomic.Pointer[ext.Hub]
 	driver := browser.NewPersonaHubDriver(&hubPtr)
+	var runtimeOn atomic.Bool
+	runtimeOn.Store(true)
+	var cfgPtr atomic.Pointer[Config]
+	cfgPtr.Store(&Config{})
+	inboxCfg := func() inboxConfig { return cfgPtr.Load().inbox() }
+	in := newInbox(club, driver, inboxCfg)
+	note := newNotifier(in, hubPtr.Load, push)
+	note.onRound = onRound
+	page := accountsPage(club, &hubPtr, driver, &runtimeOn, inboxCfg)
+	tool := toolsHandler(club, driver)
 	return ext.Program{
 		ID:       ID,
 		Version:  version,
@@ -69,11 +111,30 @@ func Program(club *core.Club, version string) ext.Program {
 			if err := init.Config(&cfg); err != nil {
 				return nil, err
 			}
-			if cfg.BrowserProviders {
+			runtimeOn.Store(cfg.assistantRuntimeEnabled())
+			cfgPtr.Store(&cfg)
+			if slices.Contains(init.Hub.Scopes, "notify") { // only when the owner granted it
+				hubAPIPtr.Store(&hubAPI{URL: init.Hub.URL, Token: init.Hub.Token})
+			}
+			if cfg.browserProvidersEnabled() {
 				for _, site := range []browser.Site{browser.SiteMuse, browser.SiteClaudeDuet, browser.SiteGeminiTasks, browser.SiteDots} {
 					if _, ok := club.Registry().Get(site.Provider); !ok {
 						club.Registry().Register(browser.New(site, driver))
 					}
+				}
+			}
+			if strings.TrimSpace(cfg.Muse2APIURL) != "" {
+				// Through the hub's egress proxy, like every provider (storage.go), but waiting as long for an answer's
+				// headers as for the answer: muse2api answers in one piece once muse.ai has finished. A bad address
+				// leaves muse2api out (listed as unavailable) rather than stopping the whole extension.
+				client := HTTPClient()
+				client.Transport.(*http.Transport).ResponseHeaderTimeout = muse2api.AnswerTimeout
+				m, err := muse2api.New(muse2api.Options{Client: web.UseClient(client), URL: cfg.Muse2APIURL,
+					Model: cfg.Muse2APIModel})
+				if err != nil {
+					slog.Warn("muse2api left out", "err", err)
+				} else {
+					club.Registry().Register(m)
 				}
 			}
 			if cfg.DemoEcho {
@@ -107,7 +168,9 @@ func Program(club *core.Club, version string) ext.Program {
 				}
 			}
 			sub := club.Subscribe(core.DefaultSpace)
-			go forward(ctx, sub, hub, club, bridgeDone)
+			note.seed(ctx) // the log of alerts starts now: what waits already is remembered, not alerted
+			go note.run(ctx)
+			go forward(ctx, sub, hub, club, bridgeDone, note)
 			// The connector as the manifest has it: the hub wants the program to say it has it.
 			var m struct {
 				Contributes struct {
@@ -119,9 +182,14 @@ func Program(club *core.Club, version string) ext.Program {
 			}
 			return map[string]any{"connectors": m.Contributes.Connectors}, nil
 		},
-		UI: map[string]ext.Page{AccountsUI: accountsPage(club, &hubPtr, driver)},
+		UI: map[string]ext.Page{HomeUI: page, HomeCardUI: page, AccountsUI: page, InboxItemUI: in.itemPage()},
 		Namespaces: map[string]ext.Handler{
-			ext.ConnectorNamespace: toolsHandler(club),
+			ext.ConnectorNamespace: func(ctx context.Context, method string, params json.RawMessage) (any, error) {
+				if ext.Contribution(params) == InboxConnector {
+					return in.handler()(ctx, method, params)
+				}
+				return tool(ctx, method, params)
+			},
 			protocol.AgentSourceNamespace: func(ctx context.Context, method string, params json.RawMessage) (any, error) {
 				if c := ext.Contribution(params); c != "" && c != Contribution {
 					return nil, ext.NoContribution(c)
@@ -137,8 +205,8 @@ func Program(club *core.Club, version string) ext.Program {
 }
 
 // forward sends the space's changes to the hub until the program ends, then closes the club. A change also redraws
-// the accounts page where it is on screen (the hub coalesces these).
-func forward(ctx context.Context, sub *core.Subscription, hub *ext.Hub, club *core.Club, bridgeDone <-chan struct{}) {
+// the extension's pages where they are on screen (the hub coalesces these).
+func forward(ctx context.Context, sub *core.Subscription, hub *ext.Hub, club *core.Club, bridgeDone <-chan struct{}, note *notifier) {
 	defer club.Close()
 	defer sub.Close()
 	for {
@@ -147,12 +215,16 @@ func forward(ctx context.Context, sub *core.Subscription, hub *ext.Hub, club *co
 			if bridgeDone != nil {
 				<-bridgeDone
 			}
+			<-note.done // the alerts stop before the club closes under them
 			return
 		case <-sub.Ready():
 			for _, e := range sub.Take() {
 				_ = hub.Notify(protocol.EventUpdated, protocol.UpdatedEvent{Contribution: Contribution, SessionKeys: e.SessionKeys})
 			}
-			_ = hub.Invalidate(AccountsUI)
+			for _, ui := range []string{HomeUI, HomeCardUI, AccountsUI} {
+				_ = hub.Invalidate(ui)
+			}
+			note.poke(ctx)
 		}
 	}
 }

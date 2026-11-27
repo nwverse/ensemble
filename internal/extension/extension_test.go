@@ -15,11 +15,11 @@ import (
 	"github.com/nwverse/persona/sdk/go/exttest"
 	"github.com/nwverse/persona/sdk/go/wire"
 
-	pac "github.com/nwverse/personal-agent-club"
-	"github.com/nwverse/personal-agent-club/internal/conformance"
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
+	pac "github.com/nwverse/ensemble"
+	"github.com/nwverse/ensemble/internal/conformance"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
 )
 
 func TestManifest(t *testing.T) {
@@ -54,7 +54,7 @@ func TestConformance(t *testing.T) {
 		info := &wire.ExtensionInfo{ID: ID, Version: m.Version, Dir: t.TempDir(), DataDir: t.TempDir()}
 		var res wire.InitializeResult
 		if err := h.call("initialize", wire.InitializeParams{Protocol: ext.Protocol, Extension: info, Plugin: info,
-			Config: json.RawMessage(`{"demo_echo":false}`)}, &res); err != nil {
+			Config: json.RawMessage(`{"demo_echo":false,"browser_providers":false}`)}, &res); err != nil {
 			t.Fatal(err)
 		}
 		var raw json.RawMessage

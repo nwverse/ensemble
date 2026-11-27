@@ -8,7 +8,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/ensemble/internal/protocol"
 )
 
 // ErrNotFound is returned by updates of a row that does not exist.
@@ -18,11 +18,20 @@ var ErrNotFound = errors.New("store: not found")
 // listed, as in the Lark gateway.
 const AccountRemoved = "removed"
 
+// Who chose an account's display name (Account.NameSource).
+const (
+	NameAuto  = "auto"
+	NameOwner = "owner"
+)
+
 // Account is a paired account. Credentials are not here: they live in the vault.
 type Account struct {
-	AccountID         string
-	Provider          string
-	DisplayName       string
+	AccountID   string
+	Provider    string
+	DisplayName string
+	// NameSource says who chose DisplayName: NameOwner (shown as it is, never renamed or numbered), NameAuto (club
+	// composed it from the provider's brand and the account's alias), or "" for a row stored before club kept this.
+	NameSource        string
 	ExternalAccountID string
 	Status            string // protocol.AccountActive, AccountPaused, AccountError, or AccountRemoved
 	LastSyncedAt      int64
@@ -39,11 +48,17 @@ type Account struct {
 type AccountPatch struct {
 	Status           *string
 	DisplayName      *string
+	NameSource       *string
 	LastSyncedAt     *int64
 	LastError        *string
 	AssistantControl *string
 	ShowQuota        *bool
 	QuotaDisplay     *string
+}
+
+// AccountMatch is what UpdateAccountIf requires of the row: its display name and name source as they were read.
+type AccountMatch struct {
+	DisplayName, NameSource string
 }
 
 // Session is one stored session.
@@ -76,6 +91,20 @@ type Message struct {
 	Blocks       []protocol.Block
 	CreateTimeMs int64
 	Position     int64
+	// FirstSeenMs, not stored, is the time to record for a message the provider gives no time (CreateTimeMs 0) when
+	// the store does not have it yet (0: the time of the write; never later than it). A message the store already
+	// has keeps the time it was first recorded with, whatever FirstSeenMs says: an estimate read again at every sync
+	// must not rewrite it, which would rank the session anew and count its replies unread again.
+	FirstSeenMs int64
+}
+
+// firstSeen is the time recorded for a new message without a time of its own: the caller's estimate, when it has
+// one no later than now, else now.
+func firstSeen(estimate, now int64) int64 {
+	if estimate > 0 && estimate <= now {
+		return estimate
+	}
+	return now
 }
 
 // Text is the message's searchable text (search_text).
@@ -126,6 +155,9 @@ type Store interface {
 	Account(ctx context.Context, accountID string) (Account, bool, error)
 	InsertAccount(ctx context.Context, a Account) error
 	UpdateAccount(ctx context.Context, accountID string, p AccountPatch, now int64) error
+	// UpdateAccountIf is UpdateAccount only while the row still matches m (a compare-and-set); ok says whether it
+	// was applied.
+	UpdateAccountIf(ctx context.Context, accountID string, m AccountMatch, p AccountPatch, now int64) (ok bool, err error)
 	// RemoveAccount unpairs the account: with deleteData its sessions, messages and outbox go too; otherwise it is
 	// marked removed and its data stays (unlisted) for a later export.
 	RemoveAccount(ctx context.Context, accountID string, deleteData bool, now int64) error
@@ -149,6 +181,9 @@ type Store interface {
 	MarkRead(ctx context.Context, sessionKey string, now int64) error
 	// Counts are an account's sessions and messages, removed or not.
 	Counts(ctx context.Context, accountID string) (Counts, error)
+	// CountUserMessagesSince returns how many user messages or confirmed sends this account has since `since` (Unix ms),
+	// used for local activity estimation when a provider does not expose real-time quota numbers.
+	CountUserMessagesSince(ctx context.Context, accountID string, since int64) (int, error)
 
 	// EnqueueOutbox writes a pending send; inserted is false when its client id is taken (the existing row is
 	// returned).

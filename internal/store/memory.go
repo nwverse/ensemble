@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/ensemble/internal/protocol"
 )
 
 // Memory is a Store in memory.
@@ -61,9 +61,24 @@ func (m *Memory) InsertAccount(_ context.Context, a Account) error {
 	return nil
 }
 
+// UpdateAccountIf applies p only while the row still has m's display name and name source.
+func (m *Memory) UpdateAccountIf(_ context.Context, id string, match AccountMatch, p AccountPatch, now int64) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.accounts[id]
+	if !ok || a.DisplayName != match.DisplayName || a.NameSource != match.NameSource {
+		return false, nil
+	}
+	return true, m.updateLocked(id, p, now)
+}
+
 func (m *Memory) UpdateAccount(_ context.Context, id string, p AccountPatch, now int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.updateLocked(id, p, now)
+}
+
+func (m *Memory) updateLocked(id string, p AccountPatch, now int64) error {
 	a, ok := m.accounts[id]
 	if !ok {
 		return ErrNotFound
@@ -73,6 +88,9 @@ func (m *Memory) UpdateAccount(_ context.Context, id string, p AccountPatch, now
 	}
 	if p.DisplayName != nil {
 		a.DisplayName = *p.DisplayName
+	}
+	if p.NameSource != nil {
+		a.NameSource = *p.NameSource
 	}
 	if p.LastSyncedAt != nil {
 		a.LastSyncedAt = *p.LastSyncedAt
@@ -184,8 +202,10 @@ func (m *Memory) putMessage(key string, msg Message, now int64) bool {
 	msg.SessionKey = key
 	msg.Blocks = slices.Clone(msg.Blocks)
 	old, ok := byID[msg.ExternalID]
+	hint := msg.FirstSeenMs
+	msg.FirstSeenMs = 0 // not stored: a message read back compares equal to the one written
 	if msg.CreateTimeMs == 0 {
-		msg.CreateTimeMs = now
+		msg.CreateTimeMs = firstSeen(hint, now)
 		if ok {
 			msg.CreateTimeMs = old.CreateTimeMs
 		}
@@ -385,6 +405,29 @@ func (m *Memory) Counts(_ context.Context, id string) (Counts, error) {
 		}
 	}
 	return c, nil
+}
+
+func (m *Memory) CountUserMessagesSince(_ context.Context, id string, since int64) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	msgCount := 0
+	for key, s := range m.sessions {
+		if s.AccountID != id {
+			continue
+		}
+		for _, msg := range m.messages[key] {
+			if msg.Role == protocol.RoleUser && msg.CreateTimeMs >= since {
+				msgCount++
+			}
+		}
+	}
+	outboxCount := 0
+	for _, o := range m.outbox {
+		if o.AccountID == id && o.Status == protocol.LocalSent && o.CreatedAt >= since {
+			outboxCount++
+		}
+	}
+	return max(msgCount, outboxCount), nil
 }
 
 func (m *Memory) EnqueueOutbox(_ context.Context, o Outbox) (Outbox, bool, error) {

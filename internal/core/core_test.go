@@ -4,13 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/store"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider/echo"
+	"github.com/nwverse/ensemble/internal/store"
+	"github.com/nwverse/ensemble/internal/vault"
 )
 
 // fake is a scripted provider: sendFn decides each send; calls counts sends per client id.
@@ -35,7 +39,7 @@ func (f *fake) Verify(_ context.Context, cred string) (provider.RemoteAccount, e
 	if cred == "bad-credential" {
 		return provider.RemoteAccount{}, &provider.Error{Code: provider.CodeAuthFailed, HTTPStatus: 401}
 	}
-	return provider.RemoteAccount{ExternalAccountID: "ext-" + cred, DisplayName: "Fake"}, nil
+	return provider.RemoteAccount{ExternalAccountID: "ext-" + cred, Alias: "Fake"}, nil
 }
 func (f *fake) ListSessions(context.Context, string) ([]provider.RemoteSession, error) {
 	return []provider.RemoteSession{
@@ -474,5 +478,73 @@ func TestMessagesReadAndSearch(t *testing.T) {
 	}
 	if res, _ := fx.space.Search(ctx, protocol.SearchParams{Q: " "}); res.Hits == nil || len(res.Hits) != 0 {
 		t.Fatalf("empty query %+v", res)
+	}
+}
+
+func TestInboxAccountSettings(t *testing.T) {
+	ctx := context.Background()
+	for name, open := range map[string]func(string) (store.Store, vault.Vault, error){
+		"memory": nil,
+		"sqlite": func(string) (store.Store, vault.Vault, error) {
+			st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "club.db"))
+			if err != nil {
+				return nil, nil, err
+			}
+			return st, vault.NewMemory(), nil
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var now atomic.Int64
+			now.Store(1_000_000)
+			club := New(Options{Registry: provider.NewRegistry(echo.New()), OpenSpace: open, FollowUps: []time.Duration{},
+				Now: func() time.Time { return time.UnixMilli(now.Load()) }})
+			t.Cleanup(club.Close)
+			s, err := club.Space(ctx, DefaultSpace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err := s.AddAccount(ctx, protocol.AddAccountParams{Provider: echo.Name, Credential: "echo-fixture-core"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(s.InboxAccountsOff(ctx)) != 0 || a.InboxOff {
+				t.Fatal("every account is in until turned off")
+			}
+			off := false
+			got, err := s.UpdateAccount(ctx, protocol.UpdateAccountParams{AccountID: a.AccountID, Inbox: &off})
+			if err != nil || !got.InboxOff || !s.InboxAccountsOff(ctx)[a.AccountID] {
+				t.Fatalf("turned off: %+v %v", got, err)
+			}
+			on := true
+			if got, err = s.UpdateAccount(ctx, protocol.UpdateAccountParams{AccountID: a.AccountID, Inbox: &on}); err != nil || got.InboxOff {
+				t.Fatalf("turned on: %+v %v", got, err)
+			}
+			// the time is written once, kept while on, and forgotten off
+			if s.InboxSince(ctx) != 0 {
+				t.Fatal("since before the switch")
+			}
+			first, err := s.MarkInboxSince(ctx, true)
+			if err != nil || first != 1_000_000 {
+				t.Fatalf("first mark: %d %v", first, err)
+			}
+			now.Add(500)
+			if again, _ := s.MarkInboxSince(ctx, true); again != first {
+				t.Fatalf("the time moved while the switch stayed on: %d", again)
+			}
+			if off, _ := s.MarkInboxSince(ctx, false); off != 0 || s.InboxSince(ctx) != 0 {
+				t.Fatal("the time stayed after the switch went off")
+			}
+			if later, _ := s.MarkInboxSince(ctx, true); later != 1_000_500 {
+				t.Fatalf("a new switch-on should count from now: %d", later)
+			}
+			// removing the account forgets its switch
+			_, _ = s.UpdateAccount(ctx, protocol.UpdateAccountParams{AccountID: a.AccountID, Inbox: &off})
+			if err := s.RemoveAccount(ctx, protocol.RemoveAccountParams{AccountID: a.AccountID, DeleteData: true}); err != nil {
+				t.Fatal(err)
+			}
+			if len(s.InboxAccountsOff(ctx)) != 0 {
+				t.Fatal("a removed account's switch was kept")
+			}
+		})
 	}
 }

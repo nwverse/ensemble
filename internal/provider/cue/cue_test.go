@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/provider/providertest"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider/providertest"
 )
 
 const key = "fixture-key-not-real"
@@ -31,7 +31,7 @@ func TestListsMainTaskAndLiveSubtasksWithTheKeyHeaderOnly(t *testing.T) {
 	up := providertest.Serve(t, routes(t))
 	a := New(Options{Origin: up.URL})
 	acct, err := a.Verify(ctx, key)
-	if err != nil || !reflect.DeepEqual(acct, provider.RemoteAccount{ExternalAccountID: "manus", DisplayName: "Cue · 小助手"}) {
+	if err != nil || !reflect.DeepEqual(acct, provider.RemoteAccount{ExternalAccountID: "manus", Alias: "小助手"}) {
 		t.Fatalf("%+v %v", acct, err)
 	}
 	sessions, err := a.ListSessions(ctx, key)

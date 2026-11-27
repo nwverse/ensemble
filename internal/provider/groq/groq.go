@@ -14,9 +14,9 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/provider/web"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider/web"
 )
 
 // Name is the provider's name.
@@ -73,15 +73,18 @@ type Options struct {
 	Origin string
 	// Model is the model asked; "" or an invalid id is DefaultModel.
 	Model string
-	Now   func() time.Time
+	// Timeout is how long an answer may take; 0 is 60 s.
+	Timeout time.Duration
+	Now     func() time.Time
 }
 
 // Adapter is the Groq provider.
 type Adapter struct {
-	client *http.Client
-	origin string
-	model  string
-	now    func() time.Time
+	client  *http.Client
+	origin  string
+	model   string
+	timeout time.Duration
+	now     func() time.Time
 }
 
 // New is the adapter.
@@ -95,7 +98,11 @@ func New(o Options) *Adapter {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	return &Adapter{client: o.Client, origin: strings.TrimRight(o.Origin, "/"), model: Model(o.Model), now: o.Now}
+	if o.Timeout <= 0 {
+		o.Timeout = answerTimeout
+	}
+	return &Adapter{client: o.Client, origin: strings.TrimRight(o.Origin, "/"), model: Model(o.Model), timeout: o.Timeout,
+		now: o.Now}
 }
 
 var (
@@ -124,7 +131,7 @@ func (a *Adapter) Verify(ctx context.Context, key string) (provider.RemoteAccoun
 	}
 	for _, row := range web.Records(web.Record(r.Data)["data"]) {
 		if web.Text(row["id"]) == a.model {
-			return provider.RemoteAccount{ExternalAccountID: "groq", DisplayName: "Groq", Quota: Quota(r.Header, a.now())}, nil
+			return provider.RemoteAccount{ExternalAccountID: "groq", Quota: Quota(r.Header, a.now())}, nil
 		}
 	}
 	return provider.RemoteAccount{}, &provider.Error{Code: "MODEL_UNAVAILABLE"}
@@ -150,7 +157,7 @@ func (a *Adapter) Send(ctx context.Context, key string, _ provider.SessionRef, m
 		messages[i] = map[string]string{"role": t.Role, "content": t.Text}
 	}
 	r := web.Request(ctx, a.client, http.MethodPost, a.origin+"/chat/completions", headers(key),
-		map[string]any{"model": a.model, "messages": messages}, answerTimeout)
+		map[string]any{"model": a.model, "messages": messages}, a.timeout)
 	if !r.OK && r.Transport {
 		return provider.SendResult{Status: provider.Unconfirmed, Error: "SEND_UNCONFIRMED"}, nil
 	}
@@ -234,7 +241,7 @@ func (a *Adapter) CallTools(ctx context.Context, key string, turns []provider.To
 		}
 		payload["tools"] = encoded
 	}
-	r := web.Request(ctx, a.client, http.MethodPost, a.origin+"/chat/completions", headers(key), payload, answerTimeout)
+	r := web.Request(ctx, a.client, http.MethodPost, a.origin+"/chat/completions", headers(key), payload, a.timeout)
 	if !r.OK {
 		return provider.ToolStepResult{}, web.ReadError(r)
 	}
@@ -284,7 +291,7 @@ func Quota(h http.Header, now time.Time) []provider.QuotaReading {
 			continue
 		}
 		q := provider.QuotaReading{Kind: d.kind, Limit: limit, Remaining: left, Window: d.window}
-		if reset, err := time.ParseDuration(h.Get("x-ratelimit-reset-" + d.suffix)); err == nil && reset >= 0 {
+		if reset, err := time.ParseDuration(h.Get("x-ratelimit-reset-" + d.suffix)); err == nil && reset > 0 {
 			q.ResetsAt = now.Add(reset).UnixMilli()
 		}
 		out = append(out, q)

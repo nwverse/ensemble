@@ -8,8 +8,8 @@ import (
 	testing "testing"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider/grokbot"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider/grokbot"
 )
 
 // drive answers the bot with one line per step, in the order the takeover asks: node, then pair, then ssh.

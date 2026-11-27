@@ -4,7 +4,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/ensemble/internal/protocol"
 )
 
 // Known are the providers club knows by name, whether or not this build can reach them. A known provider without a
@@ -13,6 +13,7 @@ var Known = []protocol.Provider{
 	{Provider: "cue", Connection: protocol.ConnectionServer},
 	{Provider: "grok_bot", Connection: protocol.ConnectionServer},
 	{Provider: "groq", Connection: protocol.ConnectionServer},
+	{Provider: "muse2api", Connection: protocol.ConnectionServer},
 	{Provider: "muse", Connection: protocol.ConnectionBrowser},
 	{Provider: "dots", Connection: protocol.ConnectionBrowser},
 	{Provider: "claude_duet", Connection: protocol.ConnectionBrowser},

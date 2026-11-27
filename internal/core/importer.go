@@ -10,9 +10,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/store"
+	"github.com/nwverse/ensemble/internal/names"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/store"
 )
 
 // BundleFormat and BundleVersion name the import bundle format (docs/import-bundle.md).
@@ -230,7 +231,7 @@ func planImport(b *Bundle, reg *provider.Registry, existing []store.Account, o I
 		if status == "pending_pairing" {
 			status = protocol.AccountError
 		}
-		row := store.Account{AccountID: a.AccountID, Provider: a.Provider, DisplayName: cmpOr(a.DisplayName, a.Provider),
+		row := store.Account{AccountID: a.AccountID, Provider: a.Provider, DisplayName: cmpOr(a.DisplayName, names.Stored(a.Provider, "")),
 			ExternalAccountID: ext, Status: status, LastSyncedAt: int64(a.LastSyncedAt), LastError: str(a.LastError),
 			AssistantControl: string(ControlOff), CreatedAt: int64(a.CreatedAt), UpdatedAt: int64(a.UpdatedAt)}
 		kept[a.AccountID] = row

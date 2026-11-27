@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/datadir"
-	"github.com/nwverse/personal-agent-club/internal/serve"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/datadir"
+	"github.com/nwverse/ensemble/internal/serve"
 )
 
 func runServe(args []string, d deps) int {

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/datadir"
-	"github.com/nwverse/personal-agent-club/internal/runtime"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/datadir"
+	"github.com/nwverse/ensemble/internal/runtime"
 )
 
 func runRuntime(args []string, d deps) int {

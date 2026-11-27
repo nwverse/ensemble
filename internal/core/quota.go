@@ -1,22 +1,26 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/store"
+	"github.com/nwverse/ensemble/internal/names"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/store"
 )
 
-// Quota comes only from what costs nothing: the readings a provider's answer carries (Groq's rate limit headers)
-// and any 429. It is kept in memory: after a restart nothing is known until the next answer.
+// Quota comes from provider quota APIs/headers (Groq rate-limit headers, Grok Bot GetSandUsageStatus, Claude Duet
+// /usage, ChatGPT /wham/usage) and any 429 response. Readings are kept in memory; local activity estimates (5h/24h
+// send counts) are derived from the store when needed.
 const (
-	quotaLowAt        = 0.2
-	quotaStaleMs      = 15 * 60_000
-	quotaUnknownReset = 5 * 60_000
+	quotaLowAt          = 0.2
+	quotaStaleMs        = 15 * 60_000
+	quotaUnknownReset   = 5 * 60_000
+	quotaPollIntervalMs = 5 * 60_000
 )
 
 type quotaState struct {
@@ -172,6 +176,9 @@ func buildQuota(q *quotaState, show bool, display string, now int64) *protocol.Q
 			continue
 		}
 		left := math.Max(0, math.Min(1, r.Remaining/r.Limit))
+		if r.Exhausted {
+			left = 0
+		}
 		if r.ResetsAt != 0 && now >= r.ResetsAt {
 			continue
 		}
@@ -179,7 +186,7 @@ func buildQuota(q *quotaState, show bool, display string, now int64) *protocol.Q
 		pct := int(math.Round(left * 100))
 		state := protocol.QuotaOK
 		switch {
-		case left == 0:
+		case r.Exhausted || left == 0:
 			state = protocol.QuotaExhausted
 		case left <= quotaLowAt:
 			state = protocol.QuotaLow
@@ -192,11 +199,22 @@ func buildQuota(q *quotaState, show bool, display string, now int64) *protocol.Q
 		bid := quotaBucketID(r)
 		rem := left
 		pctCopy := pct
-		dims = append(dims, protocol.Quota{State: state, Remaining: &rem, Percent: &pctCopy, Tone: tone, Kind: r.Kind,
+		dim := protocol.Quota{State: state, Remaining: &rem, Percent: &pctCopy, Tone: tone, Kind: r.Kind,
 			Label: label, Selected: bid, ResetsAt: r.ResetsAt,
-			CheckedAt: q.checkedAt, Source: protocol.QuotaSourceProvider, Stale: stale, Show: show})
-		buckets = append(buckets, protocol.QuotaBucket{ID: bid, Kind: r.Kind, Window: r.Window, Label: label,
-			Remaining: &rem, Percent: &pctCopy, State: state, Tone: tone, ResetsAt: r.ResetsAt})
+			CheckedAt: q.checkedAt, Source: protocol.QuotaSourceProvider, SourceNote: r.SourceNote, Stale: stale, Show: show}
+		bucket := protocol.QuotaBucket{ID: bid, Kind: r.Kind, Window: r.Window, Label: label,
+			Remaining: &rem, Percent: &pctCopy, State: state, Tone: tone, ResetsAt: r.ResetsAt}
+		if r.Kind == protocol.QuotaKindRequests || r.Kind == protocol.QuotaKindTokens || (r.Kind == protocol.QuotaKindCredits && r.Limit != 100) {
+			usedVal := math.Max(0, r.Limit-r.Remaining)
+			if r.Exhausted {
+				usedVal = r.Limit
+			}
+			limVal := r.Limit
+			bucket.Used = &usedVal
+			bucket.Limit = &limVal
+		}
+		dims = append(dims, dim)
+		buckets = append(buckets, bucket)
 	}
 	if len(dims) == 0 {
 		return nil
@@ -234,4 +252,149 @@ func buildQuota(q *quotaState, show bool, display string, now int64) *protocol.Q
 		}
 	}
 	return &out
+}
+
+// refreshQuota polls a QuotaReader best-effort on sync, throttled to quotaPollIntervalMs unless force is true.
+// On a forced (manual) sync that succeeded without returning fresh readings, any prior exhausted/cooldown state is
+// cleared so the user can unblock sends after resetting externally.
+func (s *Space) refreshQuota(ctx context.Context, accountID string, adapter provider.Adapter, cred string, force bool) {
+	if accountID == "" || cred == "" {
+		return
+	}
+	qr, ok := adapter.(provider.QuotaReader)
+	if !ok {
+		if force {
+			s.clearExhaustedQuota(accountID)
+		}
+		return
+	}
+	now := s.now()
+	s.mu.Lock()
+	last := s.quotaCheckedAt[accountID]
+	if !force && last != 0 && now-last < quotaPollIntervalMs {
+		s.mu.Unlock()
+		return
+	}
+	s.quotaCheckedAt[accountID] = now
+	s.mu.Unlock()
+	readings, err := qr.ReadQuota(ctx, cred)
+	if err != nil {
+		s.observe(accountID, err)
+		return
+	}
+	if len(readings) > 0 {
+		s.noteQuota(accountID, readings)
+	} else if force {
+		s.clearExhaustedQuota(accountID)
+	}
+}
+
+func (s *Space) clearExhaustedQuota(accountID string) {
+	now := s.now()
+	s.mu.Lock()
+	q, ok := s.quota[accountID]
+	cleared := false
+	if ok && (q.limitedUntil != 0 || quotaBlocksSend(buildQuota(q, false, protocol.QuotaDisplayAuto, now), now)) {
+		delete(s.quota, accountID)
+		cleared = true
+	}
+	s.mu.Unlock()
+	if cleared {
+		s.notify(nil)
+	}
+}
+
+func (s *Space) hasActiveQuotaBlock(accountID string) bool {
+	now := s.now()
+	s.mu.Lock()
+	q := s.quota[accountID]
+	s.mu.Unlock()
+	return quotaBlocksSend(buildQuota(q, false, protocol.QuotaDisplayAuto, now), now)
+}
+
+// accountUsage computes local rolling 5h/24h user send activity for an account. Returns nil when zero so idle
+// accounts omit the field on the wire.
+func (s *Space) accountUsage(ctx context.Context, accountID string, now int64) *protocol.UsageSummary {
+	n24, err := s.store.CountUserMessagesSince(ctx, accountID, now-int64(24*time.Hour/time.Millisecond))
+	if err != nil || n24 == 0 {
+		return nil
+	}
+	n5, err := s.store.CountUserMessagesSince(ctx, accountID, now-int64(5*time.Hour/time.Millisecond))
+	if err != nil {
+		n5 = 0
+	}
+	return &protocol.UsageSummary{Sent5h: n5, Sent24h: n24, Source: protocol.QuotaSourceEstimated}
+}
+
+// exhaustedResetAt returns (true, resetsAtMs) when any active quota dimension is currently exhausted (even if the user
+// pinned a different non-exhausted bucket for the avatar ring).
+func exhaustedResetAt(q *protocol.Quota, now int64) (bool, int64) {
+	if q == nil {
+		return false, 0
+	}
+	if len(q.Buckets) > 0 {
+		var best int64
+		found := false
+		for _, b := range q.Buckets {
+			if b.State != protocol.QuotaExhausted {
+				continue
+			}
+			if b.ResetsAt > 0 {
+				if now >= b.ResetsAt {
+					continue
+				}
+				if !found || b.ResetsAt > best {
+					best = b.ResetsAt
+				}
+				found = true
+			} else if !q.Stale {
+				found = true
+			}
+		}
+		return found, best
+	}
+	if q.State != protocol.QuotaExhausted {
+		return false, 0
+	}
+	if q.ResetsAt > 0 {
+		return now < q.ResetsAt, q.ResetsAt
+	}
+	return !q.Stale, 0
+}
+
+// quotaBlocksSend reports whether an account's quota is known to be exhausted right now, so a send should stop with
+// a clear prompt instead of silently failing against the provider.
+func quotaBlocksSend(q *protocol.Quota, now int64) bool {
+	blocked, _ := exhaustedResetAt(q, now)
+	return blocked
+}
+
+// exhaustedSendMessage formats the pre-send refusal message shown when an account's quota is exhausted.
+func exhaustedSendMessage(acct store.Account, q *protocol.Quota, now int64) string {
+	who := names.Title(names.Default, acct.Provider, acct.DisplayName, acct.NameSource)
+	_, resetsAt := exhaustedResetAt(q, now)
+	if resetsAt > now {
+		return fmt.Sprintf("「%s」的额度已用完（预计 %s 恢复），暂不发送以免失败。如确认已恢复，请在账号页点「立即同步」后再发。",
+			who, formatResetWait(resetsAt-now, resetsAt))
+	}
+	return fmt.Sprintf("「%s」的额度已用完或正在限流，暂不发送以免失败。稍后再试，或在账号页点「立即同步」刷新状态。", who)
+}
+
+func formatResetWait(waitMs, resetsAtMs int64) string {
+	d := time.Duration(waitMs) * time.Millisecond
+	switch {
+	case d < time.Minute:
+		return "马上"
+	case d < time.Hour:
+		return fmt.Sprintf("%d 分钟后", int(math.Ceil(d.Minutes())))
+	case d < 24*time.Hour:
+		h := int(d / time.Hour)
+		m := int((d % time.Hour) / time.Minute)
+		if m >= 10 {
+			return fmt.Sprintf("%d 小时 %d 分钟后", h, m)
+		}
+		return fmt.Sprintf("%d 小时后", h)
+	default:
+		return time.UnixMilli(resetsAtMs).UTC().Format("2006-01-02 15:04 UTC")
+	}
 }

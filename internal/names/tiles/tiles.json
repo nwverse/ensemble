@@ -1,0 +1,57 @@
+[
+  {
+    "file": "claude_duet",
+    "letters": "Cl",
+    "color": "#C2410C"
+  },
+  {
+    "file": "cue",
+    "letters": "Cu",
+    "color": "#BE123C"
+  },
+  {
+    "file": "dots",
+    "letters": "Ch",
+    "color": "#047857"
+  },
+  {
+    "file": "echo",
+    "letters": "De",
+    "color": "#4D7C0F"
+  },
+  {
+    "file": "echo.zh",
+    "letters": "演",
+    "color": "#4D7C0F"
+  },
+  {
+    "file": "gemini_tasks",
+    "letters": "Ge",
+    "color": "#1D4ED8"
+  },
+  {
+    "file": "grok_bot",
+    "letters": "GB",
+    "color": "#52525B"
+  },
+  {
+    "file": "groq",
+    "letters": "Gr",
+    "color": "#A21CAF"
+  },
+  {
+    "file": "muse",
+    "letters": "Mu",
+    "color": "#7C3AED"
+  },
+  {
+    "file": "muse2api",
+    "letters": "Re",
+    "color": "#0E7490"
+  },
+  {
+    "file": "muse2api.zh",
+    "letters": "转",
+    "color": "#0E7490"
+  }
+]

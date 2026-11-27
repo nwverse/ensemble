@@ -161,6 +161,8 @@ const (
 	ReasonBrowserLoginLimit   = "BROWSER_LOGIN_LIMIT"        // 429; browser sign-ins, not in this version
 	// ReasonAlreadyPaired is club's own: the same remote account is already paired in this space (409).
 	ReasonAlreadyPaired = "ACCOUNT_ALREADY_PAIRED"
+	// ReasonQuotaExhausted is club's own: the account's allowance is known to be used up (409).
+	ReasonQuotaExhausted = "QUOTA_EXHAUSTED"
 )
 
 // CodeOf is err's protocol code, "" when it has none.
@@ -194,9 +196,18 @@ const (
 
 // Account is a paired account. Quota is club's optional addition (§6.5 of the design).
 type Account struct {
-	AccountID         string `json:"accountId"`
-	Provider          string `json:"provider"`
-	DisplayName       string `json:"displayName,omitempty"`
+	AccountID   string `json:"accountId"`
+	Provider    string `json:"provider"`
+	DisplayName string `json:"displayName,omitempty"`
+	// DisplayNameEn is the same name with the service's English label, for English pages (club's own addition;
+	// DisplayName uses the Chinese one). Equal to DisplayName for a name the owner chose.
+	DisplayNameEn string `json:"displayNameEn,omitempty"`
+	// OwnerName is the name the owner gave the account, when they gave one (club's own addition); "" when club
+	// composed DisplayName.
+	OwnerName string `json:"ownerName,omitempty"`
+	// Email is the whole e-mail address a composed DisplayName shows only the part before @ of (club's own addition);
+	// "" otherwise.
+	Email             string `json:"email,omitempty"`
 	Status            string `json:"status,omitempty"`
 	ExternalAccountID string `json:"externalAccountId,omitempty"`
 	LastSyncedAt      int64  `json:"lastSyncedAt,omitempty"`
@@ -204,9 +215,15 @@ type Account struct {
 	SessionCount      int    `json:"sessionCount"`
 	AssistantControl  string `json:"assistantControl,omitempty"`
 	AssistantBackend  bool   `json:"assistantBackend,omitempty"`
-	ShowQuota         bool   `json:"showQuota,omitempty"`
-	QuotaDisplay      string `json:"quotaDisplay,omitempty"`
-	Quota             *Quota `json:"quota,omitempty"`
+	// InboxOff is true when the owner kept this account's chats out of Persona's Inbox (club's own addition).
+	InboxOff     bool          `json:"inboxOff,omitempty"`
+	ShowQuota    bool          `json:"showQuota,omitempty"`
+	QuotaDisplay string        `json:"quotaDisplay,omitempty"`
+	Quota        *Quota        `json:"quota,omitempty"`
+	Usage        *UsageSummary `json:"usage,omitempty"`
+	// AvatarURL is the account's own picture, when its service gave one (club's own addition; core.ownAvatar): an
+	// https image or a small image data URL, as a session's avatarUrl is.
+	AvatarURL string `json:"avatarUrl,omitempty"`
 }
 
 // Session kinds.
@@ -402,9 +419,10 @@ const (
 	QuotaKindCredits  = "credits"
 	QuotaKindWindow   = "window"
 
-	QuotaSourceProvider = "provider"
-	QuotaSourceGateway  = "gateway"
-	QuotaSourceResponse = "response"
+	QuotaSourceProvider  = "provider"
+	QuotaSourceGateway   = "gateway"
+	QuotaSourceResponse  = "response"
+	QuotaSourceEstimated = "estimated"
 
 	QuotaToneOK        = "ok"
 	QuotaToneLow       = "low"
@@ -415,6 +433,14 @@ const (
 	QuotaDisplayOff  = "off"
 )
 
+// UsageSummary is local send-count activity for an account (rolling 5-hour and 24-hour windows), used when a
+// service does not publish real-time remaining quota or alongside real readings.
+type UsageSummary struct {
+	Sent5h  int    `json:"sent5h"`
+	Sent24h int    `json:"sent24h"`
+	Source  string `json:"source,omitempty"`
+}
+
 // QuotaBucket is one selectable quota reading for avatar battery/ring indicators (e.g. tokens vs requests, or
 // 5-hour vs weekly windows).
 type QuotaBucket struct {
@@ -424,6 +450,8 @@ type QuotaBucket struct {
 	Label     string   `json:"label,omitempty"`
 	Remaining *float64 `json:"remaining,omitempty"`
 	Percent   *int     `json:"percent,omitempty"`
+	Used      *float64 `json:"used,omitempty"`
+	Limit     *float64 `json:"limit,omitempty"`
 	State     string   `json:"state"`
 	Tone      string   `json:"tone,omitempty"`
 	ResetsAt  int64    `json:"resetsAt,omitempty"`
@@ -431,20 +459,21 @@ type QuotaBucket struct {
 
 // Quota is how much of an account's allowance is left. Optional everywhere.
 type Quota struct {
-	State     string        `json:"state"`
-	Remaining *float64      `json:"remaining,omitempty"`
-	Percent   *int          `json:"percent,omitempty"`
-	Tone      string        `json:"tone,omitempty"`
-	Kind      string        `json:"kind,omitempty"`
-	Label     string        `json:"label,omitempty"`
-	Selected  string        `json:"selected,omitempty"`
-	ResetsAt  int64         `json:"resetsAt,omitempty"`
-	CheckedAt int64         `json:"checkedAt,omitempty"`
-	Source    string        `json:"source,omitempty"`
-	Stale     bool          `json:"stale"`
-	Show      bool          `json:"show"`
-	Details   []Quota       `json:"details,omitempty"`
-	Buckets   []QuotaBucket `json:"buckets,omitempty"`
+	State      string        `json:"state"`
+	Remaining  *float64      `json:"remaining,omitempty"`
+	Percent    *int          `json:"percent,omitempty"`
+	Tone       string        `json:"tone,omitempty"`
+	Kind       string        `json:"kind,omitempty"`
+	Label      string        `json:"label,omitempty"`
+	Selected   string        `json:"selected,omitempty"`
+	ResetsAt   int64         `json:"resetsAt,omitempty"`
+	CheckedAt  int64         `json:"checkedAt,omitempty"`
+	Source     string        `json:"source,omitempty"`
+	SourceNote string        `json:"sourceNote,omitempty"`
+	Stale      bool          `json:"stale"`
+	Show       bool          `json:"show"`
+	Details    []Quota       `json:"details,omitempty"`
+	Buckets    []QuotaBucket `json:"buckets,omitempty"`
 }
 
 // ClubInfo is club.info's answer.
@@ -480,8 +509,10 @@ type UpdateAccountParams struct {
 	DisplayName      *string `json:"display_name,omitempty"`
 	AssistantControl *string `json:"assistant_control,omitempty"`
 	AssistantBackend *bool   `json:"assistant_backend,omitempty"`
-	ShowQuota        *bool   `json:"show_quota,omitempty"`
-	QuotaDisplay     *string `json:"quota_display,omitempty"`
+	// Inbox says whether the account's chats go to Persona's Inbox (club's own addition; on unless turned off).
+	Inbox        *bool   `json:"inbox,omitempty"`
+	ShowQuota    *bool   `json:"show_quota,omitempty"`
+	QuotaDisplay *string `json:"quota_display,omitempty"`
 }
 
 // StartSessionParams are club.sessions.start's: opens a new session with its first message.

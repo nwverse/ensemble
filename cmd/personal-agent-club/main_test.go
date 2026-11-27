@@ -11,8 +11,8 @@ import (
 
 	"github.com/nwverse/persona/sdk/go/exttest"
 
-	pac "github.com/nwverse/personal-agent-club"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
+	pac "github.com/nwverse/ensemble"
+	"github.com/nwverse/ensemble/internal/protocol"
 )
 
 func TestVersion(t *testing.T) {

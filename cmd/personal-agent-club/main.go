@@ -16,11 +16,11 @@ import (
 
 	"github.com/nwverse/persona/sdk/go/ext"
 
-	pac "github.com/nwverse/personal-agent-club"
-	"github.com/nwverse/personal-agent-club/internal/extension"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/providers"
+	pac "github.com/nwverse/ensemble"
+	"github.com/nwverse/ensemble/internal/extension"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/providers"
 )
 
 // version may be set at build time (-ldflags "-X main.version=..."); by default it is the manifest's.
@@ -39,7 +39,8 @@ Usage:
 
 Run "personal-agent-club <command> -h" for a command's flags. Provider requests go through
 $PERSONAL_AGENT_CLUB_PROXY when it is set (socks5://, socks5h://, http:// or https://), else the usual
-HTTP_PROXY / HTTPS_PROXY / NO_PROXY; $PERSONAL_AGENT_CLUB_GROQ_MODEL picks the model Groq accounts ask.
+HTTP_PROXY / HTTPS_PROXY / NO_PROXY; $PERSONAL_AGENT_CLUB_GROQ_MODEL picks the model Groq accounts ask;
+$PERSONAL_AGENT_CLUB_MUSE2API_URL (and _MODEL) add muse2api, your own muse2api server.
 `
 
 func main() {

@@ -9,9 +9,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/nwverse/persona/sdk/go/wire"
 
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider/echo"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider/echo"
 )
 
 // driveTakeover runs one linking step through the Grok Bot's own main session and returns the one line its agent
@@ -200,65 +200,68 @@ func (a *accounts) machineSection(ctx context.Context, l lang, acct protocol.Acc
 		statusErr = hub.Call(ctx, methodMachinesStatus, machineStatusParams{MachineID: mid}, &st)
 	}
 	sec := wire.Section{
-		Title: l.t("配对为机器（夺舍）", "Pair as Machine"),
-		Footer: l.t("向该云端 Agent 发送引导指令，让它的沙箱通过 Persona Link 接入你的 Hub。新机器仍需在「机器」页确认「这是我的电脑」。",
-			"Sends bootstrap instructions to this cloud agent so its VM connects to your hub via Persona Link. New computers still wait for confirmation on the Machines page."),
+		// What it does (runTakeover): the assistant is sent setup instructions in its chat and pairs the cloud computer
+		// it runs on as one of the hub's machines, which Persona can then work on like the owner's own.
+		Title: l.t("高级：让 Persona 也能用它的云端电脑", "Advanced: let Persona use its cloud computer too"),
+		Footer: l.t("这个助手自己有一台云端电脑，接上后 Persona 也能在上面运行程序、处理文件（它会出现在「机器」页）；想多一台一直开着的电脑给 Persona 用时才需要。",
+			"This assistant has a cloud computer of its own; once linked it shows on the Machines page and Persona can run programs and handle files on it. Only worth it when you want one more always-on computer for Persona."),
 	}
 	if hub == nil {
-		sec.Items = []wire.Component{{Type: "row", Title: l.t("状态", "Status"), Value: l.t("未连接到 Hub", "Hub unavailable")}}
+		sec.Items = []wire.Component{{Type: "row", Title: l.t("状态", "Status"), Value: l.t("现在连不上你的 Persona，稍后再来看", "Persona cannot be reached now; look again later")}}
 		return sec, false
 	}
 	if statusErr != nil {
-		sec.Items = []wire.Component{{Type: "row", Title: l.t("状态", "Status"), Value: statusErr.Error(),
-			Badge: &wire.Badge{Text: l.t("需权限", "Permission needed"), Tone: wire.ToneCaution}}}
+		sec.Items = []wire.Component{{Type: "row", Title: l.t("状态", "Status"), Value: l.t("查不到那台电脑现在的状态，稍后再来看", "Its computer's state cannot be read now; look again later"),
+			Badge: &wire.Badge{Text: l.t("查不到", "Unknown"), Tone: wire.ToneCaution}}}
 		return sec, false
+	}
+	exhaustedHint := ""
+	if blocked, _ := quotaExhaustedActive(acct.Quota, 0); blocked {
+		exhaustedHint = l.t("注意：这个账号当前额度已用完，发消息前会被提示拦截。", "Note: this account is currently out of allowance, so sending will be blocked. ")
 	}
 	switch {
 	case !st.Exists:
 		sec.Items = []wire.Component{
-			{Type: "row", Title: l.t("状态", "Status"), Value: l.t("尚未配对为机器", "Not paired yet"),
-				Badge: &wire.Badge{Text: l.t("未配对", "Unpaired"), Tone: wire.ToneNeutral}},
-			{Type: "button", Title: l.t("夺舍为机器", "Pair as Machine"), Action: &wire.Action{
+			{Type: "row", Title: l.t("状态", "Status"), Value: l.t("还没接进来", "Not connected yet"),
+				Badge: &wire.Badge{Text: l.t("未接入", "Not connected"), Tone: wire.ToneNeutral}},
+			{Type: "button", Title: l.t("发送接入说明", "Send the instructions"), Action: &wire.Action{
 				ID:      actTakeover,
-				Confirm: l.t("将生成一次性配对链接并发送给该 Agent 的会话，引导它安装并连接 Persona Link。是否继续？", "This generates a one-time pairing link and sends bootstrap instructions to this agent's chat. Continue?"),
+				Confirm: exhaustedHint + l.t("会生成一个只能用一次的接入链接，连同安装说明发到这个助手的对话里，让它照着装好并连上你的 Persona。要继续吗？", "This generates a one-time pairing link and sends bootstrap instructions to this agent's chat. Continue?"),
 			}},
 		}
 		return sec, false
 	case st.Pending:
 		badge := &wire.Badge{Text: l.t("待确认", "Pending"), Tone: wire.ToneCaution}
-		val := l.t("等待连接… 请在「机器」页确认「这是我的电脑」", "Waiting for connection… confirm on the Machines page")
+		val := l.t("等它连上…连上后到「机器」页点「这是我的电脑」", "Waiting for it to connect… then confirm on the Machines page")
 		if st.Online {
-			val = l.t("已连上 Hub，请前往「机器」页点「这是我的电脑」", "Connected to hub; confirm \"This is my computer\" on Machines")
+			val = l.t("已经连上了：请到「机器」页点「这是我的电脑」确认", "Connected: confirm \"This is my computer\" on Machines")
 		}
 		sec.Items = []wire.Component{
-			{Type: "row", Title: l.t("机器 ID", "Machine ID"), Value: st.MachineID, Badge: badge},
+			{Type: "row", Title: l.t("电脑编号", "Machine ID"), Value: st.MachineID, Badge: badge},
 			{Type: "row", Title: l.t("状态", "Status"), Value: val},
-			{Type: "button", Title: l.t("重新发送夺舍指令", "Resend bootstrap"), Action: &wire.Action{
+			{Type: "button", Title: l.t("重新发送接入说明", "Resend the instructions"), Action: &wire.Action{
 				ID:      actTakeover,
-				Confirm: l.t("重新生成一次性配对链接并发送引导指令？", "Generate a fresh pairing link and resend bootstrap instructions?"),
+				Confirm: exhaustedHint + l.t("重新生成一个接入链接并再发一次安装说明？", "Generate a fresh pairing link and resend bootstrap instructions?"),
 			}},
 		}
 		return sec, true
 	case st.Online:
 		badge := &wire.Badge{Text: l.t("在线", "Online"), Tone: wire.TonePositive}
 		if !st.NodeOnline {
-			badge = &wire.Badge{Text: l.t("节点离线", "Node offline"), Tone: wire.ToneCaution}
+			badge = &wire.Badge{Text: l.t("连上了，但还不能干活", "Connected, not ready"), Tone: wire.ToneCaution}
 		}
 		sec.Items = []wire.Component{
-			{Type: "row", Title: l.t("机器 ID", "Machine ID"), Value: st.MachineID, Badge: badge},
-			{Type: "button", Title: l.t("发送唤醒指令", "Wake Machine"), Action: &wire.Action{ID: actWake}},
+			{Type: "row", Title: l.t("电脑编号", "Machine ID"), Value: st.MachineID, Badge: badge},
+			{Type: "button", Title: l.t("让它重新连一下", "Ask it to reconnect"), Action: &wire.Action{ID: actWake, Confirm: exhaustedHint}},
 		}
 		return sec, false
 	default:
-		val := l.t("已离线（云端 VM 可能已回收重建）", "Offline (cloud VM may have recycled)")
-		if st.Error != "" {
-			val = st.Error
-		}
+		val := l.t("断开了（它的云端电脑可能被回收重建了）：点下面让它重新连上", "Disconnected (its cloud computer may have been rebuilt): ask it to reconnect below")
 		sec.Items = []wire.Component{
-			{Type: "row", Title: l.t("机器 ID", "Machine ID"), Value: st.MachineID,
+			{Type: "row", Title: l.t("电脑编号", "Machine ID"), Value: st.MachineID,
 				Badge: &wire.Badge{Text: l.t("离线", "Offline"), Tone: wire.ToneDanger}},
 			{Type: "row", Title: l.t("状态", "Status"), Value: val},
-			{Type: "button", Title: l.t("唤醒机器", "Wake Machine"), Action: &wire.Action{ID: actWake}},
+			{Type: "button", Title: l.t("让它重新连上", "Ask it to reconnect"), Action: &wire.Action{ID: actWake, Confirm: exhaustedHint}},
 		}
 		return sec, false
 	}
@@ -279,6 +282,9 @@ func (a *accounts) runTakeover(ctx context.Context, acctID string) (string, erro
 	}
 	if !takeoverSupported(acct.Provider) {
 		return "", protocol.Unsupported("provider does not support machine takeover")
+	}
+	if err := exhausted(acct.Quota, a.club.Now().UnixMilli()); err != nil {
+		return "", err
 	}
 	sessionKey, err := takeoverSessionKey(ctx, space, acct.AccountID)
 	if err != nil {

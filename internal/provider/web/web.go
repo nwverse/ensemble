@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider"
 )
 
 // MaxResponse is the largest response body read; a larger one is dropped.

@@ -11,10 +11,10 @@ import (
 
 	"github.com/nwverse/persona/sdk/go/wire"
 
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider/echo"
-	"github.com/nwverse/personal-agent-club/internal/provider/grokbot"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider/echo"
+	"github.com/nwverse/ensemble/internal/provider/grokbot"
 )
 
 // takeoverState reads the takeover id the page kept after an action.
@@ -74,7 +74,7 @@ func TestTakeoverOnTheAccountsPage(t *testing.T) {
 	if v := render(t, h, page); !strings.Contains(text(v), "夷舍") {
 		t.Fatalf("no takeover button:\n%s", text(v))
 	}
-	if v := render(t, h, page); !strings.Contains(text(v), "hub 的机器列表要等你确认后才会写") {
+	if v := render(t, h, page); !strings.Contains(text(v), "Persona 的机器列表要等你确认后才会写") {
 		t.Fatal("the takeover button does not ask first")
 	}
 
@@ -235,20 +235,26 @@ func TestTakeoverAndWakeFlow(t *testing.T) {
 	if err != nil || len(sessions.Sessions) == 0 {
 		t.Fatalf("sessions = %+v err=%v", sessions, err)
 	}
-	msgs, err := space.Messages(ctx, protocol.MessagesParams{SessionKey: sessions.Sessions[0].SessionKey})
-	if err != nil {
-		t.Fatalf("messages: %v", err)
-	}
+	// The account has more than one session (echo's main and its read-only notes), listed in no fixed order: look
+	// in all of them.
 	foundBootstrap := false
-	for _, m := range msgs.Messages {
-		for _, b := range m.Blocks {
-			if strings.Contains(b.Text, "persona://link?token=jp_test&machine="+wantMID) {
-				foundBootstrap = true
+	var seen []protocol.Message
+	for _, sess := range sessions.Sessions {
+		msgs, err := space.Messages(ctx, protocol.MessagesParams{SessionKey: sess.SessionKey})
+		if err != nil {
+			t.Fatalf("messages: %v", err)
+		}
+		seen = append(seen, msgs.Messages...)
+		for _, m := range msgs.Messages {
+			for _, b := range m.Blocks {
+				if strings.Contains(b.Text, "persona://link?token=jp_test&machine="+wantMID) {
+					foundBootstrap = true
+				}
 			}
 		}
 	}
 	if !foundBootstrap {
-		t.Fatalf("bootstrap prompt not found in messages: %+v", msgs.Messages)
+		t.Fatalf("bootstrap prompt not found in messages: %+v", seen)
 	}
 
 	// 3. Machine confirmed & then goes offline -> Wake Machine sends wake prompt.

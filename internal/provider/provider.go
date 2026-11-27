@@ -9,13 +9,18 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/ensemble/internal/protocol"
 )
 
 // RemoteAccount is what Verify learns about the account a credential belongs to.
 type RemoteAccount struct {
 	ExternalAccountID string
-	DisplayName       string
+	// Alias is who the account is at the provider, without the provider's brand: a person's name or email, a bot's
+	// or agent's name; "" when the provider says nothing better than its brand. Club adds the brand (names.Stored).
+	Alias string
+	// DisplayName is the older, whole name ("Muse · Wren"), for an adapter outside this repository that still
+	// reports one; club reads its alias out of it (names.Split) when Alias is empty. Adapters here set Alias.
+	DisplayName string
 	// Quota is what the answer said about the account's allowance, when it says (as SendResult.Quota).
 	Quota []QuotaReading
 }
@@ -32,10 +37,21 @@ type RemoteSession struct {
 	Title            string
 	Kind             string // protocol.KindMain, KindSide, KindTask
 	ParentExternalID string
-	LastActivityMs   int64
-	CanSend          bool
-	AvatarURL        string
-	Ref              map[string]string
+	// LastActivityMs is the session's last activity as the service itself records it, 0 when the list gives no
+	// time. It must never be the time of the read: a list that has no time passes 0, and only the session's messages
+	// (their own times, or the time a new one was first seen) and the owner's sends move its rank.
+	LastActivityMs int64
+	// ActivityApprox says LastActivityMs is only a coarse reading of a relative label ("2h", "今天", a day), which
+	// moves with the clock while nothing happens. It then places a session the club sees for the first time and
+	// tells a sync which sessions to read, but never raises the rank of a session the club already has.
+	ActivityApprox bool
+	CanSend        bool
+	AvatarURL      string
+	// AvatarPending says the session has a picture of its own that this read could not make (AvatarURL is then ""):
+	// a ChatGPT Dot's, which only the signed-in page can fetch and scale, left for a later sync by the read's byte
+	// budget or a failed fetch. The club keeps the picture it already has rather than dropping it to the product's icon.
+	AvatarPending bool
+	Ref           map[string]string
 }
 
 // SessionRef is the session's address.
@@ -105,15 +121,38 @@ type SendResult struct {
 }
 
 // QuotaReading is one dimension of an account's allowance as a provider's answer reported it (Groq's rate limit
-// headers, for example).
+// headers, Grok Bot's usage status, Claude's /usage, ChatGPT's /wham/usage, etc.).
 type QuotaReading struct {
-	Kind      string // protocol.QuotaKindTokens, QuotaKindRequests, ...
+	Kind      string // protocol.QuotaKindTokens, QuotaKindRequests, QuotaKindCredits, QuotaKindWindow
 	Limit     float64
 	Remaining float64
 	// ResetsAt is when the window resets (Unix ms), 0 when not said.
 	ResetsAt int64
-	// Window names the window ("minute", "day"), when known.
+	// Window names the window ("minute", "5h", "day", "week", "month"), when known.
 	Window string
+	// Exhausted marks a reading whose provider explicitly refuses further sends even when Remaining > 0.
+	Exhausted bool
+	// SourceNote identifies where the reading came from (e.g. endpoint or header group), optional.
+	SourceNote string
+}
+
+// QuotaReader reads an account's current allowance from the provider, read-only (best-effort during sync).
+type QuotaReader interface {
+	ReadQuota(ctx context.Context, credential string) ([]QuotaReading, error)
+}
+
+// BoxState is the read-only run state of an agent's cloud sandbox or computer, when its service reports one
+// without waking a sleeping environment.
+type BoxState struct {
+	State                string // running | starting | paused | stopped | unknown
+	Image                string
+	ImageUpdateAvailable bool
+	SourceNote           string
+}
+
+// BoxStater reads the current cloud sandbox state read-only without starting or waking it.
+type BoxStater interface {
+	BoxState(ctx context.Context, credential string) (BoxState, error)
 }
 
 // Adapter is one provider. A call that returns an *Error was refused by the provider (nothing was accepted); any
@@ -280,7 +319,17 @@ const (
 	CodeNetworkError  = "NETWORK_ERROR"
 	CodeUpstreamError = "UPSTREAM_ERROR"
 	CodeRequestFailed = "REQUEST_FAILED"
+	// CodeHumanCheck: the site put a human verification (Google's "unusual traffic" page, a reCAPTCHA, Cloudflare's
+	// "Verify you are human") in front of a browser-driven agent. Unlike a rate limit it does not pass by waiting: a
+	// person has to solve it in that browser.
+	CodeHumanCheck = "HUMAN_CHECK_REQUIRED"
 )
+
+// MachineBound is a provider that runs on one of the owner's computers (a browser-driven one): the computer a
+// credential names, and the browser backend on it. Neither is a secret; "" when the credential names none.
+type MachineBound interface {
+	Machine(credential string) (machineID, backend string)
+}
 
 // Error is a provider's refusal or failure. Code is safe to show and log; it never carries a credential or a
 // message body.

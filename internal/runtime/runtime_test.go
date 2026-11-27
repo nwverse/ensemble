@@ -19,12 +19,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/provider/echo"
-	"github.com/nwverse/personal-agent-club/internal/provider/groq"
-	"github.com/nwverse/personal-agent-club/internal/serve"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider/echo"
+	"github.com/nwverse/ensemble/internal/provider/groq"
+	"github.com/nwverse/ensemble/internal/serve"
 )
 
 func shortSockDir(t *testing.T) string {
@@ -262,7 +262,7 @@ func newScriptedAsync(name string) *scriptedAsyncProvider {
 func (p *scriptedAsyncProvider) Name() string       { return p.name }
 func (p *scriptedAsyncProvider) Connection() string { return protocol.ConnectionServer }
 func (p *scriptedAsyncProvider) Verify(context.Context, string) (provider.RemoteAccount, error) {
-	return provider.RemoteAccount{ExternalAccountID: "ext-" + p.name, DisplayName: "Async Bot"}, nil
+	return provider.RemoteAccount{ExternalAccountID: "ext-" + p.name, Alias: "Async Bot"}, nil
 }
 func (p *scriptedAsyncProvider) ListSessions(context.Context, string) ([]provider.RemoteSession, error) {
 	return []provider.RemoteSession{{ExternalID: "main", Title: "Main", Kind: protocol.KindMain, CanSend: true}}, nil

@@ -1,0 +1,36 @@
+<!doctype html>
+<!-- Reconstructed, not recorded: GitHub shows "Confirm access" (sudo.html) in front of this page, which Ensemble
+     never answers, so it could not be recorded. It has the parts the scripts read: the form with the install_target
+     radios (selected checked), one hidden repository_ids[] per selected repository, an unticked picker checkbox, and Save. -->
+<html lang="en"><head><title>Installed GitHub App - Claude</title></head>
+<body class="logged-in">
+<main>
+<div class="settings-next">
+  <h2>Claude</h2>
+  <form class="js-integrations-install-form" action="/settings/installations/10000001" accept-charset="UTF-8" method="post">
+    <input type="hidden" name="_method" value="put">
+    <input type="hidden" name="authenticity_token" value="REDACTED">
+    <h3>Repository access</h3>
+    <div class="form-checkbox">
+      <label><input type="radio" name="install_target" value="all" checked="checked" class="js-installation-repositories-radio"> All repositories</label>
+      <p class="note">This applies to all current and future repositories owned by the resource owner.</p>
+    </div>
+    <div class="form-checkbox">
+      <label><input type="radio" name="install_target" value="selected" class="js-installation-repositories-radio"> Only select repositories</label>
+      <details class="select-menu"><summary class="btn">Select repositories</summary></details>
+      <p class="note">Selected 2 repositories.</p>
+      <ul class="js-selected-repositories">
+        <li class="Box-row"><span class="text-bold">octo-user/persona-extensions</span>
+          <input type="hidden" name="repository_ids[]" value="111111111"></li>
+        <li class="Box-row"><span class="text-bold">octo-user/reachd</span>
+          <input type="hidden" name="repository_ids[]" value="222222222"></li>
+      </ul>
+      <!-- the picker's unticked suggestion: not selected, so never counted -->
+      <label class="select-menu-item"><input type="checkbox" name="repository_ids[]" value="444444444"> octo-user/other</label>
+    </div>
+    <button type="submit" class="btn btn-primary">Save</button>
+    <a class="btn" href="/settings/installations">Cancel</a>
+  </form>
+</div>
+</main>
+</body></html>

@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/provider/providertest"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider/providertest"
 )
 
 const key = "fixture-key-not-real"
@@ -53,7 +53,7 @@ func TestVerifiesWithGetMeAndListsMainAndSideSessions(t *testing.T) {
 	up := providertest.Serve(t, routes(t))
 	a := New(Options{Origin: up.URL})
 	acct, err := a.Verify(ctx, key)
-	if err != nil || !reflect.DeepEqual(acct, provider.RemoteAccount{ExternalAccountID: "auth0|fixture", DisplayName: "Grok Bot"}) {
+	if err != nil || !reflect.DeepEqual(acct, provider.RemoteAccount{ExternalAccountID: "auth0|fixture", Alias: "fixture@example.com"}) {
 		t.Fatalf("%+v %v", acct, err)
 	}
 	c := up.Calls()[0]
@@ -74,6 +74,38 @@ func TestVerifiesWithGetMeAndListsMainAndSideSessions(t *testing.T) {
 	}
 	if !reflect.DeepEqual(sessions, want) {
 		t.Fatalf("%+v", sessions)
+	}
+}
+
+func TestPairingAliasIsTheSoleBot(t *testing.T) {
+	base := routes(t)
+	withRoster := func(answer providertest.Answer) func(providertest.Call) providertest.Answer {
+		return func(c providertest.Call) providertest.Answer {
+			if method(c) == "ListGrokBotAgents" {
+				// Only the account's own bots: a teammate's is not "the only bot".
+				if !strings.Contains(string(c.Body), `"includeTeamAgents":false`) {
+					return providertest.Answer{Status: 400, Body: map[string]any{"code": "want own bots"}}
+				}
+				return answer
+			}
+			return base(c)
+		}
+	}
+	withRoom := providertest.Answer{Body: map[string]any{"agents": []any{
+		map[string]any{"agentId": "bot_alpha", "name": "Grok 秘书"}, map[string]any{"agentId": "bot_room", "name": "Team room", "kind": "GROK_BOT_AGENT_KIND_ROOM"}}}}
+	two := providertest.Answer{Body: map[string]any{"agents": []any{
+		map[string]any{"agentId": "bot_alpha", "name": "Grok 秘书"}, map[string]any{"agentId": "bot_beta", "name": "Grok 2"}}}}
+	none := providertest.Answer{Body: map[string]any{"agents": []any{}}}
+	untitled := providertest.Answer{Body: map[string]any{"agents": []any{map[string]any{"agentId": "bot_alpha", "title": "Helper"}}}}
+	broken := providertest.Answer{Status: 500, Body: map[string]any{"code": "internal"}}
+	for _, c := range []struct {
+		roster providertest.Answer
+		want   string
+	}{{providertest.Answer{Body: providertest.Fixture(t, "grok-bot-0.78.1.json")["ListGrokBotAgents"]}, "Grok 秘书"},
+		{two, ""}, {none, ""}, {untitled, "Helper"}, {broken, ""}, {withRoom, "Grok 秘书"}} {
+		if got := New(Options{Origin: providertest.Serve(t, withRoster(c.roster)).URL}).PairingAlias(ctx, key); got != c.want {
+			t.Fatalf("%+v: %q, want %q", c.roster.Body, got, c.want)
+		}
 	}
 }
 
@@ -458,5 +490,161 @@ func TestTokens(t *testing.T) {
 	}
 	if Credential("a", "") != "a" {
 		t.Fatal("pasted token")
+	}
+}
+
+func TestListMessagesAllowsOmittedEntriesFieldAndRejectsMalformed(t *testing.T) {
+	empty := providertest.Serve(t, func(providertest.Call) providertest.Answer {
+		return providertest.Answer{Body: map[string]any{}}
+	})
+	page, err := New(Options{Origin: empty.URL}).ListMessages(ctx, key, session, provider.ListOptions{Limit: 50})
+	if err != nil || len(page.Messages) != 0 {
+		t.Fatalf("empty entries: page=%+v err=%v", page, err)
+	}
+
+	malformed := providertest.Serve(t, func(providertest.Call) providertest.Answer {
+		return providertest.Answer{Body: map[string]any{"entries": "bad"}}
+	})
+	if _, err := New(Options{Origin: malformed.URL}).ListMessages(ctx, key, session, provider.ListOptions{Limit: 50}); provider.CodeOf(err) != provider.CodeRequestFailed {
+		t.Fatalf("malformed entries: %v", err)
+	}
+}
+
+func TestListSessionsSkipsNotFoundSideSessionList(t *testing.T) {
+	base := routes(t)
+	roster := func(c providertest.Call) providertest.Answer {
+		if method(c) == "ListGrokBotAgents" {
+			return providertest.Answer{Body: map[string]any{
+				"agents": []any{
+					map[string]any{"agentId": "bot_alpha", "name": "Grok 秘书", "viewerSessionId": ""},
+					map[string]any{"agentId": "bot_stale", "name": "Stale Bot", "viewerSessionId": "v1"},
+				},
+			}}
+		}
+		if method(c) == "ListGrokBotAgentSessions" && string(c.JSON(t)["agentId"].(string)) == "bot_stale" {
+			return providertest.Answer{Status: http.StatusNotFound}
+		}
+		return base(c)
+	}
+	sessions, err := New(Options{Origin: providertest.Serve(t, roster).URL}).ListSessions(ctx, key)
+	if err != nil {
+		t.Fatalf("expected stale side-session 404 to keep roster: %v", err)
+	}
+	var ids []string
+	for _, s := range sessions {
+		ids = append(ids, s.ExternalID)
+	}
+	if !reflect.DeepEqual(ids, []string{"bot_alpha/", "bot_alpha/sess-side-42", "bot_stale/v1"}) {
+		t.Fatalf("sessions = %v", ids)
+	}
+
+	for _, status := range []int{http.StatusUnauthorized, http.StatusInternalServerError} {
+		errSrv := providertest.Serve(t, func(c providertest.Call) providertest.Answer {
+			if method(c) == "ListGrokBotAgentSessions" {
+				return providertest.Answer{Status: status}
+			}
+			return base(c)
+		})
+		if _, err := New(Options{Origin: errSrv.URL}).ListSessions(ctx, key); err == nil {
+			t.Fatalf("status %d should propagate", status)
+		}
+	}
+}
+
+func TestReadQuotaFromSandUsageStatusAndCurrentPeriod(t *testing.T) {
+	resetAt := time.Date(2026, 12, 1, 8, 0, 0, 0, time.UTC)
+	cycleEnd := time.Date(2026, 12, 15, 0, 0, 0, 0, time.UTC)
+	up := providertest.Serve(t, func(c providertest.Call) providertest.Answer {
+		switch c.Path {
+		case "/aiserver.v1.DashboardService/GetSandUsageStatus":
+			return providertest.Answer{Body: map[string]any{
+				"usagePercent":          72.5,
+				"nextResetTimestampUtc": resetAt.Format(time.RFC3339),
+				"hasAvailableUsage":     true,
+			}}
+		case "/aiserver.v1.DashboardService/GetCurrentPeriodUsage":
+			return providertest.Answer{Body: map[string]any{
+				"billingCycleEnd": cycleEnd.UnixMilli(),
+				"planUsage": map[string]any{
+					"limit":     2000,
+					"remaining": 400,
+				},
+			}}
+		default:
+			return providertest.Answer{Status: http.StatusNotFound}
+		}
+	})
+	readings, err := New(Options{Origin: up.URL}).ReadQuota(ctx, key)
+	if err != nil || len(readings) != 2 {
+		t.Fatalf("readings = %+v, err = %v", readings, err)
+	}
+	if readings[0].Kind != protocol.QuotaKindWindow || readings[0].Window != "week" || readings[0].Remaining != 27.5 ||
+		readings[0].ResetsAt != resetAt.UnixMilli() || readings[0].Exhausted {
+		t.Fatalf("first reading = %+v", readings[0])
+	}
+	if readings[1].Kind != protocol.QuotaKindCredits || readings[1].Window != "month" || readings[1].Remaining != 400 ||
+		readings[1].Limit != 2000 || readings[1].ResetsAt != cycleEnd.UnixMilli() {
+		t.Fatalf("second reading = %+v", readings[1])
+	}
+
+	// Exhausted via wouldRefuseSend with protobuf {seconds, nanos} timestamp.
+	exSrv := providertest.Serve(t, func(c providertest.Call) providertest.Answer {
+		if c.Path == "/aiserver.v1.DashboardService/GetSandUsageStatus" {
+			return providertest.Answer{Body: map[string]any{
+				"usagePercent":          99.5,
+				"wouldRefuseSend":       true,
+				"nextResetTimestampUtc": map[string]any{"seconds": resetAt.Unix(), "nanos": 0},
+			}}
+		}
+		return providertest.Answer{Status: http.StatusNotFound}
+	})
+	ex, err := New(Options{Origin: exSrv.URL}).ReadQuota(ctx, key)
+	if err != nil || len(ex) != 1 || !ex[0].Exhausted || ex[0].Remaining != 0 || ex[0].ResetsAt != resetAt.UnixMilli() {
+		t.Fatalf("exhausted readings = %+v, err = %v", ex, err)
+	}
+
+	// 429 propagates; 404 returns nil without error.
+	rlSrv := providertest.Serve(t, func(providertest.Call) providertest.Answer {
+		return providertest.Answer{Status: http.StatusTooManyRequests, Header: http.Header{"Retry-After": {"45"}}}
+	})
+	if _, err := New(Options{Origin: rlSrv.URL}).ReadQuota(ctx, key); provider.CodeOf(err) != provider.CodeRateLimited {
+		t.Fatalf("429 err = %v", err)
+	}
+	nfSrv := providertest.Serve(t, func(providertest.Call) providertest.Answer {
+		return providertest.Answer{Status: http.StatusNotFound}
+	})
+	if got, err := New(Options{Origin: nfSrv.URL}).ReadQuota(ctx, key); err != nil || len(got) != 0 {
+		t.Fatalf("404 got=%+v err=%v", got, err)
+	}
+}
+
+func TestBoxStateReadOnly(t *testing.T) {
+	srv := providertest.Serve(t, func(c providertest.Call) providertest.Answer {
+		if c.Path == "/aiserver.v1.SandBoxService/GetSandBoxRunState" {
+			return providertest.Answer{Body: map[string]any{
+				"state":                "SANDBOX_RUN_STATE_PAUSED",
+				"image":                "cursor-sand:2026.11",
+				"imageUpdateAvailable": true,
+			}}
+		}
+		return providertest.Answer{Status: http.StatusNotFound}
+	})
+	st, err := New(Options{Origin: srv.URL}).BoxState(ctx, key)
+	if err != nil || st.State != "paused" || st.Image != "cursor-sand:2026.11" || !st.ImageUpdateAvailable || st.SourceNote != "grok_bot:GetSandBoxRunState" {
+		t.Fatalf("box state = %+v, err = %v", st, err)
+	}
+	if calls := srv.Calls(); len(calls) != 1 || calls[0].Path != "/aiserver.v1.SandBoxService/GetSandBoxRunState" {
+		t.Fatalf("calls = %+v", calls)
+	}
+	// 404 returns empty state without error; 401 returns AUTH_FAILED.
+	nfSrv := providertest.Serve(t, func(providertest.Call) providertest.Answer { return providertest.Answer{Status: http.StatusNotFound} })
+	if got, err := New(Options{Origin: nfSrv.URL}).BoxState(ctx, key); err != nil || got.State != "" {
+		t.Fatalf("404 got=%+v err=%v", got, err)
+	}
+	unauth := providertest.Serve(t, func(providertest.Call) providertest.Answer {
+		return providertest.Answer{Status: http.StatusUnauthorized}
+	})
+	if _, err := New(Options{Origin: unauth.URL}).BoxState(ctx, key); provider.CodeOf(err) != provider.CodeAuthFailed {
+		t.Fatalf("401 err = %v", err)
 	}
 }

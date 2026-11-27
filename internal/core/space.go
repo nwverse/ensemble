@@ -1,20 +1,23 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf16"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/store"
-	"github.com/nwverse/personal-agent-club/internal/vault"
+	"github.com/nwverse/ensemble/internal/names"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/store"
+	"github.com/nwverse/ensemble/internal/vault"
 )
 
 const (
@@ -39,21 +42,25 @@ type Space struct {
 	store store.Store
 	vault vault.Vault
 
-	mu         sync.Mutex
-	syncing    map[string]*flight[struct{}]
-	refreshing map[string]*flight[string]
-	fetchedAt  map[string]int64
-	watching   map[string]context.CancelFunc
-	live       map[string]*liveEntry
-	logins     map[string]*login
-	takeovers  map[string]*takeoverRun
-	quota      map[string]*quotaState
+	mu             sync.Mutex
+	sshMu          sync.Mutex
+	syncing        map[string]*flight[struct{}]
+	refreshing     map[string]*flight[string]
+	fetchedAt      map[string]int64
+	readAt         map[string]int64 // when a sync last read each session's messages (fetchedAt also counts failed reads)
+	watching       map[string]context.CancelFunc
+	live           map[string]*liveEntry
+	logins         map[string]*login
+	takeovers      map[string]*takeoverRun
+	quota          map[string]*quotaState
+	quotaCheckedAt map[string]int64
 }
 
 func newSpace(name string, c *Club, st store.Store, v vault.Vault) *Space {
 	return &Space{name: name, club: c, store: st, vault: v, syncing: map[string]*flight[struct{}]{},
-		refreshing: map[string]*flight[string]{}, fetchedAt: map[string]int64{}, watching: map[string]context.CancelFunc{},
-		live: map[string]*liveEntry{}, logins: map[string]*login{}, quota: map[string]*quotaState{}}
+		refreshing: map[string]*flight[string]{}, fetchedAt: map[string]int64{}, readAt: map[string]int64{}, watching: map[string]context.CancelFunc{},
+		live: map[string]*liveEntry{}, logins: map[string]*login{}, quota: map[string]*quotaState{},
+		quotaCheckedAt: map[string]int64{}}
 }
 
 // flight is one call others may join.
@@ -119,8 +126,9 @@ func (s *Space) Status(ctx context.Context) (protocol.StatusResult, error) {
 	}
 	out := protocol.StatusResult{Enabled: true, Providers: s.club.opts.Registry.List(), Accounts: []protocol.Account{}}
 	backends := s.assistantBackends(ctx)
+	titles := titlesOf(accounts)
 	for _, a := range accounts {
-		pa, err := s.accountViewWithBackends(ctx, a, backends)
+		pa, err := s.accountViewWithBackends(ctx, a, backends, titles)
 		if err != nil {
 			return protocol.StatusResult{}, err
 		}
@@ -133,19 +141,64 @@ func (s *Space) Status(ctx context.Context) (protocol.StatusResult, error) {
 }
 
 func (s *Space) accountView(ctx context.Context, a store.Account) (protocol.Account, error) {
-	return s.accountViewWithBackends(ctx, a, s.assistantBackends(ctx))
+	accounts, err := s.store.ListAccounts(ctx)
+	if err != nil {
+		return protocol.Account{}, err
+	}
+	if !slices.ContainsFunc(accounts, func(x store.Account) bool { return x.AccountID == a.AccountID }) {
+		accounts = append(accounts, a)
+	}
+	return s.accountViewWithBackends(ctx, a, s.assistantBackends(ctx), titlesOf(accounts))
 }
 
-func (s *Space) accountViewWithBackends(ctx context.Context, a store.Account, backends map[string]bool) (protocol.Account, error) {
+// accountTitles are each account's display names as Persona and the pages show them (names.Distinct), in Chinese
+// (names.Default) and English: the owner's own name as typed, else the provider's brand and the account's alias,
+// numbered where two would read the same.
+type accountTitles struct{ zh, en map[string]string }
+
+func titlesOf(accounts []store.Account) accountTitles {
+	in := make([]names.Account, 0, len(accounts))
+	for _, a := range accounts {
+		in = append(in, names.Account{ID: a.AccountID, Provider: a.Provider, Stored: a.DisplayName, Source: a.NameSource,
+			CreatedAt: a.CreatedAt})
+	}
+	return accountTitles{zh: names.Distinct(names.Default, in), en: names.Distinct("en", in)}
+}
+
+func (s *Space) accountViewWithBackends(ctx context.Context, a store.Account, backends map[string]bool, titles accountTitles) (protocol.Account, error) {
 	sessions, err := s.store.AccountSessions(ctx, a.AccountID)
 	if err != nil {
 		return protocol.Account{}, err
 	}
 	control, _ := ParseControl(a.AssistantControl)
-	return protocol.Account{AccountID: a.AccountID, Provider: a.Provider, DisplayName: cmpOr(a.DisplayName, a.Provider),
-		Status: a.Status, ExternalAccountID: a.ExternalAccountID, LastSyncedAt: a.LastSyncedAt, LastError: a.LastError,
+	now := s.now()
+	return protocol.Account{AccountID: a.AccountID, Provider: a.Provider, DisplayName: cmp.Or(titles.zh[a.AccountID], names.Title(names.Default, a.Provider, a.DisplayName, a.NameSource)),
+		DisplayNameEn: cmp.Or(titles.en[a.AccountID], names.Title("en", a.Provider, a.DisplayName, a.NameSource)),
+		OwnerName:     ownerName(a),
+		Email:         names.Email(a.Provider, a.DisplayName, a.NameSource),
+		Status:        a.Status, ExternalAccountID: a.ExternalAccountID, LastSyncedAt: a.LastSyncedAt, LastError: a.LastError,
 		SessionCount: len(sessions), AssistantControl: string(control), AssistantBackend: backends[a.AccountID],
-		ShowQuota: a.ShowQuota, QuotaDisplay: a.QuotaDisplay, Quota: s.quotaView(a, s.now())}, nil
+		InboxOff: s.InboxAccountsOff(ctx)[a.AccountID], ShowQuota: a.ShowQuota, QuotaDisplay: a.QuotaDisplay, Quota: s.quotaView(a, now),
+		Usage:     s.accountUsage(ctx, a.AccountID, now),
+		AvatarURL: ownAvatar(sessions)}, nil
+}
+
+// ownAvatar is the account's own picture as its service gave it: the one picture all its listed main conversations
+// share (a Grok Bot account with one bot: that bot's avatar from the roster, kept on its sessions and refreshed by
+// every successful sync). "" when they carry none or several different ones (bots of teammates, rooms): the account
+// then shows its product's icon or its letters (names.Avatar).
+func ownAvatar(sessions []store.Session) string {
+	own := ""
+	for _, r := range sessions {
+		if r.IsHidden || r.Kind != protocol.KindMain || names.Avatar(names.Default, r.Provider, r.AvatarURL).Own == "" {
+			continue
+		}
+		if own != "" && own != r.AvatarURL {
+			return ""
+		}
+		own = r.AvatarURL
+	}
+	return own
 }
 
 // Sessions is agentsrc.sessions.
@@ -175,8 +228,20 @@ func (s *Space) Sessions(ctx context.Context) (protocol.SessionsResult, error) {
 func sessionView(r store.Session) protocol.Session {
 	return protocol.Session{SessionKey: r.SessionKey, AccountID: r.AccountID, Provider: r.Provider, Title: r.Title,
 		Kind: r.Kind, ParentSessionKey: r.ParentSessionKey, CanSend: r.CanSend, UnreadCount: r.UnreadCount,
-		RankTimeMs: r.RankTimeMs, AvatarURL: r.AvatarURL, PreviewText: prefix16(r.PreviewText, previewChars),
+		RankTimeMs: r.RankTimeMs, AvatarURL: sessionAvatar(r), PreviewText: prefix16(r.PreviewText, previewChars),
 		PreviewIsMine: r.PreviewIsMine, OnTopRankTimeMs: r.OnTopRankTimeMs}
+}
+
+// sessionAvatar is a conversation's picture on Persona's Agents page (agentsrc.sessions avatarUrl, which the hub
+// fetches and draws), in names.Avatar's order: the agent's own picture as its service listed it, else the official
+// icon of its product (an https address with nothing of the account in it). Without either it stays empty and Persona
+// draws the title's first letter: the letter tile, as a data URL on every row, would weigh several kilobytes a row.
+func sessionAvatar(r store.Session) string {
+	p := names.Avatar(names.Default, r.Provider, r.AvatarURL)
+	if p.Own != "" {
+		return p.Own
+	}
+	return p.Icon
 }
 
 // prefix16 is the first n UTF-16 code units of s, as the gateway's JavaScript cuts a preview.
@@ -331,6 +396,19 @@ func (s *Space) Send(ctx context.Context, p protocol.SendParams) (protocol.Messa
 		return protocol.Message{}, protocol.Conflict("the account is paused").Because(protocol.ReasonAccountPaused)
 	}
 	now := s.now()
+	// Check idempotency before the quota guard so retrying an already-enqueued client_id returns the existing row
+	// (or CLIENT_ID_IN_USE) even if that send exhausted the account's allowance.
+	if existing, ok, err := s.store.Outbox(ctx, p.ClientID); err != nil {
+		return protocol.Message{}, err
+	} else if ok {
+		if existing.SessionKey != sess.SessionKey {
+			return protocol.Message{}, protocol.Conflict("client_id is in use in another session").Because(protocol.ReasonClientIDInUse)
+		}
+		return localMessage(existing), nil
+	}
+	if q := s.quotaView(acct, now); quotaBlocksSend(q, now) {
+		return protocol.Message{}, protocol.Conflict(exhaustedSendMessage(acct, q, now)).Because(protocol.ReasonQuotaExhausted)
+	}
 	row, inserted, err := s.store.EnqueueOutbox(ctx, store.Outbox{ClientID: p.ClientID, SessionKey: sess.SessionKey,
 		AccountID: sess.AccountID, Text: text, CreatedAt: now})
 	if err != nil {
@@ -413,7 +491,7 @@ func (s *Space) attempt(ctx context.Context, row store.Outbox, sess store.Sessio
 			return protocol.LocalUnconfirmed, "SEND_UNCONFIRMED"
 		}
 		code := provider.CodeOf(err)
-		if code == provider.CodeAuthFailed {
+		if code == provider.CodeAuthFailed || code == provider.CodeHumanCheck {
 			st := protocol.AccountError
 			_ = s.store.UpdateAccount(ctx, sess.AccountID, store.AccountPatch{Status: &st, LastError: &code}, s.now())
 		}
@@ -491,20 +569,16 @@ func (s *Space) history(ctx context.Context, key string) ([]provider.Turn, error
 
 // storeMessages are a provider's messages as stored; one without a time takes fallbackMs (the session's activity
 // time), else the store keeps its first-seen time.
-func storeMessages(key string, in []provider.RemoteMessage, fallbackMs int64) []store.Message {
+// storeMessages are a page's messages for the store. A message without a time of its own is recorded, the first time
+// the store sees it, at firstSeenMs (the session's activity as its list gave it; 0: the time of the write), and keeps
+// that time afterwards: the estimate is never written over a time already recorded.
+func storeMessages(key string, in []provider.RemoteMessage, firstSeenMs int64) []store.Message {
 	out := make([]store.Message, len(in))
 	for i, m := range in {
 		out[i] = store.Message{SessionKey: key, ExternalID: m.ExternalID, Role: m.Role, Blocks: m.Blocks,
-			CreateTimeMs: cmpOrInt(m.CreateTimeMs, fallbackMs), Position: m.Position}
+			CreateTimeMs: m.CreateTimeMs, Position: m.Position, FirstSeenMs: firstSeenMs}
 	}
 	return out
-}
-
-func cmpOrInt(a, b int64) int64 {
-	if a != 0 {
-		return a
-	}
-	return b
 }
 
 // followUp reads the session again at the follow-up delays, to pick up the agent's answer.
@@ -722,6 +796,9 @@ func (s *Space) adapter(name string) (provider.Adapter, error) {
 func verifyError(err error) error {
 	if provider.IsRefusal(err) {
 		code := provider.CodeOf(err)
+		if code == provider.CodeHumanCheck {
+			return protocol.Invalid("the site asks for a human verification before it lets the browser in: " + code).Because(code)
+		}
 		return protocol.Invalid("the provider refused the credential: " + code).Because(code)
 	}
 	return protocol.Failure("SYNC_FAILED", "verify failed")
@@ -732,6 +809,80 @@ func checkCredential(cred string) error {
 		return badInput("credential must be 8 to 8192 characters")
 	}
 	return nil
+}
+
+// pairingAliaser is an adapter that names an account better than Verify's own answer does, with requests Verify
+// leaves out (an import verifies with one request per account): Grok Bot's only bot.
+type pairingAliaser interface {
+	PairingAlias(ctx context.Context, credential string) string
+}
+
+// aliasOf is who a verified account is, without its brand: the adapter's pairing alias, else Verify's, else the
+// alias in Verify's older whole name; "" when that is only the brand's or site's own words.
+func aliasOf(ctx context.Context, prov string, adapter provider.Adapter, cred string, remote provider.RemoteAccount) string {
+	alias := remote.Alias
+	if alias == "" && remote.DisplayName != "" {
+		alias, _ = names.Split(prov, remote.DisplayName, names.SourceLegacy)
+	}
+	if n, ok := adapter.(pairingAliaser); ok {
+		alias = cmp.Or(strings.TrimSpace(n.PairingAlias(ctx, cred)), alias)
+	}
+	return names.Alias(prov, alias)
+}
+
+// ownerName is the account's name when the owner chose it (names.Split), else "".
+func ownerName(a store.Account) string {
+	if name, owner := names.Split(a.Provider, a.DisplayName, a.NameSource); owner {
+		return name
+	}
+	return ""
+}
+
+func nameSource(ownerName string) string {
+	if ownerName != "" {
+		return names.SourceOwner
+	}
+	return names.SourceAuto
+}
+
+// settleName works out, once, who named an account stored before club kept that (names.SourceLegacy), after a sync
+// that succeeded: the owner's name is kept exactly and marked theirs; a bare brand, raw id or tab title an early
+// version saved is replaced by the brand and the alias Verify reads now; a "<Brand> · x" is club's (and rewritten in
+// today's form) only while x is the alias Verify reports, else the owner's. A failed Verify leaves it for the next
+// sync.
+func (s *Space) settleName(ctx context.Context, id string) {
+	a, ok, err := s.store.Account(ctx, id)
+	if err != nil || !ok || a.NameSource != names.SourceLegacy || a.Status != protocol.AccountActive || a.LastError != "" {
+		return
+	}
+	var patch store.AccountPatch
+	if names.OwnerChose(a.Provider, a.DisplayName) {
+		owner := names.SourceOwner
+		patch.NameSource = &owner
+	} else {
+		adapter, ok := s.club.opts.Registry.Get(a.Provider)
+		cred, found, err := s.vault.Get(ctx, id)
+		if !ok || err != nil || !found {
+			return
+		}
+		remote, err := adapter.Verify(ctx, cred)
+		if err != nil {
+			return
+		}
+		alias := aliasOf(ctx, a.Provider, adapter, cred, remote)
+		if x, ok := names.LegacyAlias(a.Provider, a.DisplayName); ok && x != alias {
+			// "<Brand> · x" with an x the provider does not report: the owner edited it. Kept exactly.
+			owner := names.SourceOwner
+			patch.NameSource = &owner
+		} else {
+			stored, auto := names.Stored(a.Provider, alias), names.SourceAuto
+			patch.DisplayName, patch.NameSource = &stored, &auto
+		}
+	}
+	// Only onto the row as it was read: a rename (or another settle) while Verify ran wins.
+	if ok, err := s.store.UpdateAccountIf(ctx, id, store.AccountMatch{DisplayName: a.DisplayName, NameSource: names.SourceLegacy}, patch, s.now()); err == nil && ok {
+		s.notify(nil)
+	}
 }
 
 // AddAccount pairs an account: the provider checks the credential, which then goes into the vault and never comes
@@ -758,6 +909,10 @@ func (s *Space) AddAccount(ctx context.Context, p protocol.AddAccountParams) (pr
 	if err != nil {
 		return protocol.Account{}, verifyError(err)
 	}
+	alias := ""
+	if name == "" {
+		alias = aliasOf(ctx, p.Provider, adapter, cred, remote)
+	}
 	existing, err := s.store.ListAccounts(ctx)
 	if err != nil {
 		return protocol.Account{}, err
@@ -773,8 +928,8 @@ func (s *Space) AddAccount(ctx context.Context, p protocol.AddAccountParams) (pr
 		return protocol.Account{}, err
 	}
 	now := s.now()
-	if err := s.store.InsertAccount(ctx, store.Account{AccountID: id, Provider: p.Provider, DisplayName: cmpOr(name, remote.DisplayName),
-		ExternalAccountID: remote.ExternalAccountID, Status: protocol.AccountActive,
+	if err := s.store.InsertAccount(ctx, store.Account{AccountID: id, Provider: p.Provider, DisplayName: cmpOr(name, names.Stored(p.Provider, alias)),
+		NameSource: nameSource(name), ExternalAccountID: remote.ExternalAccountID, Status: protocol.AccountActive,
 		AssistantControl: string(DefaultControl), CreatedAt: now, UpdatedAt: now}); err != nil {
 		_ = s.vault.Delete(ctx, id)
 		return protocol.Account{}, err
@@ -816,8 +971,11 @@ func (s *Space) RemoveAccount(ctx context.Context, p protocol.RemoveAccountParam
 		return err
 	}
 	_ = s.setAssistantBackend(ctx, p.AccountID, false)
+	_ = s.SetInboxAccount(ctx, p.AccountID, true) // forget the switch: an account id is never reused
+	_ = s.clearSSHTarget(ctx, p.AccountID)
 	s.mu.Lock()
 	delete(s.quota, p.AccountID)
+	delete(s.quotaCheckedAt, p.AccountID)
 	s.mu.Unlock()
 	s.notify(nil)
 	return nil

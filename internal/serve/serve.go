@@ -20,8 +20,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/protocol"
 )
 
 // maxBody is the largest request body taken.

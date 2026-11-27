@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
 )
 
 // Name is the provider's name.
@@ -112,7 +112,7 @@ func (p *Provider) Verify(_ context.Context, credential string) (provider.Remote
 	if _, err := p.account(credential); err != nil {
 		return provider.RemoteAccount{}, err
 	}
-	return provider.RemoteAccount{ExternalAccountID: externalID(credential), DisplayName: "Echo"}, nil
+	return provider.RemoteAccount{ExternalAccountID: externalID(credential)}, nil
 }
 
 func (p *Provider) ListSessions(_ context.Context, credential string) ([]provider.RemoteSession, error) {

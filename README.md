@@ -1,8 +1,8 @@
-# personal-agent-club
+# Ensemble (personal-agent-club)
 
-Personal Agent Club ("club") keeps your personal agents in one place: accounts you pair at agent services, their
-sessions and messages, an outbox for what you send them, read state and search. It is one Go program that runs in
-either of two ways:
+Ensemble (extension id `personal-agent-club`, "club" in its code and protocol) keeps your personal agents in one
+place: accounts you pair at agent services, their sessions and messages, an outbox for what you send them, read
+state and search. It is one Go program that runs in either of two ways:
 
 - **As a Persona extension.** A Persona hub starts the program with no arguments and talks to it over the extension
   protocol on stdin and stdout. It contributes the agent source `pac`, so its sessions show up on Persona's Agents
@@ -16,7 +16,8 @@ Both shells call the same core and answer the same protocol.
 
 **Usable with the API providers.** `serve` keeps each space in SQLite with its credentials encrypted on disk, and
 reaches three providers through their APIs: Cue (Manus API v2), Grok Bot (its desktop client's protocol) and Groq
-(OpenAI-compatible). An exported space of the Lark gateway's agent bridge can be imported with its ids, and the
+(OpenAI-compatible), and Muse through the owner's own [muse2api](https://github.com/czg86389-hub/muse2api) server
+(OpenAI-compatible) once its address is configured. An exported space of the Lark gateway's agent bridge can be imported with its ids, and the
 accounts can be listed read-only beside a running serve. The browser-based providers (Muse, Dots, Claude Duet) are not
 in this version. The provider adapters are built from documentation and recorded fixtures and still need calibrating
 against real traffic (`internal/provider/testdata`). The Persona extension serves the same core from its own data
@@ -125,37 +126,88 @@ while serve runs.
 | --- | --- |
 | `PERSONAL_AGENT_CLUB_PROXY` | every provider request goes through this proxy (`socks5://`, `socks5h://`, `http://` or `https://` with host and port), and fails rather than going direct when it is down; unset, `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` apply |
 | `PERSONAL_AGENT_CLUB_GROQ_MODEL` | the model Groq accounts ask (default `openai/gpt-oss-120b`); a pairing is refused when the key cannot use it |
+| `PERSONAL_AGENT_CLUB_MUSE2API_URL` | the address of your muse2api server (`http://<host>:18610`, with or without `/v1`); unset, muse2api is listed as unavailable; not an http(s) URL, serve refuses to start |
+| `PERSONAL_AGENT_CLUB_MUSE2API_MODEL` | the model muse2api accounts ask (default `muse-spark`; any of the server's aliases works too) |
 
 Provider requests never follow a redirect, so a credential header never goes to another host.
 
 ### As a Persona extension
 
-`persona-extension.json` is the manifest: extension id `personal-agent-club`, the agent source `pac` (providers Cue,
-Grok Bot, and Groq), the Accounts page (`ui` `accounts`) and the connector `club` with the assistant's `club_agent_*`
-tools, `activation_events: on_startup`, and network access to the three providers' API hosts only. `make package`
+`persona-extension.json` is the manifest: extension id `personal-agent-club`, the agent source `pac` ("Ensemble 的账号和对话"; providers Cue,
+Grok Bot, Groq and muse2api), the home (`ui` `home`, a navigation entry, and its Overview card `home-card`), the Accounts
+page (`ui` `accounts`) and the connector `club` ("让 Persona 助手使用 Ensemble") with the assistant's `club_agent_*` tools, `activation_events: on_startup`, and network access to the three providers' API hosts and the muse2api address the user writes
+(`config:muse2api_url:http`) only. `make package`
 builds `dist/personal-agent-club-<version>.tar.gz` (manifest and the four programs), `scripts/persona-test.sh` holds
 it to the hub's own checks, and [docs/persona-install.md](docs/persona-install.md) installs it on a hub. The
-configuration switch `demo_echo` adds the echo provider. The extension syncs every account every 60 s and keeps its
+configuration switch `demo_echo` adds the echo provider, and `muse2api_url` (with `muse2api_model`) adds muse2api. The extension syncs every account every 60 s and keeps its
 one space (`default`) in the data directory the hub gives it, laid out as serve's with the key in `club.key`, so
 `import` and `accounts` work on it too; its providers go out through the HTTP client that takes the hub's egress
 proxy. Without a data directory (run by hand) it keeps everything in memory.
 
+#### Chats in Persona's Inbox
+
+Off by default. The setting `inbox_conversations` ("把 AI 对话放进收件箱") makes each chat of the paired accounts one row in
+Persona's Inbox, through a second connector, `ensemble` (it gives the assistant no tools; `club` and its `club_agent_*` tools,
+every send confirmed on the phone, are unchanged). Each account's page has its own switch (on unless turned off), separate from
+"助手指挥".
+
+- **The row**: thread = the session key; title = account · chat name; preview = the newest reply; unread follows the chat's
+  unread count; `last` = the newest message's id, so a repeated sync adds nothing. A chat whose newest message is the owner's own
+  is filed as replied. Chats quiet for a day or more when the switch went on come in already read, and only the last 8 days (at most
+  100 chats) are listed. A chat that backs the Persona assistant itself is left out.
+- **Load**: building the rows reads only what club has already synced. It never calls a provider and never syncs, so browser-backed
+  accounts get no extra page loads. The hub is told (`connector.changed`, at most every 5 s) only when a row really changed.
+- **Choices**: when the newest reply ends in a list of choices (`A：…` / `B：…`, or `1.` / `2.` after a question, plus up to two
+  short closing lines such as "leave it for now"), the row is marked Needs You and its detail page (`ui` `inbox-chat`) draws each
+  choice as a button. A tap asks first, then sends that text as the owner's next message through the chat's outbox
+  (`internal/extension/options.go`).
+- **Sign-in and authorization requests** (`internal/extension/auth.go`): a reply that asks the owner to sign in or approve
+  an authorization also marks the row Needs You, even in a chat that cannot be replied to. Recognised: a sentence that
+  puts it to the owner ("请", "需要你", "please", "you", an instruction) and tells them to act on a sign-in link or to enter
+  a device code, the ask being allowed to stand in the sentence before a bare link; or, in a message of at most 700
+  characters, a request in words alone ("请你先登录", "please log in", "you need to sign in"). A sign-in link is a sign-in
+  path of a known host, an OAuth `…/authorize` endpoint, or a device page (`/activate`, `/device`). Left alone: the AI
+  saying it must or did sign in itself, conditions and advice ("if…", "once…", how-tos), instructions for other people,
+  "no need to log in", approvals that are not a sign-in ("please approve the PR"), code blocks, quoted lines and phrases,
+  and links that merely have "oauth" or "device" in their path. It prefers missing a request to a false alert, and real
+  prompts worded another way will be missed. Nothing in the text is opened or followed.
+- **Phone alerts** (`inbox_push`, on; `internal/extension/inbox_push.go`): the Inbox does not push an alert for a
+  connector's row by itself (only its count changes), so a reply that waits for the owner (choices, or a sign-in request)
+  is also sent to the hub's `POST /api/v1/notify`, at push level P0. One goroutine sends them, a round after each change
+  and again a minute later while an alert failed or more than 5 were due. Each reply is alerted once: what was alerted is
+  kept in the space's settings and read back after a restart (if an alert goes out and the program dies before that is
+  written, the hub replaces the earlier alert with the same id). Never for a row read, answered, or older than 6 hours;
+  the rows are read again before every send. What already waits when alerts start (an upgrade, the switch turned on) is
+  remembered and not alerted. It uses the token this run's hub gave it and only with the scope `notify`; without it nothing is sent or retried. The alert names
+  the account and its service: no chat title and nothing the AI wrote.
+- **Replying**: `inbox_reply` (on) lets the owner answer from the Inbox; the Send press is the confirmation, as for every Inbox
+  source, and it goes out through the same outbox as any send (one client id per reply, so a retry sends once). Switched off, rows
+  are read-only and a reply has to go through the assistant, which asks on the phone each time.
+- **Subscription** (advanced): `inbox_via_subscription` turns off the Inbox's own reading and serves the same rows from the
+  read-only catalog tool `conversations` of source `ensemble`, for a `things` subscription:
+
+  ```json
+  {"mode": "things", "tool": "conversations", "args": {}, "items_path": "$.things", "kind": "sub_message", "group_by": "thread"}
+  ```
+
+  Only the Inbox takes a `things` subscription's rows (not the knowledge base).
+
 ## Providers
 
-| | Cue | Grok Bot | Groq |
-| --- | --- | --- | --- |
-| Name | `cue` | `grok_bot` | `groq` |
-| Connects with | API key (`x-manus-api-key`) | device sign-in (`club.logins.grok_bot.*`, approved in the user's browser) or a pasted access token | API key (`Authorization: Bearer`) |
-| History | from the provider: each agent's main task and its subtasks | from the provider: each bot's main session and side sessions | local only: Groq keeps no conversation; club stores it and sends the latest 20 turns (24k characters) with each message |
-| Send | yes, into a main task; subtasks are read-only | yes; the client id is the message id, so a repeat is a duplicate, not a second message | yes; the answer comes back in the same call |
-| Send confirmation (of an `unconfirmed` send) | no: it stays unconfirmed | yes: the send status by message id, asked at the follow-ups | no: it stays unconfirmed |
-| Live state (`club.live`) | no (`supported: false`) | yes: running and composing, per session | no (`supported: false`) |
-| Push | no: polling | after a send, the transcript watch (at most 90 s) reads the session as soon as it changes | not needed |
-| Interrupt | no | no | no |
-| Start a session | no | no | no |
-| Credential refresh | no | yes, for signed-in credentials (refresh token), once per refused token; a pasted token cannot be refreshed | no |
-| Quota | a 429 (with `Retry-After`) | a 429 (with `Retry-After`) | every answer's `x-ratelimit-*` headers (requests per day, tokens per minute; the model list's too), and a 429 |
-| Hosts | `api.manus.ai` | `api2.cursor.sh` (the sign-in page the user opens is on `cursor.com`) | `api.groq.com` |
+| | Cue | Grok Bot | Groq | muse2api |
+| --- | --- | --- | --- | --- |
+| Name | `cue` | `grok_bot` | `groq` | `muse2api` |
+| Connects with | API key (`x-manus-api-key`) | device sign-in (`club.logins.grok_bot.*`, approved in the user's browser) or a pasted access token | API key (`Authorization: Bearer`) | the server's API key (`MUSE2API_KEY`, `Authorization: Bearer`), checked against its model list; the server's address is configuration |
+| History | from the provider: each agent's main task and its subtasks | from the provider: each bot's main session and side sessions | local only: Groq keeps no conversation; club stores it and sends the latest 20 turns (24k characters) with each message | local only, as Groq |
+| Send | yes, into a main task; subtasks are read-only | yes; the client id is the message id, so a repeat is a duplicate, not a second message | yes; the answer comes back in the same call | yes; the answer comes back in the same call (up to 110 s: the server drives muse.ai's web chat) |
+| Send confirmation (of an `unconfirmed` send) | no: it stays unconfirmed | yes: the send status by message id, asked at the follow-ups | no: it stays unconfirmed | no: it stays unconfirmed |
+| Live state (`club.live`) | no (`supported: false`) | yes: running and composing, per session | no (`supported: false`) | no (`supported: false`) |
+| Push | no: polling | after a send, the transcript watch (at most 90 s) reads the session as soon as it changes | not needed | not needed |
+| Interrupt | no | no | no | no |
+| Start a session | no | no | no | no |
+| Credential refresh | no | yes, for signed-in credentials (refresh token), once per refused token; a pasted token cannot be refreshed | no | no |
+| Quota | a 429 (with `Retry-After`) | a 429 (with `Retry-After`) | every answer's `x-ratelimit-*` headers (requests per day, tokens per minute; the model list's too), and a 429 | a 429 (with `Retry-After`); the server spreads load over its own Muse accounts |
+| Hosts | `api.manus.ai` | `api2.cursor.sh` (the sign-in page the user opens is on `cursor.com`) | `api.groq.com` | the configured address only |
 
 `muse`, `dots` and `claude_duet` (browser-based) are not in this version: listed as unavailable, refused when paired
 (`unsupported`, `PROVIDER_UNAVAILABLE`), skipped by an import. `club.sessions.start` and `club.sessions.interrupt`
@@ -213,15 +265,18 @@ Rules the core keeps:
 - **Outbox**: sends are deduplicated by `client_id`. A send whose outcome is unknown is marked `unconfirmed` and is
   never sent again automatically (a provider that can confirm is asked, read-only); after a restart, sends that were
   in flight become `unconfirmed` too, and sends still pending go out once.
-- **Sync** follows the gateway's schedule: at most 20 sessions per round (those that moved, those active in the last
-  30 minutes, then the three read least recently); a refused credential is retried every 15 minutes, after one
+- **Sync** follows the gateway's schedule: at most 20 sessions per round (up to 10 whose list gives no time, those
+  that moved since they were last read, those active in the last 30 minutes, then the three read least recently;
+  least recently read first within each, so sessions take turns when more are due); a refused credential is retried every 15 minutes, after one
   refresh where the provider has one.
+- **Rank** (`rankTimeMs`) is the time of a conversation's newest message, or the time its service's list gives as
+  its last activity; never the time of a sync. A list without a time (Muse's main chat, a site read from its links)
+  passes 0, a coarse relative one (Muse's side chats: "2h", "今天") only places a conversation seen for the first
+  time, and a message without a time of its own keeps the time it was first seen (a conversation's first read finds
+  its history, dated no later than when it was found, so it is neither news nor unread): a sync with nothing new
+  moves no conversation, its preview or its unread count.
 - **Credentials** go in and never come out: no method returns one, nothing logs one.
-- **Quota** comes only from what costs nothing: the readings a provider's answers carry and any 429. `state` is `ok`
-  (more than 20% left), `low` (20% or less) or `exhausted` (none left, or a 429, until its `Retry-After` or else for
-  five minutes); the tightest dimension is on top, the others in `details`; `stale` after 15 minutes without an
-  answer; `show` mirrors the account's `show_quota`. Unknown is no `quota` at all. A change of state or staleness is
-  announced with `agentsrc.updated`. Sends to an exhausted account are still tried.
+- **Quota** combines real provider readings (Groq's `x-ratelimit-*` headers, Grok Bot's `DashboardService/GetSandUsageStatus` and `GetCurrentPeriodUsage`, Claude Duet's `/api/organizations/<id>/usage` including `five_hour`, `seven_day`, and `maple_sundial` Duet credit, ChatGPT Dots' `/backend-api/wham/usage`, Muse's Settings › General › Usage server action / dialog, Gemini's `/usage?hl=en` via an isolated temporary tab, optional Manus/muse2api rate-limit headers, and any 429) with honest local 5h/24h send-count estimates (`account.usage`) before the first reading or for services that do not publish real-time quota (Cue, muse2api). `state` is `ok` (more than 20% left), `low` (20% or less) or `exhausted` (none left, provider refusal flag, or a 429 until `Retry-After` or five minutes); the tightest dimension is on top, all windows in `buckets`; `stale` after 15 minutes without an answer; `show` mirrors the account's `show_quota`. Unknown is no `quota` at all. A change of state or staleness is announced with `agentsrc.updated`. Sends to an account freshly known to be exhausted are refused before hitting the provider (`conflict`, `QUOTA_EXHAUSTED`) with the reset time so callers warn instead of failing silently; manual sync (`club.accounts.sync`) refreshes the reading immediately.
 - **Assistant control** per account (`off`, `read`, `confirm`, `auto`; `off` by default, and for every imported
   account): what the Persona assistant may do with that account's agents. With nobody present (scheduled tasks,
   background follow-ups) the assistant may only read, whatever the level.
@@ -230,6 +285,7 @@ Rules the core keeps:
   pairing, the dedicated sshd). The hub's machine list is only described until `club.grok_bot.takeover.apply`, which
   writes it after `plan` and never restarts the hub. A node already in the list is reported and left as it is. Nothing
   in these calls carries a key, a token or an address.
+- **Remote terminal & shell entry** per account: SSH-reachable cloud environments (Muse, Grok Bot, Echo) support saving a non-secret SSH / Tailscale SSH target (no passwords or private keys ever stored), running a fixed read-only status probe (`uname -srm && uptime`), and running commands only after explicit two-step staging + owner confirmation (`20 s` timeout, `16 KB` output cap, ANSI stripping). Grok Bot also reads cloud sandbox state read-only (`SandBoxService/GetSandBoxRunState`) without waking sleeping sandboxes, and Muse/Grok Bot offer a two-step confirmed chat-assisted sandbox runner. Hosted web/API services without a shell clearly label themselves and link to `nwverse/persona#16741` for the Persona core interfaces needed for native/embedded webshell support.
 
 ## Layout
 
@@ -238,7 +294,7 @@ Rules the core keeps:
 | `cmd/personal-agent-club` | the program: extension mode, `serve`, `import`, `accounts`, `version`; the whole-program tests |
 | `scripts` | `package.sh` (the Persona package, `make package`) and `persona-test.sh` (the hub's own checks) |
 | `internal/protocol` | wire types and method names, pinned by golden JSON |
-| `internal/provider` | the provider adapter interface, optional capabilities, the registry; `cue/`, `grokbot/`, `groq/` the API providers, `echo/` the demo one, `web/` their shared HTTP client, `providertest/` a fake upstream |
+| `internal/provider` | the provider adapter interface, optional capabilities, the registry; `cue/`, `grokbot/`, `groq/`, `muse2api/` the API providers, `echo/` the demo one, `web/` their shared HTTP client, `providertest/` a fake upstream |
 | `internal/providers` | the registry both shells build: the API providers on one HTTP client and its proxy |
 | `internal/store` | the store interface, SQLite (with CJK search) and in-memory implementations, one test suite for both |
 | `internal/vault` | credentials: the encrypted file and an in-memory one |

@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -24,9 +25,9 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/provider/web"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider/web"
 )
 
 // Name is the provider's name.
@@ -99,6 +100,7 @@ var (
 	_ provider.CredentialRefresher = (*Adapter)(nil)
 	_ provider.Watcher             = (*Adapter)(nil)
 	_ provider.DeviceLogin         = (*Adapter)(nil)
+	_ provider.QuotaReader         = (*Adapter)(nil)
 )
 
 func (a *Adapter) Name() string       { return Name }
@@ -167,7 +169,8 @@ func (a *Adapter) data(ctx context.Context, credential, method string, body any)
 	return web.Record(r.Data), nil
 }
 
-// Verify reads who the token belongs to.
+// Verify reads who the token belongs to, in one request: its alias is the email GetMe answers (grok-bot-sdk 0.78.1's
+// shape: {authId, userId, email}). Pairing asks PairingAlias for a better one.
 func (a *Adapter) Verify(ctx context.Context, credential string) (provider.RemoteAccount, error) {
 	r := a.rpc(ctx, credential, "DashboardService", "GetMe", map[string]any{})
 	if !r.OK {
@@ -185,7 +188,27 @@ func (a *Adapter) Verify(ctx context.Context, credential string) (provider.Remot
 	if id == "" {
 		return provider.RemoteAccount{}, &provider.Error{Code: provider.CodeAuthFailed, HTTPStatus: r.Status}
 	}
-	return provider.RemoteAccount{ExternalAccountID: id, DisplayName: "Grok Bot"}, nil
+	return provider.RemoteAccount{ExternalAccountID: id, Alias: web.Text(me["email"])}, nil
+}
+
+// PairingAlias is the name of the account's only bot of its own, which tells two Grok Bot accounts apart better than
+// an email: the roster is asked without teammates' bots (includeTeamAgents false) and rooms are not bots. "" when the
+// account has none, several, or the roster cannot be read (pairing does not fail for a name).
+func (a *Adapter) PairingAlias(ctx context.Context, credential string) string {
+	roster, err := a.data(ctx, credential, "ListGrokBotAgents", map[string]any{"includeTeamAgents": false})
+	if err != nil {
+		return ""
+	}
+	var names []string
+	for _, bot := range web.Records(roster["agents"]) {
+		if botID.MatchString(web.Text(bot["agentId"])) && !roomKinds[web.String(bot["kind"])] {
+			names = append(names, or(web.Text(bot["name"]), web.Text(bot["title"])))
+		}
+	}
+	if len(names) != 1 {
+		return ""
+	}
+	return names[0]
 }
 
 var roomKinds = map[string]bool{"2": true, "ROOM": true, "GROK_BOT_AGENT_KIND_ROOM": true}
@@ -214,7 +237,13 @@ func (a *Adapter) ListSessions(ctx context.Context, credential string) ([]provid
 		}
 		listed, err := a.data(ctx, credential, "ListGrokBotAgentSessions", map[string]any{"agentId": id})
 		if err != nil {
-			return nil, err
+			var pe *provider.Error
+			if errors.As(err, &pe) && pe.Code == provider.CodeRequestFailed &&
+				(pe.HTTPStatus == http.StatusNotFound || pe.HTTPStatus == http.StatusBadRequest) {
+				listed = nil
+			} else {
+				return nil, err
+			}
 		}
 		mainID := id + "/" + viewer
 		seen := map[string]bool{}
@@ -260,7 +289,7 @@ func (a *Adapter) ListMessages(ctx context.Context, credential string, s provide
 	if err != nil {
 		return provider.RemotePage{}, err
 	}
-	if !web.IsArray(body["entries"]) {
+	if raw, ok := body["entries"]; ok && raw != nil && !web.IsArray(raw) {
 		return provider.RemotePage{}, &provider.Error{Code: provider.CodeRequestFailed}
 	}
 	var msgs []provider.RemoteMessage
@@ -375,6 +404,180 @@ func (a *Adapter) RefreshCredential(ctx context.Context, credential string) (str
 		return "", &provider.Error{Code: provider.CodeAuthFailed}
 	}
 	return Credential(access, or(web.Text(body["refresh_token"]), refresh)), nil
+}
+
+// ReadQuota reads the account's live usage status from DashboardService/GetSandUsageStatus (and, when available,
+// billing-period plan usage from GetCurrentPeriodUsage). Best-effort: returns nil when the endpoint is unavailable
+// or omits numeric usage fields, while propagating 429 rate-limit errors.
+func (a *Adapter) ReadQuota(ctx context.Context, credential string) ([]provider.QuotaReading, error) {
+	var status map[string]any
+	r := a.rpc(ctx, credential, "DashboardService", "GetSandUsageStatus", map[string]any{})
+	if r.OK {
+		status = web.Record(r.Data)
+	} else if r.Status == http.StatusTooManyRequests {
+		return nil, web.ReadError(r)
+	}
+	var period map[string]any
+	pr := a.rpc(ctx, credential, "DashboardService", "GetCurrentPeriodUsage", map[string]any{})
+	if pr.OK {
+		period = web.Record(pr.Data)
+	} else if pr.Status == http.StatusTooManyRequests && len(status) == 0 {
+		return nil, web.ReadError(pr)
+	}
+	return parseSandQuota(status, period), nil
+}
+
+// BoxState reads the cloud sandbox run state read-only via SandBoxService/GetSandBoxRunState.
+// Unlike EnsureSandBox, this RPC does not wake a sleeping sandbox.
+func (a *Adapter) BoxState(ctx context.Context, credential string) (provider.BoxState, error) {
+	r := a.rpc(ctx, credential, "SandBoxService", "GetSandBoxRunState", map[string]any{})
+	if !r.OK {
+		if r.Status == http.StatusUnauthorized || r.Status == http.StatusForbidden {
+			return provider.BoxState{}, web.ReadError(r)
+		}
+		return provider.BoxState{}, nil
+	}
+	body := web.Record(r.Data)
+	if len(body) == 0 {
+		return provider.BoxState{}, nil
+	}
+	return provider.BoxState{
+		State:                normalizeBoxState(web.Text(body["state"])),
+		Image:                web.Text(body["image"]),
+		ImageUpdateAvailable: body["imageUpdateAvailable"] == true,
+		SourceNote:           "grok_bot:GetSandBoxRunState",
+	}, nil
+}
+
+func normalizeBoxState(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	s = strings.TrimPrefix(s, "sandbox_run_state_")
+	switch {
+	case strings.Contains(s, "running") || s == "ready" || s == "active":
+		return "running"
+	case strings.Contains(s, "starting") || strings.Contains(s, "boot") || strings.Contains(s, "creating"):
+		return "starting"
+	case strings.Contains(s, "paus") || strings.Contains(s, "sleep") || strings.Contains(s, "suspend"):
+		return "paused"
+	case strings.Contains(s, "stop") || strings.Contains(s, "off") || strings.Contains(s, "terminat"):
+		return "stopped"
+	default:
+		return "unknown"
+	}
+}
+
+func parseSandQuota(status, period map[string]any) []provider.QuotaReading {
+	var out []provider.QuotaReading
+	if len(status) > 0 && status["usesPooledEnterpriseAllowance"] != true {
+		usedPct, hasPct := floatField(status["usagePercent"])
+		wouldRefuse := status["wouldRefuseSend"] == true
+		noAvail, hasAvailField := status["hasAvailableUsage"].(bool)
+		exhausted := wouldRefuse || (hasAvailField && !noAvail)
+		if hasPct || exhausted {
+			if !hasPct {
+				usedPct = 100
+			}
+			rem := math.Max(0, math.Min(100, 100-usedPct))
+			if exhausted {
+				rem = 0
+			}
+			out = append(out, provider.QuotaReading{
+				Kind:       protocol.QuotaKindWindow,
+				Window:     "week",
+				Limit:      100,
+				Remaining:  rem,
+				ResetsAt:   parseProtoTimestampMs(status["nextResetTimestampUtc"]),
+				Exhausted:  exhausted,
+				SourceNote: "grok_bot:GetSandUsageStatus",
+			})
+		}
+	}
+	if len(period) > 0 {
+		plan := web.Record(period["planUsage"])
+		limit, hasLimit := floatField(plan["limit"])
+		rem, hasRem := floatField(plan["remaining"])
+		pctUsed, hasPct := floatField(plan["totalPercentUsed"])
+		resetsAt := parseProtoTimestampMs(period["billingCycleEnd"])
+		switch {
+		case hasLimit && limit > 0 && hasRem && rem >= 0:
+			out = append(out, provider.QuotaReading{
+				Kind:       protocol.QuotaKindCredits,
+				Window:     "month",
+				Limit:      limit,
+				Remaining:  math.Max(0, math.Min(limit, rem)),
+				ResetsAt:   resetsAt,
+				SourceNote: "grok_bot:GetCurrentPeriodUsage",
+			})
+		case hasPct:
+			out = append(out, provider.QuotaReading{
+				Kind:       protocol.QuotaKindCredits,
+				Window:     "month",
+				Limit:      100,
+				Remaining:  math.Max(0, math.Min(100, 100-pctUsed)),
+				ResetsAt:   resetsAt,
+				SourceNote: "grok_bot:GetCurrentPeriodUsage",
+			})
+		}
+	}
+	return out
+}
+
+func floatField(v any) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return 0, false
+		}
+		return x, true
+	case json.Number:
+		f, err := x.Float64()
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			return 0, false
+		}
+		return f, true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(x), 64)
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			return 0, false
+		}
+		return f, true
+	}
+	return 0, false
+}
+
+// parseProtoTimestampMs parses a protobuf google.protobuf.Timestamp in JSON form (RFC3339 string or {seconds, nanos}).
+func parseProtoTimestampMs(v any) int64 {
+	switch x := v.(type) {
+	case string:
+		s := strings.TrimSpace(x)
+		if s == "" {
+			return 0
+		}
+		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			return t.UnixMilli()
+		}
+		return parseEpochMs(s)
+	case map[string]any:
+		sec, ok := floatField(x["seconds"])
+		if !ok || sec <= 0 {
+			return 0
+		}
+		nanos, _ := floatField(x["nanos"])
+		return int64(sec)*1000 + int64(nanos)/1e6
+	default:
+		return parseEpochMs(v)
+	}
+}
+
+func parseEpochMs(v any) int64 {
+	f, ok := floatField(v)
+	if !ok || f <= 0 {
+		return 0
+	}
+	if f < 1e11 { // seconds
+		return int64(f * 1000)
+	}
+	return int64(f)
 }
 
 func or(vs ...string) string {

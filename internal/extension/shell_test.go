@@ -22,14 +22,14 @@ import (
 	"github.com/nwverse/persona/sdk/go/exttest"
 	"github.com/nwverse/persona/sdk/go/wire"
 
-	pac "github.com/nwverse/personal-agent-club"
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/datadir"
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/provider/echo"
-	pacruntime "github.com/nwverse/personal-agent-club/internal/runtime"
-	"github.com/nwverse/personal-agent-club/internal/store"
+	pac "github.com/nwverse/ensemble"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/datadir"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider/echo"
+	pacruntime "github.com/nwverse/ensemble/internal/runtime"
+	"github.com/nwverse/ensemble/internal/store"
 )
 
 func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
@@ -38,10 +38,25 @@ func storePatch(level string) store.AccountPatch { return store.AccountPatch{Ass
 
 const demoCredential = "echo-synthetic-0001"
 
+// startHost is exttest.Start with machines.status answered as a hub without the computer does: the accounts page
+// reads each account's takeover machine, and the host's own answer ({}) does not hold to the call's schema.
+func startHost(t *testing.T, manifest []byte, run exttest.Run, config json.RawMessage) *exttest.Host {
+	t.Helper()
+	h := exttest.Start(t, manifest, run, config)
+	h.Answer(methodMachinesStatus, func(raw json.RawMessage) (any, error) {
+		var p machineStatusParams
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		return machineStatusResult{MachineID: p.MachineID}, nil
+	})
+	return h
+}
+
 func start(t *testing.T) (*exttest.Host, *core.Club) {
 	t.Helper()
 	club := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
-	h := exttest.Start(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{"demo_echo":true}`))
+	h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{"demo_echo":true}`))
 	return h, club
 }
 
@@ -83,6 +98,10 @@ func checkView(t *testing.T, v *wire.View) {
 	if err := exttest.CheckView(raw, false); err != nil {
 		t.Fatalf("view the apps cannot draw: %v\n%s", err, raw)
 	}
+	// the hub holds every view to wire.CheckView (HTTP 502 when it does not fit), which is stricter than exttest's
+	if err := wire.CheckView(v); err != nil {
+		t.Fatalf("view the hub refuses (wire.CheckView): %v\n%s", err, raw)
+	}
 	if strings.Contains(string(raw), demoCredential) {
 		t.Fatalf("a view carries the credential: %s", raw)
 	}
@@ -96,16 +115,17 @@ func text(v *wire.View) string {
 func TestAccountsPage(t *testing.T) {
 	h, club := start(t)
 	v := render(t, h, pageState{})
-	if !strings.Contains(text(v), "还没有账号") || !strings.Contains(text(v), "Echo") {
+	if !strings.Contains(text(v), "还没有接入任何账号") || !strings.Contains(text(v), "点下面的「添加账号」") ||
+		!strings.Contains(text(render(t, h, pageState{Page: pageAdd})), "演示账号") {
 		t.Fatalf("empty list: %s", text(v))
 	}
 
 	// pairing: the key goes in and comes back nowhere
-	if res := act(t, h, pageState{Page: pagePair, Provider: echo.Name}, actPair, map[string]string{fieldCredential: "  "}); !strings.Contains(res.Toast, "无效") {
+	if res := act(t, h, pageState{Page: pagePair, Provider: echo.Name}, actPair, map[string]string{fieldCredential: "  "}); !strings.Contains(res.Toast, "还没填密钥") {
 		t.Fatalf("empty key: %+v", res)
 	}
 	res := act(t, h, pageState{Page: pagePair, Provider: echo.Name}, actPair, map[string]string{fieldCredential: demoCredential, fieldName: "Demo"})
-	if !res.Pop || !strings.Contains(res.Toast, "Demo") {
+	if !pairedDone(res) || !strings.Contains(res.Toast, "Demo") {
 		t.Fatalf("pair: %+v", res)
 	}
 	st, err := club.Space(context.Background(), core.DefaultSpace)
@@ -124,24 +144,24 @@ func TestAccountsPage(t *testing.T) {
 	if v := render(t, h, page); !strings.Contains(text(v), fieldControl) || !strings.Contains(text(v), "立即同步") {
 		t.Fatalf("account: %s", text(v))
 	}
-	if res := act(t, h, page, actSync, nil); !strings.Contains(res.Toast, "已同步") {
+	if res := act(t, h, page, actSync, nil); res.Toast != "已同步，最新的对话已经拉下来了" {
 		t.Fatalf("sync: %+v", res)
 	}
 	// pause and the assistant control level go through club.accounts.update
-	if res := act(t, h, page, actPause, nil); !strings.Contains(res.Toast, "已更新") || !strings.Contains(text(res.View), "已暂停") {
+	if res := act(t, h, page, actPause, nil); !strings.Contains(res.Toast, "已暂停同步") || !strings.Contains(text(res.View), "已暂停") {
 		t.Fatalf("pause: %+v", res)
 	}
-	if res := act(t, h, page, actResume, nil); !strings.Contains(res.Toast, "已更新") || !strings.Contains(text(res.View), "正常") {
+	if res := act(t, h, page, actResume, nil); !strings.Contains(res.Toast, "已恢复同步") || !strings.Contains(text(res.View), "正常") {
 		t.Fatalf("resume: %+v", res)
 	}
-	if res := act(t, h, page, actControl, map[string]string{fieldControl: "read"}); !strings.Contains(res.Toast, "已更新") {
+	if res := act(t, h, page, actControl, map[string]string{fieldControl: "read"}); !strings.Contains(res.Toast, "已设为只读") {
 		t.Fatalf("control: %+v", res)
 	}
 	if c, _ := st.AssistantControl(context.Background(), id); c != core.ControlRead {
 		t.Fatalf("control is %s", c)
 	}
 	// without the grok_bot provider in this club, its sign-in says it is not available
-	if res := act(t, h, pageState{Page: pageGrok}, actGrokStart, nil); !strings.Contains(res.Toast, "不支持") {
+	if res := act(t, h, pageState{Page: pageGrok}, actGrokStart, nil); !strings.Contains(res.Toast, "还没打开") {
 		t.Fatalf("grok start: %+v", res)
 	}
 	if res := act(t, h, page, actRemove, nil); !res.Pop {
@@ -169,7 +189,7 @@ func TestConnectorChecks(t *testing.T) {
 	club := core.New(core.Options{Registry: provider.NewRegistry()})
 	h := exttest.CheckConnectors(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())))
 	var items []wire.ConnectorItem
-	if err := json.Unmarshal(h.Init.Contributes["connectors"], &items); err != nil || len(items) != 1 || items[0].ID != Connector {
+	if err := json.Unmarshal(h.Init.Contributes["connectors"], &items); err != nil || len(items) != 2 || items[0].ID != Connector || items[1].ID != InboxConnector {
 		t.Fatalf("initialize does not say it has the connector: %s (%v)", h.Init.Contributes["connectors"], err)
 	}
 	// the hub tells an unknown method from one the source cannot do
@@ -226,12 +246,14 @@ func TestAssistantTools(t *testing.T) {
 		return res.Text, err
 	}
 
-	// off (the default): the account does not exist for the assistant
+	// off (the default): the account does not exist for the assistant, but the connector stays ok so the assistant
+	// can list and learn that something is paired and where the user hands it over
 	var cs wire.ConnectorStatus
-	if err := h.Call("connector.status", wire.ConnectorParams{Contribution: Connector}, &cs); err != nil || cs.State != wire.ConnectorStateNotConfigured {
+	if err := h.Call("connector.status", wire.ConnectorParams{Contribution: Connector}, &cs); err != nil || cs.State != wire.ConnectorStateOk || cs.Error != "" {
 		t.Fatalf("status at off: %+v %v", cs, err)
 	}
-	if out, err := callTool(toolList, map[string]any{}); err != nil || strings.Contains(out, id) {
+	if out, err := callTool(toolList, map[string]any{}); err != nil || strings.Contains(out, id) || strings.Contains(out, main) ||
+		!strings.Contains(out, "助手指挥") || !strings.Contains(out, "只读") {
 		t.Fatalf("list at off: %q %v", out, err)
 	}
 	if _, err := callTool(toolRead, map[string]any{"session_key": main}); err == nil {
@@ -296,7 +318,7 @@ func TestClientIDIsAUUID(t *testing.T) {
 
 func TestReasonHidesTheSecret(t *testing.T) {
 	got := reason("zh", protocol.Invalid("bad key "+demoCredential), demoCredential)
-	if strings.Contains(got, demoCredential) || !strings.HasPrefix(got, "无效") {
+	if strings.Contains(got, demoCredential) || !strings.HasPrefix(got, "填写的内容不对") {
 		t.Fatalf("reason: %q", got)
 	}
 }
@@ -427,7 +449,7 @@ const grokCredential = "fixture-grok-signin-token-0001"
 func (f *fakeGrok) Name() string       { return grokBot }
 func (f *fakeGrok) Connection() string { return protocol.ConnectionServer }
 func (f *fakeGrok) Verify(context.Context, string) (provider.RemoteAccount, error) {
-	return provider.RemoteAccount{ExternalAccountID: "grok-remote-1", DisplayName: "Grok Bot"}, nil
+	return provider.RemoteAccount{ExternalAccountID: "grok-remote-1"}, nil
 }
 func (f *fakeGrok) ListSessions(context.Context, string) ([]provider.RemoteSession, error) {
 	return []provider.RemoteSession{{ExternalID: "bot/", Title: "Grok 秘书", CanSend: true}}, nil
@@ -467,7 +489,7 @@ func (f *fakeGrok) answer(polls ...any) {
 func TestGrokBotSignIn(t *testing.T) {
 	grok := &fakeGrok{}
 	club := core.New(core.Options{Registry: provider.NewRegistry(grok), FollowUps: []time.Duration{}, WatchLimit: -1})
-	h := exttest.Start(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{}`))
+	h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{}`))
 	ctx := context.Background()
 	noToken := func(v *wire.View) {
 		t.Helper()
@@ -508,12 +530,12 @@ func TestGrokBotSignIn(t *testing.T) {
 
 	// a provider hiccup keeps the sign-in; approval pairs the account, and the token is shown nowhere
 	grok.answer(&provider.Error{Code: "NETWORK_ERROR", Retryable: true}, grokCredential)
-	if v := render(t, h, st); !strings.Contains(text(v), "NETWORK_ERROR") || !strings.Contains(text(v), "立即检查") {
+	if v := render(t, h, st); !strings.Contains(text(v), "暂时查不到登录结果") || strings.Contains(text(v), "NETWORK_ERROR") || !strings.Contains(text(v), "立即检查") {
 		t.Fatalf("a retryable failure: %s", text(v))
 	}
 	v := render(t, h, st)
 	noToken(v)
-	if !strings.Contains(text(v), "已登录并配对") || !strings.Contains(text(v), "开始登录") {
+	if !strings.Contains(text(v), "要让 Persona 助手用这个账号吗？") || strings.Contains(text(v), "开始登录") {
 		t.Fatalf("done: %s", text(v))
 	}
 	space, _ := club.Space(ctx, core.DefaultSpace)
@@ -539,13 +561,13 @@ func TestGrokBotSignIn(t *testing.T) {
 		t.Fatalf("%+v", sa)
 	}
 	grok.answer(&provider.Error{Code: "LOGIN_REFUSED", HTTPStatus: 403})
-	if v := render(t, h, sa); !strings.Contains(text(v), "LOGIN_REFUSED") || !strings.Contains(text(v), "开始登录") {
+	if v := render(t, h, sa); !strings.Contains(text(v), "Grok 没有同意这次登录") || strings.Contains(text(v), "LOGIN_REFUSED") || !strings.Contains(text(v), "开始登录") {
 		t.Fatalf("a refused sign-in: %s", text(v))
 	}
 	again = act(t, h, pageState{Page: pageGrok, Account: id}, actGrokStart, nil)
 	_ = json.Unmarshal([]byte(again.View.State), &sa)
 	grok.answer("fixture-grok-signin-token-0002")
-	if v := render(t, h, sa); !strings.Contains(text(v), "已重新登录") {
+	if v := render(t, h, sa); !strings.Contains(text(v), "已重新登录") || strings.Contains(text(v), "开始登录") {
 		t.Fatalf("signed in again: %s", text(v))
 	}
 	if status, _ := space.Status(ctx); len(status.Accounts) != 1 {
@@ -554,14 +576,17 @@ func TestGrokBotSignIn(t *testing.T) {
 }
 
 func TestAnExhaustedAccountIsNotSentToByTheAssistant(t *testing.T) {
-	if err := exhausted(nil); err != nil {
+	if err := exhausted(nil, 0); err != nil {
 		t.Fatalf("unknown quota: %v", err)
 	}
-	if err := exhausted(&protocol.Quota{State: protocol.QuotaLow}); err != nil {
+	if err := exhausted(&protocol.Quota{State: protocol.QuotaLow}, 0); err != nil {
 		t.Fatalf("low quota: %v", err)
 	}
+	if err := exhausted(&protocol.Quota{State: protocol.QuotaExhausted, Stale: true}, 0); err != nil {
+		t.Fatalf("stale no-reset quota should not block forever: %v", err)
+	}
 	for _, q := range []*protocol.Quota{{State: protocol.QuotaExhausted}, {State: protocol.QuotaExhausted, ResetsAt: 1_800_000_000_000}} {
-		if err := exhausted(q); protocol.CodeOf(err) != protocol.CodeConflict {
+		if err := exhausted(q, 1_799_000_000_000); protocol.CodeOf(err) != protocol.CodeConflict {
 			t.Fatalf("exhausted quota %+v: %v", q, err)
 		}
 	}
@@ -711,7 +736,7 @@ func TestEmbeddedAssistantRuntimeBridgeConnectsToPersonaSocket(t *testing.T) {
 
 	t.Setenv("PERSONA_RUNTIME_SOCKET", sock)
 	club := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
-	h := exttest.Start(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{"demo_echo":true,"assistant_runtime":true}`))
+	h := startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{"demo_echo":true,"assistant_runtime":true}`))
 
 	select {
 	case msg := <-hellos:
@@ -760,9 +785,60 @@ checkDisabled:
 	}()
 	t.Setenv("PERSONA_RUNTIME_SOCKET", offSock)
 	clubOff := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
-	_ = exttest.Start(t, pac.Manifest, exttest.Serve(t, Program(clubOff, pac.Version())), json.RawMessage(`{"demo_echo":true,"assistant_runtime":false}`))
+	_ = startHost(t, pac.Manifest, exttest.Serve(t, Program(clubOff, pac.Version())), json.RawMessage(`{"demo_echo":true,"assistant_runtime":false}`))
 	time.Sleep(150 * time.Millisecond)
 	if dialed.Load() != 0 {
 		t.Fatalf("assistant_runtime=false unexpectedly dialed Persona runtime socket (%d times)", dialed.Load())
+	}
+}
+
+// muse2api waits for its server's address in the settings; with it, the key is paired against that server.
+func TestMuse2APIPairsWithTheConfiguredServer(t *testing.T) {
+	const key = "fixture-muse2api-key-0001"
+	var paths []string
+	var mu sync.Mutex
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") != "Bearer "+key {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"detail":"API key 无效"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"muse-spark","object":"model"}]}`))
+	}))
+	t.Cleanup(up.Close)
+
+	// without an address: listed, and the badge says what it waits for
+	h, _ := start(t)
+	if v := render(t, h, pageState{Page: pageAdd}); !strings.Contains(text(v), "Muse 自建转接") || !strings.Contains(text(v), "里填「自建 Muse 转接服务的地址」") {
+		t.Fatalf("list without an address: %s", text(v))
+	}
+
+	club := core.New(core.Options{Registry: provider.NewRegistry(), FollowUps: []time.Duration{}})
+	cfg, _ := json.Marshal(map[string]any{"muse2api_url": up.URL, "muse2api_model": "muse-spark"})
+	h = startHost(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), cfg)
+	if v := render(t, h, pageState{Page: pageAdd}); strings.Contains(text(v), "里填「自建 Muse 转接服务的地址」") {
+		t.Fatalf("list with an address: %s", text(v))
+	}
+	st := pageState{Page: pagePair, Provider: "muse2api"}
+	if res := act(t, h, st, actPair, map[string]string{fieldCredential: "wrong-key"}); pairedDone(res) {
+		t.Fatalf("a wrong key was paired: %+v", res)
+	}
+	res := act(t, h, st, actPair, map[string]string{fieldCredential: key})
+	if !pairedDone(res) || !strings.Contains(res.Toast, "Muse 自建转接") || strings.Contains(res.Toast, key) {
+		t.Fatalf("pair: %+v", res)
+	}
+	space, _ := club.Space(context.Background(), core.DefaultSpace)
+	status, _ := space.Status(context.Background())
+	if len(status.Accounts) != 1 || status.Accounts[0].Provider != "muse2api" {
+		t.Fatalf("accounts: %+v", status.Accounts)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(paths) == 0 || paths[0] != "/v1/models" {
+		t.Fatalf("requests: %v", paths)
 	}
 }

@@ -8,8 +8,8 @@ import (
 	"io"
 	"text/tabwriter"
 
-	"github.com/nwverse/personal-agent-club/internal/core"
-	"github.com/nwverse/personal-agent-club/internal/datadir"
+	"github.com/nwverse/ensemble/internal/core"
+	"github.com/nwverse/ensemble/internal/datadir"
 )
 
 // accountRow is one account as `accounts -json` prints it. There is no credential here: the vault is never opened.

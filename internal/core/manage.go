@@ -8,12 +8,14 @@ import (
 	"errors"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf16"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/store"
+	"github.com/nwverse/ensemble/internal/names"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/store"
 )
 
 const (
@@ -23,6 +25,8 @@ const (
 	grokBot                  = "grok_bot"
 	settingIdentity          = "browserIdentity"
 	settingAssistantBackends = "assistantBackendAccounts"
+	settingInboxAccountsOff  = "inboxAccountsOff"
+	settingInboxSince        = "inboxSince"
 	settingAssistantSessions = "assistantActiveSessions"
 )
 
@@ -42,7 +46,8 @@ func (s *Space) UpdateAccount(ctx context.Context, p protocol.UpdateAccountParam
 		if name == "" || len(utf16.Encode([]rune(name))) > maxDisplayName {
 			return protocol.Account{}, badInput("display_name must be 1 to 80 characters")
 		}
-		patch.DisplayName = &name
+		owner := names.SourceOwner
+		patch.DisplayName, patch.NameSource = &name, &owner
 	}
 	if p.AssistantControl != nil {
 		c, err := ParseControl(*p.AssistantControl)
@@ -79,6 +84,11 @@ func (s *Space) UpdateAccount(ctx context.Context, p protocol.UpdateAccountParam
 	}
 	if p.AssistantBackend != nil {
 		if err := s.setAssistantBackend(ctx, a.AccountID, *p.AssistantBackend); err != nil {
+			return protocol.Account{}, err
+		}
+	}
+	if p.Inbox != nil {
+		if err := s.SetInboxAccount(ctx, a.AccountID, *p.Inbox); err != nil {
 			return protocol.Account{}, err
 		}
 	}
@@ -496,6 +506,9 @@ func (s *Space) StartSession(ctx context.Context, p protocol.StartSessionParams)
 	if acct.Status == protocol.AccountPaused {
 		return protocol.Session{}, protocol.Conflict("the account is paused").Because(protocol.ReasonAccountPaused)
 	}
+	if now := s.now(); quotaBlocksSend(s.quotaView(acct, now), now) {
+		return protocol.Session{}, protocol.Conflict(exhaustedSendMessage(acct, s.quotaView(acct, now), now)).Because(protocol.ReasonQuotaExhausted)
+	}
 	adapter, err := s.adapter(acct.Provider)
 	if err != nil {
 		return protocol.Session{}, err
@@ -615,6 +628,9 @@ func (s *Space) CallTools(ctx context.Context, accountID string, turns []provide
 	if acct.Status == protocol.AccountPaused {
 		return provider.ToolStepResult{}, true, protocol.Conflict("the account is paused").Because(protocol.ReasonAccountPaused)
 	}
+	if now := s.now(); quotaBlocksSend(s.quotaView(acct, now), now) {
+		return provider.ToolStepResult{}, true, protocol.Conflict(exhaustedSendMessage(acct, s.quotaView(acct, now), now)).Because(protocol.ReasonQuotaExhausted)
+	}
 	adapter, err := s.adapter(acct.Provider)
 	if err != nil {
 		return provider.ToolStepResult{}, false, err
@@ -638,4 +654,63 @@ func (s *Space) CallTools(ctx context.Context, accountID string, turns []provide
 	}
 	s.noteQuota(acct.AccountID, res.Quota)
 	return res, true, nil
+}
+
+// InboxAccountsOff are the accounts whose chats the owner kept out of Persona's Inbox. Every account is in until
+// turned off, once the extension's switch is on.
+func (s *Space) InboxAccountsOff(ctx context.Context) map[string]bool {
+	raw, ok, err := s.store.Setting(ctx, settingInboxAccountsOff)
+	if err != nil || !ok {
+		return map[string]bool{}
+	}
+	var m map[string]bool
+	if json.Unmarshal([]byte(raw), &m) != nil || m == nil {
+		return map[string]bool{}
+	}
+	return m
+}
+
+// SetInboxAccount puts one account's chats into Persona's Inbox (on) or keeps them out (off).
+func (s *Space) SetInboxAccount(ctx context.Context, accountID string, on bool) error {
+	m := s.InboxAccountsOff(ctx)
+	if on {
+		delete(m, accountID)
+	} else {
+		m[accountID] = true
+	}
+	b, _ := json.Marshal(m)
+	if err := s.store.PutSetting(ctx, settingInboxAccountsOff, string(b)); err != nil {
+		return err
+	}
+	s.notify(nil)
+	return nil
+}
+
+// InboxSince is when the extension's Inbox switch was first seen on (unix ms); 0 while it is off.
+func (s *Space) InboxSince(ctx context.Context) int64 {
+	raw, ok, err := s.store.Setting(ctx, settingInboxSince)
+	if err != nil || !ok {
+		return 0
+	}
+	n, _ := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	return n
+}
+
+// MarkInboxSince records when the Inbox switch was first seen on (kept while it stays on) or forgets it (off), so
+// that turning it on does not bring a day's old chats into the Inbox as new.
+func (s *Space) MarkInboxSince(ctx context.Context, on bool) (int64, error) {
+	cur := s.InboxSince(ctx)
+	switch {
+	case on && cur == 0:
+		cur = s.now()
+		if err := s.store.PutSetting(ctx, settingInboxSince, strconv.FormatInt(cur, 10)); err != nil {
+			return 0, err
+		}
+	case !on && cur != 0:
+		if err := s.store.PutSetting(ctx, settingInboxSince, ""); err != nil {
+			return 0, err
+		}
+		cur = 0
+	}
+	return cur, nil
 }

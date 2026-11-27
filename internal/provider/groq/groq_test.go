@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nwverse/personal-agent-club/internal/protocol"
-	"github.com/nwverse/personal-agent-club/internal/provider"
-	"github.com/nwverse/personal-agent-club/internal/provider/providertest"
+	"github.com/nwverse/ensemble/internal/protocol"
+	"github.com/nwverse/ensemble/internal/provider"
+	"github.com/nwverse/ensemble/internal/provider/providertest"
 )
 
 const key = "fixture-key-not-real"
@@ -27,7 +27,7 @@ func TestVerifiesTheKeyAgainstTheModelList(t *testing.T) {
 	groq := providertest.Fixture(t, "groq-openai-v1.json")
 	up := providertest.Serve(t, func(providertest.Call) providertest.Answer { return providertest.Answer{Body: groq["models"]} })
 	acct, err := New(Options{Origin: up.URL + "/openai/v1"}).Verify(ctx, key)
-	if err != nil || !reflect.DeepEqual(acct, provider.RemoteAccount{ExternalAccountID: "groq", DisplayName: "Groq"}) {
+	if err != nil || !reflect.DeepEqual(acct, provider.RemoteAccount{ExternalAccountID: "groq"}) {
 		t.Fatalf("%+v %v", acct, err)
 	}
 	c := up.Calls()[0]
