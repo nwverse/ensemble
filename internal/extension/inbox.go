@@ -562,7 +562,7 @@ func (h *inbox) itemAction(ctx context.Context, r *ext.UIRequest) (*wire.ActionR
 	if r.Values[valLast] != row.thing.Last || r.Values[valSum] != optionSum(o) {
 		return &wire.ActionResult{Toast: l.t("它刚又回了新内容，选项变了，请重新看一下再选", "It just replied again and the choices changed; look again and pick")}, nil
 	}
-	if err := h.send(ctx, c.sess.SessionKey, o.Reply, replyClientID(c.sess.SessionKey, "pick|"+row.thing.Last+"|"+fmt.Sprint(i))); err != nil {
+	if err := h.send(ctx, c.sess.SessionKey, o.Reply, replyClientID(c.sess.SessionKey, "pick|"+row.thing.Last+"|"+optionSum(o))); err != nil {
 		return &wire.ActionResult{Toast: l.t("没有发出去：", "Not sent: ") + err.Error()}, nil
 	}
 	return &wire.ActionResult{Toast: l.t("已发出", "Sent")}, nil

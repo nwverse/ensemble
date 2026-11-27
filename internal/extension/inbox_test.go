@@ -789,3 +789,40 @@ func TestInboxItemPageWithoutChoicesLeavesTheBodyToTheApp(t *testing.T) {
 		t.Fatalf("want unsupported so the app draws its own body, got %v", err)
 	}
 }
+
+// Two different texts at the same position of the same reply (a reply edited in place) are two different sends: the
+// second must not be taken for the first by the outbox.
+func TestInboxPickSendIDFollowsTheText(t *testing.T) {
+	e := newInboxEnv(t, inboxOn)
+	now := e.now.Load()
+	key := e.sessionKey(0, "main")
+	item := &wire.UIInboxItem{ID: "i1", Extra: map[string]json.RawMessage{"connector": json.RawMessage(`{"thread":"` + key + `"}`)}}
+	pickFirst := func() {
+		var v wire.View
+		if err := e.h.Call("ui.render", wire.UIParams{Contribution: InboxItemUI, Placement: wire.PlacementInboxItem, Size: "full", UIVersion: 6,
+			Locale: "zh-Hans", Item: item}, &v); err != nil {
+			t.Fatal(err)
+		}
+		a := v.Sections[0].Items[0].Action
+		var res wire.ActionResult
+		if err := e.h.Call("ui.action", wire.UIParams{Contribution: InboxItemUI, Placement: wire.PlacementInboxItem, Size: "full", UIVersion: 6,
+			Locale: "zh-Hans", Item: item, Action: actPick, Values: a.Values}, &res); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.prov.say("main", protocol.RoleAssistant, "m1", "Next step, pick:\nA：run the tests\nB：skip them", now-2000)
+	e.sync()
+	pickFirst()
+	// the same message id, edited in place, now offers other words at the same position
+	e.prov.mu.Lock()
+	e.prov.script["main"][0].Blocks = []protocol.Block{protocol.TextBlock("Next step, pick:\nA：delete the branch\nB：keep it")}
+	e.prov.mu.Unlock()
+	e.now.Add(1000)
+	e.sync()
+	// the row may be cached by the same last; the confirmed text is what is sent
+	pickFirst()
+	sent := e.prov.sent()
+	if len(sent) != 2 || sent[0].Text != "A：run the tests" || sent[1].Text != "A：delete the branch" {
+		t.Fatalf("two different confirmed texts must be two sends: %+v", sent)
+	}
+}

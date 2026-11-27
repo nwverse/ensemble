@@ -23,7 +23,6 @@ const (
 	maxExtraRunes   = 20  // an unmarked closing line this short is an option too ("leave it for now")
 	maxExtraLines   = 2   // at most this many unmarked closing lines
 	maxClosingLines = 3   // more prose than this after the list and it is not what the message ends on
-	cueLines        = 3   // lines before a numbered list that may carry the question
 )
 
 // option is one choice: Label is the button's title, Reply what is sent back to the chat when it is picked.
@@ -39,8 +38,10 @@ var markerLine = regexp.MustCompile(`^(?:[-*•·]\s*)?(?:(?:选项|方案|Optio
 // markerBare is the same with the delimiter inside brackets only: "(A) text", "A) text".
 var markerBare = regexp.MustCompile(`^(?:[-*•·]\s*)?[（(\[【]([A-Fa-f]|[1-9])[）)\]】]\s*(\S.*)$|^(?:[-*•·]\s*)?([A-Fa-f]|[1-9])[）)]\s*(\S.*)$`)
 
-// cueWords say the text around a numbered list asks for a choice (a lettered list is taken for one without them).
-var cueWords = []string{"选", "哪个", "哪一", "哪种", "决定", "要不要", "是否", "你想", "请回复", "choose", "which one", "which do", "which would", "prefer", "pick one", "let me know"}
+// cueWords say the line before a list asks for a choice. Only that one line is read: words further away, or after the
+// list, say nothing about it.
+var cueWords = []string{"选", "哪个", "哪一", "哪种", "决定", "要不要", "是否要", "你想", "你看", "请回复", "怎么办", "怎么做", "接下来", "办法", "做法", "方案", "选项",
+	"choose", "which one", "which do", "which would", "which option", "prefer", "pick", "option", "next step", "how would you like", "how should", "what should", "what do you want"}
 
 type markedLine struct {
 	idx    int
@@ -110,8 +111,7 @@ func parseOptions(text string) []option {
 			return nil
 		}
 	}
-	// a lettered list needs to be introduced or asked about; a numbered one (steps, results) only when it asks
-	if digits && !asksForChoice(lines, run[0].idx, end) || !digits && !asksForChoice(lines, run[0].idx, end) && !introduced(lines, run[0].idx) {
+	if !asksForChoice(lines, run[0].idx) {
 		return nil
 	}
 	var out []option
@@ -143,31 +143,26 @@ func closingLines(lines []string) int {
 	return n
 }
 
-// asksForChoice says the list is a question the owner is meant to answer: a cue word in the few lines around it, or
-// the line right before it asking (ending in a question mark) or introducing it (ending in a colon).
-func asksForChoice(lines []string, from, to int) bool {
-	lo := max(0, from-cueLines)
-	near := strings.ToLower(strings.Join(append(append([]string{}, lines[lo:from]...), lines[to+1:]...), "\n"))
-	for _, w := range cueWords {
-		if strings.Contains(near, w) {
-			return true
-		}
-	}
-	for i := from - 1; i >= 0; i-- {
-		if lines[i] == "" {
-			continue
-		}
-		return strings.HasSuffix(lines[i], "?") || strings.HasSuffix(lines[i], "？")
-	}
-	return false
-}
-
-// introduced says the line before the list ends in a colon or question mark: enough, for a lettered list.
-func introduced(lines []string, from int) bool {
+// leadOf is the last non-empty line before the list.
+func leadOf(lines []string, from int) string {
 	for i := from - 1; i >= 0; i-- {
 		if lines[i] != "" {
-			l := lines[i]
-			return strings.HasSuffix(l, ":") || strings.HasSuffix(l, "：") || strings.HasSuffix(l, "?") || strings.HasSuffix(l, "？")
+			return lines[i]
+		}
+	}
+	return ""
+}
+
+// asksForChoice says the list is a choice the owner is meant to make: the line right before it asks (ends in a
+// question mark) or uses a choosing word. A colon alone is not enough ("sample dialogue:", "results:").
+func asksForChoice(lines []string, from int) bool {
+	lead := strings.ToLower(leadOf(lines, from))
+	if strings.HasSuffix(lead, "?") || strings.HasSuffix(lead, "？") {
+		return true
+	}
+	for _, w := range cueWords {
+		if strings.Contains(lead, w) {
+			return true
 		}
 	}
 	return false

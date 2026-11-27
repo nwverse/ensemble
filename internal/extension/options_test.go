@@ -31,9 +31,11 @@ func TestParseOptionsReadsLetteredChoices(t *testing.T) {
 		"windows line ends":                          {"选哪个：\r\nA：one\r\nB：two\r\n", []string{"A：one", "B：two"}},
 		"lowercase markers":                          {"Pick:\na) one\nb) two", []string{"A：one", "B：two"}},
 		"sign-off is not an option":                  {"选哪个？\nA：one\nB：two\nCheers", []string{"A：one", "B：two"}},
-		"a question after the list is not an option": {"A：one\nB：two\n你选哪个？", []string{"A：one", "B：two"}},
+		"a question after the list is not an option": {"选一个：\nA：one\nB：two\n你选哪个？", []string{"A：one", "B：two"}},
+		"colon and a choosing word":                  {"有两个办法：\nA：现在就重跑\nB：做根治\n先放着", []string{"A：现在就重跑", "B：做根治", "先放着"}},
+		"english question":                           {"Which should I do next?\n1. Retry\n2. Investigate", []string{"1：Retry", "2：Investigate"}},
 		"numbered list that asks":                    {"你想选哪一个？\n1. 旧办法\n2. 新办法", []string{"1：旧办法", "2：新办法"}},
-		"numbered list with the question after":      {"1、保留\n2、删除\n要不要继续", []string{"1：保留", "2：删除", "要不要继续"}},
+		"numbered list with the question after":      {"要不要继续？\n1、保留\n2、删除\n先放着", []string{"1：保留", "2：删除", "先放着"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := replies(parseOptions(tc.text))
@@ -60,6 +62,12 @@ func TestParseOptionsLeavesOrdinaryTextAlone(t *testing.T) {
 		"results then a question":        "I did this:\n1. Fixed the bug\n2. Added tests\nAnything else?",
 		"sizes are not markers":          "1.5 GB used\n2.0 GB free\nWant more detail?",
 		"a lettered list with no lead":   "OK.\nA：你好\nB：你好呀",
+		"sample dialogue":                "示例对话：\nA：你好\nB：你好呀",
+		"sample exchange":                "Here's a sample exchange:\nA: hello\nB: hi there",
+		"compare plans":                  "Compare the two plans:\nA. costs $10\nB. costs $20",
+		"changes then offer":             "I made these changes:\n1. Fixed the bug\n2. Added tests\nLet me know if you need anything else.",
+		"cue word far from the list":     "问题原因是否和缓存有关，我列了日志：\n1. 10:01 cache miss\n2. 10:02 cache miss",
+		"cue word only after the list":   "1. one\n2. two\n你选哪个？",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := parseOptions(text); got != nil {
