@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/nwverse/ensemble/internal/provider"
 )
@@ -85,9 +87,9 @@ func TestMergeReposOnlyAdds(t *testing.T) {
 	if !slices.Equal(got, append(slices.Clone(before), "https://github.com/nwverse/openlinkedin")) {
 		t.Errorf("merge = %v", got)
 	}
-	// The page's own merge keeps what the channel has then, and sends only default_source_urls.
-	for _, must := range []string{"const before = await read()", "next = before.slice()", `method: "PATCH"`,
-		"JSON.stringify({ default_source_urls: next })", "if (next.length === before.length) return"} {
+	// The page's own merge keeps what the channel has then, and sends default_source_urls with the added ones chosen.
+	for _, must := range []string{"const before = urls(await __api(path))", "next = before.slice()", `method: "PATCH"`,
+		"JSON.stringify({ default_source_urls: next, chosen_source_urls: added })", "if (added.length === 0) return"} {
 		if !strings.Contains(duetMountScript, must) {
 			t.Errorf("mount script lost %q", must)
 		}
@@ -141,4 +143,136 @@ func TestDuetMountRepos(t *testing.T) {
 	if n := len(drv.scripts); n != 3 {
 		t.Errorf("%d scripts ran, want 3 (none for the bad channel)", n)
 	}
+}
+
+// The mount is written where Claude keeps a channel's repositories: its config (updateChannelConfig), read and
+// written at one path. A PATCH of the channel itself (updateChannel) answers 200 and drops default_source_urls: the
+// cause of every bind ending unconfirmed with mounted:[] (2026-11-27).
+func TestDuetMountWritesTheChannelConfig(t *testing.T) {
+	if !strings.Contains(duetMountScript, `const path = "/v1/code/channels/" + encodeURIComponent(ARGS.chan) + "/config";`) {
+		t.Fatal("mount script does not address the channel's config")
+	}
+	if n := strings.Count(duetMountScript, "fetch("); n != 1 || !strings.Contains(duetMountScript, "await fetch(path, {") {
+		t.Errorf("mount script writes somewhere else than the config (%d fetches)", n)
+	}
+	var ch struct {
+		Channel map[string]json.RawMessage `json:"channel"`
+	}
+	readDuetJSON(t, "channel-patch-ignored.json", &ch)
+	if _, ok := ch.Channel["default_source_urls"]; ok || ch.Channel["id"] == nil {
+		t.Errorf("the channel resource has no default_source_urls: %v", ch.Channel)
+	}
+
+	// What a saved config answers: the repositories as saved (the read back when the GET after fails).
+	var ok struct {
+		Config struct {
+			DefaultSourceURLs []string `json:"default_source_urls"`
+		} `json:"config"`
+	}
+	readDuetJSON(t, "config-patch-ok.json", &ok)
+	if len(ok.Config.DefaultSourceURLs) != 2 || !strings.Contains(duetMountScript, "after = urls(j)") {
+		t.Errorf("saved config: %+v", ok)
+	}
+
+	// A refusal names its reason in error.resource (no error.reason): it is a refusal, not a signed-out page.
+	var refused struct {
+		Error struct {
+			Type      string `json:"type"`
+			Reason    string `json:"reason"`
+			Resource  string `json:"resource"`
+			SubReason string `json:"sub_reason"`
+		} `json:"error"`
+	}
+	readDuetJSON(t, "config-patch-refused.json", &refused)
+	if refused.Error.Reason != "" || refused.Error.Resource != "github_repo_access_denied" || refused.Error.Type != "permission_error" {
+		t.Errorf("refusal shape: %+v", refused)
+	}
+	for _, must := range []string{"er.reason || er.resource || er.sub_reason", `r.status === 403 && !reason`} {
+		if !strings.Contains(duetMountScript, must) {
+			t.Errorf("mount script lost %q", must)
+		}
+	}
+}
+
+// blockingDuetDriver holds each run until released, counting how many run at once.
+type blockingDuetDriver struct {
+	mu      sync.Mutex
+	now     int
+	most    int
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingDuetDriver) Name() string                                { return "fake" }
+func (b *blockingDuetDriver) Machines(context.Context) ([]Machine, error) { return nil, nil }
+func (b *blockingDuetDriver) Run(ctx context.Context, _ RunRequest) (RunResult, error) {
+	b.mu.Lock()
+	b.now++
+	b.most = max(b.most, b.now)
+	b.mu.Unlock()
+	b.started <- struct{}{}
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+	}
+	b.mu.Lock()
+	b.now--
+	b.mu.Unlock()
+	out, _ := json.Marshal(map[string]any{"value": map[string]any{"before": []string{}, "after": []string{"https://github.com/o/r"}}})
+	return RunResult{Backend: "ego", Output: string(out)}, nil
+}
+
+// Two mounts on one channel never run together, even from two computers' browsers (two tabs, two adapters); a
+// mount on another channel is not held up by them.
+func TestDuetMountOneAtATimePerChannel(t *testing.T) {
+	drv := &blockingDuetDriver{started: make(chan struct{}, 8), release: make(chan struct{})}
+	a1, a2 := New(SiteClaudeDuet, drv), New(SiteClaudeDuet, drv)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	errs := make(chan error, 3)
+	mount := func(a *Adapter, cred, ch string) {
+		defer wg.Done()
+		_, err := a.MountRepos(ctx, cred, ch, []string{"o/r"})
+		errs <- err
+	}
+	wg.Add(2)
+	go mount(a1, `{"machine_id":"m1"}`, "chan_same")
+	go mount(a2, `{"machine_id":"m2"}`, "chan_same")
+	<-drv.started
+	select {
+	case <-drv.started:
+		t.Fatal("a second mount on the channel ran while the first had not ended")
+	case <-time.After(100 * time.Millisecond):
+	}
+	wg.Add(1)
+	go mount(a2, `{"machine_id":"m3"}`, "chan_other")
+	select {
+	case <-drv.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a mount on another channel waited for this one")
+	}
+	close(drv.release)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Error(err)
+		}
+	}
+	if drv.most != 2 {
+		t.Errorf("%d ran at once, want 2 (one per channel)", drv.most)
+	}
+
+	// A wait for the channel ends with its context.
+	unlock, err := duetChanLocks.lock(context.Background(), "chan_held")
+	if err != nil {
+		t.Fatal(err)
+	}
+	short, stop := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer stop()
+	if _, err := a1.MountRepos(short, `{"machine_id":"m1"}`, "chan_held", []string{"o/r"}); provider.CodeOf(err) != provider.CodeNetworkError {
+		t.Errorf("waiting past the context: %v", err)
+	}
+	unlock()
 }

@@ -25,6 +25,23 @@ shasum -a 256 -c personal-agent-club-<version>.tar.gz.sha256   # or: sha256sum -
 To hold the program to the hub's own checks without a hub (manifest and package as at install, handshake, error
 codes, every page drawable), run `scripts/persona-test.sh` with a `personad` on `PATH` (or `PERSONAD=/path/to/personad`).
 
+## What 0.7.11 adds
+
+Mounting repositories on Claude Duet works again:
+- **`club_agent_repo_bind` writes where Claude keeps a channel's repositories.** It sent the new list to the channel
+  itself (`PATCH /v1/code/channels/<chan>`, which answers 200 and drops `default_source_urls`), so every bind ended
+  `unconfirmed` with `mounted: []` and nothing changed. It now writes the channel's config
+  (`PATCH /v1/code/channels/<chan>/config` with `default_source_urls` and the added ones as `chosen_source_urls`), as
+  Claude's own channel settings do, keeping every repository the channel had, and reads it back.
+- **A refusal is a refusal.** Claude refuses a repository the GitHub App was not granted with 403 and the reason in
+  `error.resource` (`github_repo_access_denied`); that is `mount_refused` with its reason now, not "signed out".
+- **One write per channel at a time.** Two binds on one channel wait for each other even when they run in two
+  computers' browsers; each merges from what the channel has when it runs, so neither drops the other's repositories.
+- **`club_agent_repos_list` without `channel`** says a repository is mounted when any channel (main chat included)
+  has it, and names those channels in `mounted_in`; with `channel` it still checks only that channel.
+
+No new permissions or configuration fields are added.
+
 ## What 0.7.10 adds
 
 The account page no longer fails with HTTP 502 「扩展返回的界面无法显示」:
