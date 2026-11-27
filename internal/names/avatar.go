@@ -11,8 +11,9 @@ import (
 //
 //  1. Own: the account's or agent's own picture, when its service gives one (a Grok Bot's avatar from its roster).
 //  2. Product: the icon of the product the account is at, by the address the app loads it from: the product's own
-//     site's official icon (Icon). Only a product whose own icon could be established has one; the label's words
-//     never decide it (Grok Bot is not xAI's Grok: it takes the icon of its own app).
+//     site's official icon, or its own app's (Icon). Only a product whose own icon could be established has one; the
+//     label's words never decide it (Grok Bot is not xAI's Grok, nor Claude Duet Claude, nor ChatGPT dots ChatGPT:
+//     each takes the icon of its own app or page).
 //  3. Tile: the service's letters on its color (TileRef, served by the pages), and the letters alone for an app that
 //     draws no ref.
 //
@@ -21,24 +22,36 @@ import (
 // on the Agents page the hub fetches it as it does any conversation's avatarUrl. The address carries nothing of the
 // owner's accounts. No icon artwork is in this repository.
 
-// icons are the products' official icons: a PNG or ICO the product itself publishes (its own site, or its maker's
-// branding path named by the product), for the product the provider's code talks to (see each provider's package).
+// icons are the products' official icons: a PNG or ICO the product itself publishes (its own site, its maker's
+// branding path named by the product, its own app's App Store artwork, or the image its own page shows), for the
+// product the provider's code talks to (see each provider's package). An address's query, when it has one, is only
+// the image server's fixed size, fit, ground and format.
 // Should one go away, every app draws the letters in its place. A product with no entry has no icon established and
 // shows its letters:
 //   - echo: the demo, no product.
 //   - muse2api: the owner's own relay, which drives muse.ai but is not the Muse app; it draws its letters, so it is
 //     not mistaken for Muse (web) next to it.
 var icons = map[string]string{
-	"claude_duet": "https://claude.ai/apple-touch-icon.png", // claude.ai/duet, the page the provider drives
-	"muse":        "https://muse.ai/favicon.ico",            // muse.ai, the site the provider drives
-	"cue":         "https://manus.im/apple-icon.png",        // Manus: api.manus.ai, tasks at manus.im/app
-	"groq":        "https://groq.com/apple-touch-icon.png",  // Groq: api.groq.com
+	"muse": "https://muse.ai/favicon.ico",           // muse.ai, the site the provider drives
+	"cue":  "https://manus.im/apple-icon.png",       // Manus: api.manus.ai, tasks at manus.im/app
+	"groq": "https://groq.com/apple-touch-icon.png", // Groq: api.groq.com
+	// Claude Duet (claude.ai/duet, the page the provider drives): the artwork of its own app in the App Store (Claude
+	// Duet by Anthropic, bundle id com.anthropic.aibo, seller Anthropic PBC), as the iTunes lookup for that bundle id
+	// gives it, at 180x180 in the image server's "ib" variant (the whole icon, a rounded square on a transparent
+	// margin, so the apps' circle shows all of it). Not claude.ai's icon, which is Claude's. The address carries a
+	// content hash, so an app update may drop it: the url then fails and the apps draw the letters until this address
+	// is updated.
+	"claude_duet": "https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/f9/f7/bd/f9f7bda3-9da4-78a7-8fe0-f2fd3e41f134/AppIcon-0-0-1x_U007epad-0-1-85-220.png/180x180ib.png",
 	// Gemini (gemini.google.com/app): Google's product-branding path, named by product, not by release.
 	"gemini_tasks": "https://www.gstatic.com/images/branding/product/2x/gemini_96dp.png",
-	// ChatGPT (chatgpt.com, where the Dots are): the apple-touch-icon chatgpt.com's page declares. Its name carries a
-	// content hash, so a later release may drop it: the url then fails and the apps draw the letters until this
-	// address is updated. Not openai.com's icon, which is the company's.
-	"dots": "https://chatgpt.com/cdn/assets/favicon-180x180.9e0103ce69.png",
+	// ChatGPT dots (chatgpt.com/dots, where the Dots are): dots has no app and no icon of its own, only its wordmark
+	// and its characters, so its picture is the dot chatgpt.com's own dots page (chatgpt.com/features/dots) shows, the
+	// white cloud, from chatgpt.com's image CDN (Contentful, images.ctfassets.net). The image server pads it to a
+	// 180x180 square on the gray of the "o" in OpenAI's dots wordmark (#BAC1D3, openai.com's dots-o.svg): the cloud
+	// is white, and on a light page with no ground of its own it would vanish. Not chatgpt.com's icon, which is
+	// ChatGPT's. Should the page drop the image, the url fails and the apps draw the letters until this address is
+	// updated.
+	"dots": "https://images.ctfassets.net/8su2tbn87fck/4hQeAXYlr8nbucpAnVqwmd/249d9ac921d742f3b67f2c96c73d991e/image.png?w=180&h=180&fit=pad&bg=rgb:bac1d3&fm=png",
 	// Grok Bot: the artwork of its own app in the App Store (bundle id co.anysphere.sand, seller X Corp.), as the
 	// iTunes lookup for that bundle id gives it (artworkUrl, at 180x180), in the image server's "ib" variant: the whole
 	// icon as a rounded square on a transparent margin, so the apps' circle shows all of it (the "bb" artwork fills the

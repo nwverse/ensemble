@@ -48,11 +48,11 @@ func TestAvatarsHandedToPersona(t *testing.T) {
 		{"grok_bot", nil, "", names.Icon("grok_bot")},
 		{"grok_bot", []string{"https://images.example.com/a.png", "https://images.example.com/b.png"}, "", "https://images.example.com/a.png"},
 		{"grok_bot", []string{"http://images.example.com/plain.png"}, "", names.Icon("grok_bot")},
-		{"claude_duet", nil, "", "https://claude.ai/apple-touch-icon.png"},
+		{"claude_duet", nil, "", names.Icon("claude_duet")},
 		{"cue", nil, "", "https://manus.im/apple-icon.png"},
 		{"groq", nil, "", "https://groq.com/apple-touch-icon.png"},
 		{"muse", nil, "", "https://muse.ai/favicon.ico"},
-		{"dots", nil, "", "https://chatgpt.com/cdn/assets/favicon-180x180.9e0103ce69.png"},
+		{"dots", nil, "", names.Icon("dots")},
 		{"gemini_tasks", nil, "", "https://www.gstatic.com/images/branding/product/2x/gemini_96dp.png"},
 		{"echo", nil, "", ""},
 	}
@@ -89,5 +89,11 @@ func TestAvatarsHandedToPersona(t *testing.T) {
 	}
 	if icon := names.Icon("grok_bot"); !strings.HasPrefix(icon, "https://is1-ssl.mzstatic.com/") {
 		t.Errorf("Grok Bot's icon is not its own app's artwork: %s", icon)
+	}
+	if icon := names.Icon("claude_duet"); !strings.HasPrefix(icon, "https://is1-ssl.mzstatic.com/") {
+		t.Errorf("Claude Duet's icon is not its own app's artwork: %s", icon)
+	}
+	if icon := names.Icon("dots"); !strings.HasPrefix(icon, "https://images.ctfassets.net/") {
+		t.Errorf("ChatGPT dots' icon is not its own dot: %s", icon)
 	}
 }

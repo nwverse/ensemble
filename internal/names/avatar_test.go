@@ -13,11 +13,11 @@ import (
 // productHosts are the sites each provider's code talks to (its API, sign-in or the page it drives), which is where
 // its product's icon may come from; a provider missing here may have no icon.
 var productHosts = map[string][]string{
-	"claude_duet":  {"claude.ai"},                            // browser.SiteClaudeDuet: https://claude.ai/duet
+	"claude_duet":  {"is1-ssl.mzstatic.com"},                 // the App Store artwork of its own app, com.anthropic.aibo
 	"muse":         {"muse.ai"},                              // browser.SiteMuse: https://muse.ai/
 	"cue":          {"manus.im"},                             // cue.Origin https://api.manus.ai, task_url https://manus.im/app/…
 	"groq":         {"groq.com"},                             // groq.Origin https://api.groq.com
-	"dots":         {"chatgpt.com"},                          // browser.SiteDots
+	"dots":         {"images.ctfassets.net"},                 // the dot chatgpt.com/features/dots shows, chatgpt.com's image CDN
 	"gemini_tasks": {"gemini.google.com", "www.gstatic.com"}, // browser.SiteGeminiTasks; Google's product branding
 	"grok_bot":     {"is1-ssl.mzstatic.com"},                 // the App Store artwork of its own app, co.anysphere.sand
 }
@@ -55,7 +55,7 @@ func TestAvatarOrderPerService(t *testing.T) {
 			continue
 		}
 		u, err := url.Parse(icon)
-		if err != nil || !HTTPS(icon) || u.RawQuery != "" || u.Fragment != "" {
+		if err != nil || !HTTPS(icon) || u.Fragment != "" || !imageQuery(u.RawQuery) {
 			t.Errorf("%s: icon %q is not a plain https address", p, icon)
 			continue
 		}
@@ -68,6 +68,49 @@ func TestAvatarOrderPerService(t *testing.T) {
 		}
 		if ext := strings.ToLower(filepath.Ext(u.Path)); ext != ".png" && ext != ".ico" {
 			t.Errorf("%s: icon %q is not a PNG or ICO", p, icon)
+		}
+	}
+}
+
+// imageQuery says whether an icon's query is only an image server's fixed size, fit, ground and format (empty for
+// most): nothing else, and so nothing of an account, may ride on it.
+func imageQuery(q string) bool {
+	v, err := url.ParseQuery(q)
+	if err != nil {
+		return false
+	}
+	for k := range v {
+		switch k {
+		case "w", "h", "fit", "bg", "fm":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// Claude Duet and ChatGPT dots are products of their own, not Claude nor ChatGPT: Duet's icon is the App Store
+// artwork of its own app (com.anthropic.aibo) whole on its margin, dots' the dot chatgpt.com's dots page shows,
+// padded on a ground so the white cloud does not vanish on a light page. Neither is ever the maker's site icon.
+func TestDuetAndDotsAreTheirOwn(t *testing.T) {
+	duet, err := url.Parse(Icon("claude_duet"))
+	if err != nil || duet.Hostname() != "is1-ssl.mzstatic.com" || !strings.HasSuffix(duet.Path, "/180x180ib.png") {
+		t.Errorf("Claude Duet's icon is not its own app's whole artwork: %s", Icon("claude_duet"))
+	}
+	dots, err := url.Parse(Icon("dots"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := dots.Query()
+	if dots.Hostname() != "images.ctfassets.net" || q.Get("fit") != "pad" || q.Get("bg") == "" ||
+		q.Get("w") != q.Get("h") || q.Get("fm") != "png" {
+		t.Errorf("ChatGPT dots' icon is not its own dot, padded on a ground: %s", Icon("dots"))
+	}
+	for _, p := range []string{"claude_duet", "dots"} {
+		h := strings.ToLower(Icon(p))
+		if strings.Contains(h, "claude.ai") || strings.Contains(h, "chatgpt.com") || strings.Contains(h, "openai.com") ||
+			strings.Contains(h, "favicon") || strings.Contains(h, "apple-touch-icon") {
+			t.Errorf("%s: icon %s is its maker's", p, Icon(p))
 		}
 	}
 }
