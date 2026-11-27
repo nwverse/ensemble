@@ -158,7 +158,7 @@ func (s *Space) runSync(ctx context.Context, id, only string, refreshed, forceQu
 			if !s.syncable(ctx, id) {
 				return nil
 			}
-			if listChanged, err = s.store.UpsertSessions(ctx, knownRanks(sessionRows(acct, remote), remote, before), s.now()); err != nil {
+			if listChanged, err = s.store.UpsertSessions(ctx, keptAvatars(knownRanks(sessionRows(acct, remote), remote, before), remote, before), s.now()); err != nil {
 				return storeError{err}
 			}
 			if sessions, err = s.store.AccountSessions(ctx, id); err != nil {
@@ -336,6 +336,22 @@ func knownRanks(rows []store.Session, remote []provider.RemoteSession, before []
 	for i := range rows {
 		if remote[i].ActivityApprox && known[rows[i].SessionKey] {
 			rows[i].RankTimeMs = 0
+		}
+	}
+	return rows
+}
+
+// keptAvatars keeps the picture a session already has when its service says it still has one of its own that this
+// read could not make (RemoteSession.AvatarPending): a Dot's picture, made in the page within a byte budget, stays on
+// while the next syncs make it again (after a restart, or a fetch that failed) instead of falling back to the icon.
+func keptAvatars(rows []store.Session, remote []provider.RemoteSession, before []store.Session) []store.Session {
+	had := make(map[string]string, len(before))
+	for _, x := range before {
+		had[x.SessionKey] = x.AvatarURL
+	}
+	for i := range rows {
+		if remote[i].AvatarPending && rows[i].AvatarURL == "" {
+			rows[i].AvatarURL = had[rows[i].SessionKey]
 		}
 	}
 	return rows

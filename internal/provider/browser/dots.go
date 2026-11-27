@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nwverse/ensemble/internal/names"
 	"github.com/nwverse/ensemble/internal/protocol"
 	"github.com/nwverse/ensemble/internal/provider"
 )
@@ -18,7 +19,13 @@ import (
 //
 // What the page answers (2026-11):
 //   - /api/auth/session: {user: {id, name, email}, account: {id, planType}, accessToken}; {} when signed out.
-//   - /backend-api/tbo?limit=N: {items: [{id, display_name, messaging_room_id, status, updated_at}]}, one per Dot.
+//   - /backend-api/tbo?limit=N: {items: [{id, display_name, messaging_room_id, status, updated_at, avatar_url,
+//     avatar_type, avatar_manifest: {snapshot: {asset_pointer, content_sha256, width, height}}}]}, one per Dot.
+//     avatar_url is the Dot's own picture when its owner gave it one (a 512x512 PNG for avatar_type "codex-pet"),
+//     null otherwise; it is a signed oaiusercontent.com address that expires within minutes (se=…&sig=…), which the
+//     hub, without the owner's ChatGPT session, could not load later (dotsAvatarJS).
+//   - /backend-api/files/download/<file id>: {download_url}, a signed address of the file asset_pointer names
+//     ("sediment://file_…"), read only when a Dot's avatar_url is missing.
 //   - /backend-api/messaging/rooms/<room>/messages?limit=N: {items: [{id, created_at, role, account_user_id,
 //     content: {text}, deleted_at}]}, oldest first. Every item has role "user": the owner's account_user_id starts
 //     with their user id ("user-…__<dot id>"), the Dot's with "calpico-member-".
@@ -161,17 +168,119 @@ type dotItem struct {
 	Room        string `json:"messaging_room_id"`
 	Status      string `json:"status"`
 	UpdatedAt   string `json:"updated_at"`
+	// Avatar is the Dot's own picture as the page made it (dotsAvatarJS): a public https address, or a data URL of
+	// the picture scaled down in the page; "" for none, or when AvatarKey names a picture the Adapter already has.
+	Avatar    string `json:"avatar"`
+	AvatarKey string `json:"avatar_key"`
 }
+
+// dotsAvatarMax bounds one Dot's picture as a data URL (names.ownPictureMax is 64 KB; a 128x128 WebP is about 9 KB;
+// the url rides on each of its rows in agentsrc.sessions) and dotsAvatarBudget all the pictures one list makes:
+// browser.run answers at most 60000 bytes. The pictures the
+// budget leaves out are made by the next syncs, as the ones made are kept (pictureCache).
+const (
+	dotsAvatarMax    = 16 * 1024
+	dotsAvatarBudget = 36 * 1024
+)
+
+// dotsAvatarJS defines __dotAvatar(s, d, have, max) inside the page: the Dot d's own picture as {key, url}.
+//   - None (no avatar_url and no file in its manifest): {}. The Dot then shows its product's icon (names.Icon).
+//   - An https address that needs nothing of the owner's (no signature, not chatgpt.com's own, not oaiusercontent's,
+//     whose addresses are all signed and short-lived): that address, which the apps load themselves.
+//   - Else a picture only the signed-in page can load: its key (the file its manifest names, else the address without
+//     its query, which names the file), and, unless have holds the key, the picture fetched here, fitted into
+//     128x128 (smaller when needed) and encoded as WebP (PNG where the browser has no WebP), as a data URL of at most
+//     max characters. url is "" when it cannot be made: the Dot then shows its product's icon until a later sync.
+const dotsAvatarJS = `
+const __signed = (u) => {
+  let x;
+  try { x = new URL(u, location.href); } catch (e) { return true; }
+  if (x.protocol !== "https:" || x.origin === location.origin || /(^|\.)oaiusercontent\.com$/i.test(x.hostname)) return true;
+  for (const k of x.searchParams.keys()) {
+    if (/^(sig|se|signature|expires|token|policy|key-pair-id|x-amz-signature|x-amz-credential|x-goog-signature)$/i.test(k)) return true;
+  }
+  return false;
+};
+const __shrink = async (blob, max) => {
+  const bmp = await createImageBitmap(blob);
+  try {
+    for (const [px, q] of [[128, 0.85], [128, 0.6], [96, 0.6], [64, 0.5]]) {
+      const c = new OffscreenCanvas(px, px);
+      const g = c.getContext("2d");
+      const k = Math.min(px / bmp.width, px / bmp.height);
+      const w = Math.max(1, Math.round(bmp.width * k)), h = Math.max(1, Math.round(bmp.height * k));
+      g.drawImage(bmp, Math.floor((px - w) / 2), Math.floor((px - h) / 2), w, h);
+      let b = await c.convertToBlob({ type: "image/webp", quality: q });
+      if (b.type !== "image/webp") b = await c.convertToBlob({ type: "image/png" });
+      const url = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result)); r.onerror = () => no(r.error); r.readAsDataURL(b); });
+      if (url.length <= max) return url;
+    }
+  } finally {
+    if (bmp.close) bmp.close();
+  }
+  return "";
+};
+const __dotAvatar = async (s, d, have, max) => {
+  const snap = d.avatar_manifest && d.avatar_manifest.snapshot;
+  const pointer = snap && typeof snap.asset_pointer === "string" ? snap.asset_pointer : "";
+  let src = typeof d.avatar_url === "string" ? d.avatar_url.trim() : "";
+  if (src.startsWith("data:image/")) return src.length <= max ? { url: src } : {};
+  if (src && !__signed(src)) return src.length <= 2048 ? { url: src } : {};
+  let key = pointer;
+  if (!key && src) { try { const x = new URL(src, location.href); key = x.origin + x.pathname; } catch (e) {} }
+  if (!key) return {};
+  if (have.has(key)) return { key };
+  if (max < 4096) return { key, url: "" };
+  try {
+    if (!src) {
+      const m = /^[a-z-]+:\/\/(file[-_][A-Za-z0-9_-]+)$/.exec(pointer);
+      if (!m) return { key, url: "" };
+      src = (await __api(s, "/backend-api/files/download/" + encodeURIComponent(m[1]))).download_url || "";
+      if (!src) return { key, url: "" };
+    }
+    const at = new URL(src, location.href);
+    const init = { signal: AbortSignal.timeout(10000), credentials: "omit" };
+    if (at.origin === location.origin) {
+      init.credentials = "include";
+      init.headers = { Authorization: "Bearer " + s.accessToken };
+      if (s.account && s.account.id) init.headers["ChatGPT-Account-Id"] = s.account.id;
+    }
+    const r = await fetch(at.href, init);
+    const type = r.headers.get("content-type") || "";
+    if (!r.ok || !type.startsWith("image/")) return { key, url: "" };
+    return { key, url: await __shrink(await r.blob(), max) };
+  } catch (e) {
+    return { key, url: "" };
+  }
+};
+`
 
 func (dotsSite) listSessions(ctx context.Context, a *Adapter, credential string) ([]provider.RemoteSession, error) {
 	var r struct {
 		Error string    `json:"error"`
 		Items []dotItem `json:"items"`
 	}
-	script := dotsScript(dotsOrigin+"/", nil, `
+	have := a.pictures.keys()
+	script := dotsScript(dotsOrigin+"/", map[string]any{"have": have, "max": dotsAvatarMax, "budget": dotsAvatarBudget},
+		dotsAvatarJS+`
     const s = await __session();
     const t = await __api(s, "/backend-api/tbo?limit=25&include_room_preview=false");
-    return { items: (t.items || []).map(d => ({ id: d.id, display_name: d.display_name || "", messaging_room_id: d.messaging_room_id || "", status: d.status || "", updated_at: d.updated_at || "" })) };
+    const have = new Set(ARGS.have || []);
+    let budget = ARGS.budget;
+    const items = [];
+    for (const d of (t.items || [])) {
+      const item = { id: d.id, display_name: d.display_name || "", messaging_room_id: d.messaging_room_id || "", status: d.status || "", updated_at: d.updated_at || "", avatar: "", avatar_key: "" };
+      if (item.id && item.messaging_room_id && (!item.status || item.status === "active")) {
+        const p = await __dotAvatar(s, d, have, Math.min(ARGS.max, budget));
+        item.avatar_key = p.key || "";
+        item.avatar = p.url || "";
+        if (item.avatar.startsWith("data:")) budget -= item.avatar.length;
+        if (budget <= 0) budget = 0;
+        if (item.avatar_key) have.add(item.avatar_key);
+      }
+      items.push(item);
+    }
+    return { items };
 `)
 	if err := a.run(ctx, credential, script, &r); err != nil {
 		return nil, err
@@ -192,16 +301,45 @@ func (dotsSite) listSessions(ctx context.Context, a *Adapter, credential string)
 		if title == "" {
 			title = "Dot"
 		}
+		avatar := a.dotAvatar(d)
+		pending := avatar == "" && d.AvatarKey != "" && d.Avatar == ""
 		out = append(out, provider.RemoteSession{
 			ExternalID:     d.ID,
 			Title:          title,
 			Kind:           kind,
 			LastActivityMs: parseTimeMs(d.UpdatedAt),
 			CanSend:        true,
+			AvatarURL:      avatar,
+			AvatarPending:  pending,
 			Ref:            map[string]string{"url": dotsOrigin + "/dots/" + d.ID, "room": d.Room},
 		})
 	}
 	return out, nil
+}
+
+// dotAvatar is a listed Dot's own picture: an https address as the page gave it, or the data URL the page made, kept
+// under its key, or the one kept under its key when the page skipped it. "" when it has none the apps could draw:
+// it then shows its product's icon (names.Avatar), unless the page named its key without a picture (the budget left
+// it out, or its fetch failed), which listSessions reports as AvatarPending so the club keeps the one it has.
+func (a *Adapter) dotAvatar(d dotItem) string {
+	v := strings.TrimSpace(d.Avatar)
+	if strings.HasPrefix(v, "data:") {
+		if names.DataType(v) == "" {
+			return ""
+		}
+		a.pictures.put(d.AvatarKey, v)
+		return v
+	}
+	if v != "" {
+		if names.HTTPS(v) {
+			return v
+		}
+		return ""
+	}
+	if d.AvatarKey != "" {
+		v, _ = a.pictures.get(d.AvatarKey)
+	}
+	return v
 }
 
 type dotMessage struct {

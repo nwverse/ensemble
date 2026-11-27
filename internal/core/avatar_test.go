@@ -33,6 +33,9 @@ func (p pictured) ListSessions(context.Context, string) ([]provider.RemoteSessio
 
 const svgShape = "data:image/svg+xml;base64,PHN2Zy8+"
 
+// dotWebp is a Dot's own picture as the page's canvas encodes it: a 4x4 WebP.
+const dotWebp = "data:image/webp;base64,UklGRgACAABXRUJQVlA4WAoAAAAgAAAAAwAAAwAASUNDUMgBAAAAAAHIAAAAAAQwAABtbnRyUkdCIFhZWiAH4AABAAEAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAACRyWFlaAAABFAAAABRnWFlaAAABKAAAABRiWFlaAAABPAAAABR3dHB0AAABUAAAABRyVFJDAAABZAAAAChnVFJDAAABZAAAAChiVFJDAAABZAAAAChjcHJ0AAABjAAAADxtbHVjAAAAAAAAAAEAAAAMZW5VUwAAAAgAAAAcAHMAUgBHAEJYWVogAAAAAAAAb6IAADj1AAADkFhZWiAAAAAAAABimQAAt4UAABjaWFlaIAAAAAAAACSgAAAPhAAAts9YWVogAAAAAAAA9tYAAQAAAADTLXBhcmEAAAAAAAQAAAACZmYAAPKnAAANWQAAE9AAAApbAAAAAAAAAABtbHVjAAAAAAAAAAEAAAAMZW5VUwAAACAAAAAcAEcAbwBvAGcAbABlACAASQBuAGMALgAgADIAMAAxADZWUDhMEQAAAC8DwAAAB1DVztSs/4GI6H8AAA=="
+
 // What Persona is handed follows names.Avatar: an account's own picture is the one its main conversations share
 // (agentsrc.status avatarUrl, club's addition), and each conversation's avatarUrl is its own picture, else the
 // product's official icon, else nothing (Persona draws the title's first letter). Grok Bot gets its own app's artwork, never an icon of
@@ -53,6 +56,11 @@ func TestAvatarsHandedToPersona(t *testing.T) {
 		{"groq", nil, "", "https://groq.com/apple-touch-icon.png"},
 		{"muse", nil, "", "https://muse.ai/images/pwa_icons/maskable/180.png?v=3"},
 		{"dots", nil, "", names.Icon("dots")},
+		// A Dot's own picture, as the page scaled it (a WebP data URL) or as a public address: it stands before the
+		// dots icon, for the account and its main conversation. One past names' 64 KB is dropped for the icon.
+		{"dots", []string{dotWebp}, dotWebp, dotWebp},
+		{"dots", []string{"https://cdn.example.com/dot.png"}, "https://cdn.example.com/dot.png", "https://cdn.example.com/dot.png"},
+		{"dots", []string{"data:image/webp;base64," + strings.Repeat("A", 64*1024)}, "", names.Icon("dots")},
 		{"gemini_tasks", nil, "", "https://www.gstatic.com/images/branding/product/2x/gemini_96dp.png"},
 		{"muse2api", nil, "", ""},
 		{"echo", nil, "", ""},
@@ -97,4 +105,46 @@ func TestAvatarsHandedToPersona(t *testing.T) {
 	if icon := names.Icon("dots"); !strings.HasPrefix(icon, "https://images.ctfassets.net/") {
 		t.Errorf("ChatGPT dots' icon is not its own dot: %s", icon)
 	}
+}
+
+// dotList is a ChatGPT Dots account whose one Dot lists the picture in *avatar, pending as *pending says.
+type dotList struct {
+	*fake
+	avatar  *string
+	pending *bool
+}
+
+func (d dotList) Name() string { return "dots" }
+func (d dotList) ListSessions(context.Context, string) ([]provider.RemoteSession, error) {
+	return []provider.RemoteSession{{ExternalID: "dot", Title: "Dot", Kind: protocol.KindMain, CanSend: true,
+		AvatarURL: *d.avatar, AvatarPending: *d.pending}}, nil
+}
+
+// A Dot's picture the page could not make this time (left out by the read's budget after a restart, or a failed
+// fetch: AvatarPending) keeps the one the club has, for the account and on the Agents page; a Dot that no longer has
+// one of its own (not pending) falls back to the dots icon.
+func TestPendingDotAvatarIsKept(t *testing.T) {
+	avatar, pending := dotWebp, false
+	reg := provider.NewRegistry(dotList{fake: newFake(), avatar: &avatar, pending: &pending})
+	club := New(Options{Registry: reg, FollowUps: []time.Duration{}, WatchLimit: -1})
+	defer club.Close()
+	ctx := context.Background()
+	space, _ := club.Space(ctx, DefaultSpace)
+	if _, err := space.AddAccount(ctx, protocol.AddAccountParams{Provider: "dots", Credential: "fixture-credential"}); err != nil {
+		t.Fatal(err)
+	}
+	check := func(step, want, wantAccount string) {
+		t.Helper()
+		space.SyncAll(ctx)
+		st, _ := space.Status(ctx)
+		list, _ := space.Sessions(ctx)
+		if len(list.Sessions) != 1 || list.Sessions[0].AvatarURL != want || st.Accounts[0].AvatarURL != wantAccount {
+			t.Errorf("%s: sessions %+v, account %.40q", step, list.Sessions, st.Accounts[0].AvatarURL)
+		}
+	}
+	check("made", dotWebp, dotWebp)
+	avatar, pending = "", true
+	check("pending", dotWebp, dotWebp)
+	avatar, pending = "", false
+	check("gone", names.Icon("dots"), "")
 }

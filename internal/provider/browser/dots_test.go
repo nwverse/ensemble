@@ -142,3 +142,83 @@ func TestDotsSend(t *testing.T) {
 		t.Fatalf("%+v, %v", res, err)
 	}
 }
+
+// dotWebp is a 4x4 WebP as the page's canvas encodes it (data URL).
+const dotWebp = "data:image/webp;base64,UklGRgACAABXRUJQVlA4WAoAAAAgAAAAAwAAAwAASUNDUMgBAAAAAAHIAAAAAAQwAABtbnRyUkdCIFhZWiAH4AABAAEAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAACRyWFlaAAABFAAAABRnWFlaAAABKAAAABRiWFlaAAABPAAAABR3dHB0AAABUAAAABRyVFJDAAABZAAAAChnVFJDAAABZAAAAChiVFJDAAABZAAAAChjcHJ0AAABjAAAADxtbHVjAAAAAAAAAAEAAAAMZW5VUwAAAAgAAAAcAHMAUgBHAEJYWVogAAAAAAAAb6IAADj1AAADkFhZWiAAAAAAAABimQAAt4UAABjaWFlaIAAAAAAAACSgAAAPhAAAts9YWVogAAAAAAAA9tYAAQAAAADTLXBhcmEAAAAAAAQAAAACZmYAAPKnAAANWQAAE9AAAApbAAAAAAAAAABtbHVjAAAAAAAAAAEAAAAMZW5VUwAAACAAAAAcAEcAbwBvAGcAbABlACAASQBuAGMALgAgADIAMAAxADZWUDhMEQAAAC8DwAAAB1DVztSs/4GI6H8AAA=="
+
+// A Dot's own picture (tbo's avatar_url, a signed address only the signed-in page loads) reaches its session: an
+// https address that needs nothing as the page gave it, a picture the page scaled to a data URL, kept by its key so
+// the next sync's page skips it; none, an oversized one (past names' 64 KB) or a plain http one leaves the session
+// without, so it shows the dots icon. One the page named but could not make is pending (core.keptAvatars). What
+// the page itself does (fetching, scaling, its budget) was checked against chatgpt.com; here the page is a fake.
+func TestDotsOwnAvatars(t *testing.T) {
+	ctx := context.Background()
+	cred := EncodeCredential(Credential{MachineID: "mac-1"})
+	const key = "sediment://file_00000000d0a8"
+	big := "data:image/webp;base64," + strings.Repeat("A", 64*1024)
+	item := func(id, avatar, key string) map[string]any {
+		return map[string]any{"id": id, "messaging_room_id": "r-" + id, "status": "active", "avatar": avatar, "avatar_key": key}
+	}
+	first := true
+	fd := &fakeDriver{answer: func(req RunRequest) (RunResult, error) {
+		scaled := dotWebp
+		if !first {
+			scaled = "" // the page skips a key the Adapter named
+		}
+		first = false
+		return hubOutput(t, map[string]any{"items": []map[string]any{
+			item("pet", scaled, key),
+			item("public", "https://cdn.example.com/dot.png", ""),
+			item("plain", "", ""),
+			item("big", big, "sediment://file_big"),
+			item("http", "http://cdn.example.com/dot.png", ""),
+			item("lost", "", "sediment://file_never_made"),
+		}}), nil
+	}}
+	a := New(SiteDots, fd)
+	want := map[string]string{"pet": dotWebp, "public": "https://cdn.example.com/dot.png", "plain": "", "big": "", "http": "", "lost": ""}
+	for round := 0; round < 2; round++ {
+		ss, err := a.ListSessions(ctx, cred)
+		if err != nil || len(ss) != len(want) {
+			t.Fatalf("round %d: ListSessions = %+v, %v", round, ss, err)
+		}
+		for _, s := range ss {
+			if s.AvatarURL != want[s.ExternalID] {
+				t.Errorf("round %d: %s avatar %.60q, want %.60q", round, s.ExternalID, s.AvatarURL, want[s.ExternalID])
+			}
+			// Only a Dot whose picture the page named but did not make is pending: the club keeps the one it has.
+			if s.AvatarPending != (s.ExternalID == "lost") {
+				t.Errorf("round %d: %s pending %v", round, s.ExternalID, s.AvatarPending)
+			}
+		}
+	}
+	if len(fd.gotReqs) != 2 {
+		t.Fatalf("%d runs", len(fd.gotReqs))
+	}
+	if s := fd.gotReqs[0].Script; !strings.Contains(s, `"have":[]`) || !strings.Contains(s, `"max":16384`) ||
+		!strings.Contains(s, "__dotAvatar(") || !strings.Contains(s, "OffscreenCanvas") {
+		t.Errorf("the first list does not make the pictures")
+	}
+	if s := fd.gotReqs[1].Script; !strings.Contains(s, `"have":["`+key+`"]`) {
+		t.Errorf("the second list does not name the picture kept: %s", s[len(s)-200:])
+	}
+}
+
+func TestPictureCacheDropsTheOldest(t *testing.T) {
+	c := newPictureCache(2)
+	c.put("a", "1")
+	c.put("b", "2")
+	c.put("a", "1'")
+	c.put("c", "3")
+	if _, ok := c.get("a"); ok {
+		t.Errorf("a outlived two newer keys")
+	}
+	if v, _ := c.get("c"); v != "3" || strings.Join(c.keys(), ",") != "b,c" {
+		t.Errorf("keys %v", c.keys())
+	}
+	c.put("", "x")
+	c.put("d", "")
+	if len(c.keys()) != 2 {
+		t.Errorf("an empty key or picture was kept: %v", c.keys())
+	}
+}
