@@ -506,6 +506,9 @@ func (s *Space) StartSession(ctx context.Context, p protocol.StartSessionParams)
 	if acct.Status == protocol.AccountPaused {
 		return protocol.Session{}, protocol.Conflict("the account is paused").Because(protocol.ReasonAccountPaused)
 	}
+	if now := s.now(); quotaBlocksSend(s.quotaView(acct, now), now) {
+		return protocol.Session{}, protocol.Conflict(exhaustedSendMessage(acct, s.quotaView(acct, now), now)).Because(protocol.ReasonQuotaExhausted)
+	}
 	adapter, err := s.adapter(acct.Provider)
 	if err != nil {
 		return protocol.Session{}, err
@@ -624,6 +627,9 @@ func (s *Space) CallTools(ctx context.Context, accountID string, turns []provide
 	}
 	if acct.Status == protocol.AccountPaused {
 		return provider.ToolStepResult{}, true, protocol.Conflict("the account is paused").Because(protocol.ReasonAccountPaused)
+	}
+	if now := s.now(); quotaBlocksSend(s.quotaView(acct, now), now) {
+		return provider.ToolStepResult{}, true, protocol.Conflict(exhaustedSendMessage(acct, s.quotaView(acct, now), now)).Because(protocol.ReasonQuotaExhausted)
 	}
 	adapter, err := s.adapter(acct.Provider)
 	if err != nil {

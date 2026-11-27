@@ -100,6 +100,7 @@ var (
 	_ provider.CredentialRefresher = (*Adapter)(nil)
 	_ provider.Watcher             = (*Adapter)(nil)
 	_ provider.DeviceLogin         = (*Adapter)(nil)
+	_ provider.QuotaReader         = (*Adapter)(nil)
 )
 
 func (a *Adapter) Name() string       { return Name }
@@ -403,6 +404,141 @@ func (a *Adapter) RefreshCredential(ctx context.Context, credential string) (str
 		return "", &provider.Error{Code: provider.CodeAuthFailed}
 	}
 	return Credential(access, or(web.Text(body["refresh_token"]), refresh)), nil
+}
+
+// ReadQuota reads the account's live usage status from DashboardService/GetSandUsageStatus (and, when available,
+// billing-period plan usage from GetCurrentPeriodUsage). Best-effort: returns nil when the endpoint is unavailable
+// or omits numeric usage fields, while propagating 429 rate-limit errors.
+func (a *Adapter) ReadQuota(ctx context.Context, credential string) ([]provider.QuotaReading, error) {
+	var status map[string]any
+	r := a.rpc(ctx, credential, "DashboardService", "GetSandUsageStatus", map[string]any{})
+	if r.OK {
+		status = web.Record(r.Data)
+	} else if r.Status == http.StatusTooManyRequests {
+		return nil, web.ReadError(r)
+	}
+	var period map[string]any
+	pr := a.rpc(ctx, credential, "DashboardService", "GetCurrentPeriodUsage", map[string]any{})
+	if pr.OK {
+		period = web.Record(pr.Data)
+	} else if pr.Status == http.StatusTooManyRequests && len(status) == 0 {
+		return nil, web.ReadError(pr)
+	}
+	return parseSandQuota(status, period), nil
+}
+
+func parseSandQuota(status, period map[string]any) []provider.QuotaReading {
+	var out []provider.QuotaReading
+	if len(status) > 0 && status["usesPooledEnterpriseAllowance"] != true {
+		usedPct, hasPct := floatField(status["usagePercent"])
+		wouldRefuse := status["wouldRefuseSend"] == true
+		noAvail, hasAvailField := status["hasAvailableUsage"].(bool)
+		exhausted := wouldRefuse || (hasAvailField && !noAvail)
+		if hasPct || exhausted {
+			if !hasPct {
+				usedPct = 100
+			}
+			rem := math.Max(0, math.Min(100, 100-usedPct))
+			if exhausted {
+				rem = 0
+			}
+			out = append(out, provider.QuotaReading{
+				Kind:       protocol.QuotaKindWindow,
+				Window:     "week",
+				Limit:      100,
+				Remaining:  rem,
+				ResetsAt:   parseProtoTimestampMs(status["nextResetTimestampUtc"]),
+				Exhausted:  exhausted,
+				SourceNote: "grok_bot:GetSandUsageStatus",
+			})
+		}
+	}
+	if len(period) > 0 {
+		plan := web.Record(period["planUsage"])
+		limit, hasLimit := floatField(plan["limit"])
+		rem, hasRem := floatField(plan["remaining"])
+		pctUsed, hasPct := floatField(plan["totalPercentUsed"])
+		resetsAt := parseProtoTimestampMs(period["billingCycleEnd"])
+		switch {
+		case hasLimit && limit > 0 && hasRem && rem >= 0:
+			out = append(out, provider.QuotaReading{
+				Kind:       protocol.QuotaKindCredits,
+				Window:     "month",
+				Limit:      limit,
+				Remaining:  math.Max(0, math.Min(limit, rem)),
+				ResetsAt:   resetsAt,
+				SourceNote: "grok_bot:GetCurrentPeriodUsage",
+			})
+		case hasPct:
+			out = append(out, provider.QuotaReading{
+				Kind:       protocol.QuotaKindCredits,
+				Window:     "month",
+				Limit:      100,
+				Remaining:  math.Max(0, math.Min(100, 100-pctUsed)),
+				ResetsAt:   resetsAt,
+				SourceNote: "grok_bot:GetCurrentPeriodUsage",
+			})
+		}
+	}
+	return out
+}
+
+func floatField(v any) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return 0, false
+		}
+		return x, true
+	case json.Number:
+		f, err := x.Float64()
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			return 0, false
+		}
+		return f, true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(x), 64)
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			return 0, false
+		}
+		return f, true
+	}
+	return 0, false
+}
+
+// parseProtoTimestampMs parses a protobuf google.protobuf.Timestamp in JSON form (RFC3339 string or {seconds, nanos}).
+func parseProtoTimestampMs(v any) int64 {
+	switch x := v.(type) {
+	case string:
+		s := strings.TrimSpace(x)
+		if s == "" {
+			return 0
+		}
+		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			return t.UnixMilli()
+		}
+		return parseEpochMs(s)
+	case map[string]any:
+		sec, ok := floatField(x["seconds"])
+		if !ok || sec <= 0 {
+			return 0
+		}
+		nanos, _ := floatField(x["nanos"])
+		return int64(sec)*1000 + int64(nanos)/1e6
+	default:
+		return parseEpochMs(v)
+	}
+}
+
+func parseEpochMs(v any) int64 {
+	f, ok := floatField(v)
+	if !ok || f <= 0 {
+		return 0
+	}
+	if f < 1e11 { // seconds
+		return int64(f * 1000)
+	}
+	return int64(f)
 }
 
 func or(vs ...string) string {

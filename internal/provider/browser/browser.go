@@ -114,6 +114,11 @@ type siteImpl interface {
 	send(ctx context.Context, a *Adapter, credential string, session provider.SessionRef, msg provider.Outgoing) (provider.SendResult, error)
 }
 
+// siteQuotaReader is an optional capability of a siteImpl that reads real usage/quota windows inside the signed-in tab.
+type siteQuotaReader interface {
+	readQuota(ctx context.Context, a *Adapter, credential string) ([]provider.QuotaReading, error)
+}
+
 // Built-in site presets.
 var (
 	SiteMuse = Site{
@@ -503,7 +508,19 @@ return { sent: true };
 	return provider.SendResult{Status: provider.Sent}, nil
 }
 
-var _ provider.MachineBound = (*Adapter)(nil)
+var (
+	_ provider.MachineBound = (*Adapter)(nil)
+	_ provider.QuotaReader  = (*Adapter)(nil)
+)
+
+// ReadQuota reads real usage/quota readings from the signed-in web app when the site exposes one (Claude Duet,
+// ChatGPT Dots); returns nil for sites without a public/internal quota endpoint (Muse, Gemini).
+func (a *Adapter) ReadQuota(ctx context.Context, credential string) ([]provider.QuotaReading, error) {
+	if qr, ok := a.site.impl.(siteQuotaReader); ok {
+		return qr.readQuota(ctx, a, credential)
+	}
+	return nil, nil
+}
 
 // Machine is the computer and backend a credential names (provider.MachineBound).
 func (a *Adapter) Machine(credential string) (string, string) {

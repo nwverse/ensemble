@@ -285,22 +285,29 @@ func noteBadge(l lang, tone string) *wire.Badge {
 
 // overview is where the accounts stand, for the home and its card.
 type overview struct {
-	accounts []protocol.Account
-	broken   []protocol.Account // need the user: signed out, or failing
-	paused   int
-	read     int // the assistant may read
-	send     int // ... and send, asking each time (or not)
-	backend  int // main assistant
+	accounts  []protocol.Account
+	broken    []protocol.Account // need the user: signed out, or failing
+	exhausted []protocol.Account // active accounts whose allowance is currently used up
+	low       []protocol.Account // active accounts whose allowance is <= 20%
+	paused    int
+	read      int // the assistant may read
+	send      int // ... and send, asking each time (or not)
+	backend   int // main assistant
 }
 
 func overviewOf(accts []protocol.Account) overview {
 	o := overview{accounts: accts}
 	for _, acct := range accts {
+		exhaustedNow, _ := quotaExhaustedActive(acct.Quota, 0)
 		switch {
 		case acct.Status == protocol.AccountError:
 			o.broken = append(o.broken, acct)
 		case acct.Status == protocol.AccountPaused:
 			o.paused++
+		case exhaustedNow:
+			o.exhausted = append(o.exhausted, acct)
+		case acct.Quota != nil && acct.Quota.State == protocol.QuotaLow:
+			o.low = append(o.low, acct)
 		}
 		switch core.Control(acct.AssistantControl) {
 		case core.ControlRead:
@@ -315,7 +322,8 @@ func overviewOf(accts []protocol.Account) overview {
 	return o
 }
 
-// stateLine is the state in one line: how many accounts, how many need the user, how many the assistant may use.
+// stateLine is the state in one line: how many accounts, how many need the user, how many are out of quota, how many
+// the assistant may use.
 func (o overview) stateLine(l lang) string {
 	if len(o.accounts) == 0 {
 		return l.t("还没有接入任何账号。", "No accounts yet.")
@@ -323,6 +331,12 @@ func (o overview) stateLine(l lang) string {
 	s := l.t(fmt.Sprintf("已接入 %d 个账号", len(o.accounts)), plural(len(o.accounts), "account"))
 	if n := len(o.broken); n > 0 {
 		s += l.t(fmt.Sprintf("，其中 %d 个要你处理", n), fmt.Sprintf(", %d need you", n))
+	}
+	if n := len(o.exhausted); n > 0 {
+		s += l.t(fmt.Sprintf("，%d 个额度用完", n), fmt.Sprintf(", %d out of allowance", n))
+	}
+	if n := len(o.low); n > 0 {
+		s += l.t(fmt.Sprintf("，%d 个额度快用完", n), fmt.Sprintf(", %d low on allowance", n))
 	}
 	if o.paused > 0 {
 		s += l.t(fmt.Sprintf("，%d 个已暂停", o.paused), fmt.Sprintf(", %d paused", o.paused))
@@ -357,6 +371,13 @@ func (o overview) nextStep(l lang, at string) (wire.Component, bool) {
 			Title:    l.t("先修好「", "First fix ") + accountTitle(l, acct) + l.t("」", ""),
 			Subtitle: problemWords(l, acct) + l.t(" 点这里打开它。", " Tap to open it."),
 			Badge:    &wire.Badge{Text: l.t("要处理", "Needs you"), Tone: wire.ToneCaution},
+			Action:   openAccount(l, at, acct)}, true
+	case len(o.exhausted) > 0:
+		acct := o.exhausted[0]
+		return wire.Component{Type: "row", Key: "next-" + acct.AccountID, Icon: "warning",
+			Title:    l.t("「", "") + accountTitle(l, acct) + l.t("」的额度用完了", " is out of allowance"),
+			Subtitle: l.t("发消息前会先提示拦截；点这里查看重置时间或立即同步。", "Sends pause with a warning; tap to see the reset time or sync."),
+			Badge:    &wire.Badge{Text: l.t("额度用完", "Used up"), Tone: wire.ToneDanger},
 			Action:   openAccount(l, at, acct)}, true
 	case o.read+o.send == 0:
 		acct := o.accounts[0]
@@ -412,6 +433,12 @@ func (o overview) cardStats(l lang) []wire.Stat {
 		if n > 1 {
 			need.Detail += l.t(" 等", " and more")
 		}
+	} else if n := len(o.exhausted); n > 0 {
+		need.Value = l.t(fmt.Sprintf("%d 个", n), fmt.Sprint(n))
+		need.Tone = wire.ToneDanger
+		need.Detail = l.t("「"+accountTitle(l, o.exhausted[0])+"」额度用完", accountTitle(l, o.exhausted[0])+" out of allowance")
+	} else if n := len(o.low); n > 0 {
+		need.Detail = l.t(fmt.Sprintf("%d 个额度快用完", n), fmt.Sprintf("%d low on allowance", n))
 	}
 	usable := o.read + o.send
 	assistant := wire.Stat{Label: l.t("Persona 助手能用", "Assistant may use"), Value: l.t(fmt.Sprintf("%d 个", usable),
@@ -442,7 +469,7 @@ func (o overview) cardStep(l lang) wire.Component {
 		step.Subtitle = l.t("点这里，在「添加账号」里选你常用的服务，照提示做，一两分钟就好。",
 			"Tap here, pick the service you use under Add an account and follow the steps; it takes a minute or two.")
 		step.Action = openHome
-	case len(o.broken) == 0: // none handed to the assistant
+	case len(o.broken) == 0 && len(o.exhausted) == 0: // none handed to the assistant
 		step.Subtitle = l.t("新账号默认不让它碰。点这里打开一个账号，在「助手指挥」里选「只读」或「可代发」。",
 			"New accounts are off limits to it. Tap to open one and set Assistant control to Read or Confirm.")
 	}
@@ -585,7 +612,7 @@ func pairedSection(r *ext.UIRequest, l lang, c clock, at string, accts []protoco
 	for _, acct := range accts {
 		line := accountLine(l, acct, c)
 		if compact {
-			line = compactLine(l, acct)
+			line = compactLine(l, acct, c)
 		}
 		paired.Items = append(paired.Items, withAvatar(r, l, &acct, acct.Provider, wire.Component{Type: "row", Key: "acct-" + acct.AccountID, Icon: "person",
 			Title: accountTitle(l, acct), Subtitle: line, Badge: statusBadge(l, acct), Action: openAccount(l, at, acct)}))
@@ -610,20 +637,25 @@ func addRow(l lang, at string) wire.Component {
 			State: ext.EncodeState(pageState{Page: pageAdd})}}}
 }
 
-// attention orders the home's list: the accounts that need the user, then those with a recent hiccup, then the rest.
+// attention orders the home's list: accounts needing the user, then exhausted allowance, then recent hiccups, then low
+// allowance, then the rest.
 func attention(acct protocol.Account) int {
 	switch {
 	case acct.Status == protocol.AccountError:
 		return 0
-	case acct.LastError != "":
+	case acct.Status == protocol.AccountActive && acct.Quota != nil && acct.Quota.State == protocol.QuotaExhausted:
 		return 1
+	case acct.LastError != "":
+		return 2
+	case acct.Status == protocol.AccountActive && acct.Quota != nil && acct.Quota.State == protocol.QuotaLow:
+		return 3
 	}
-	return 2
+	return 4
 }
 
 // compactLine is an account's row subtitle on the home: the brand when the name does not carry it, then what is wrong
-// in a few words, that it is paused, or what the Persona assistant may do with it.
-func compactLine(l lang, acct protocol.Account) string {
+// in a few words, that it is paused, or its quota summary and what the Persona assistant may do with it.
+func compactLine(l lang, acct protocol.Account, c clock) string {
 	var parts []string
 	if brand := providerName(l, acct.Provider); !strings.Contains(accountTitle(l, acct), brand) {
 		parts = append(parts, brand)
@@ -638,6 +670,9 @@ func compactLine(l lang, acct protocol.Account) string {
 	case acct.Status == protocol.AccountPaused:
 		parts = append(parts, l.t("已暂停同步", "paused"))
 	default:
+		if q := quotaSummaryCompact(l, acct, c); q != "" {
+			parts = append(parts, q)
+		}
 		parts = append(parts, controlWords(l, core.Control(acct.AssistantControl)))
 	}
 	return strings.Join(parts, " · ")
@@ -700,6 +735,11 @@ func accountLine(l lang, acct protocol.Account, c clock) string {
 		parts = append(parts, l.t("还没同步过", "not synced yet"))
 	default:
 		parts = append(parts, l.t("上次同步：", "synced ")+c.at(l, acct.LastSyncedAt))
+	}
+	if acct.Status == protocol.AccountActive {
+		if q := quotaSummaryFull(l, acct, c); q != "" {
+			parts = append(parts, q)
+		}
 	}
 	parts = append(parts, controlWords(l, core.Control(acct.AssistantControl)))
 	if acct.AssistantBackend {
@@ -1014,74 +1054,6 @@ func (a *accounts) mainAssistantSection(l lang, acct protocol.Account) wire.Sect
 	return sec
 }
 
-func quotaDisplaySection(l lang, acct protocol.Account, c clock) wire.Section {
-	if acct.Quota == nil {
-		// Nothing reported: nothing to choose from, so only the sentence.
-		return wire.Section{Title: l.t("额度", "Allowance"), Items: []wire.Component{{Type: "text", Style: "secondary",
-			Text: l.t("这个服务还没告诉我们额度用了多少。", "The service has not reported any allowance yet.")}}}
-	}
-	val := acct.QuotaDisplay
-	if val == "" {
-		if !acct.ShowQuota {
-			val = protocol.QuotaDisplayOff
-		} else {
-			val = protocol.QuotaDisplayAuto
-		}
-	}
-	choices := []wire.Choice{
-		{Value: protocol.QuotaDisplayAuto, Title: l.t("自动（剩得最少的那项）", "Auto (the lowest)")},
-	}
-	seen := map[string]bool{protocol.QuotaDisplayAuto: true, protocol.QuotaDisplayOff: true}
-	var items []wire.Component
-	value := quotaWords(l, acct.Quota.Kind, "", acct.Quota.Percent)
-	for _, b := range acct.Quota.Buckets {
-		if b.ID == acct.Quota.Selected {
-			value = quotaWords(l, b.Kind, b.Window, b.Percent)
-		}
-	}
-	if acct.Quota.State == protocol.QuotaExhausted {
-		value = l.t("用完了", "Used up")
-		if acct.Quota.ResetsAt > 0 {
-			back := c.at(l, acct.Quota.ResetsAt)
-			if c.relative(acct.Quota.ResetsAt) {
-				value += l.t("，"+back+"恢复", ", back "+back)
-			} else {
-				value += l.t("，"+back+" 恢复", ", back on "+back)
-			}
-		}
-	}
-	badgeText := l.t("剩余", "left")
-	if acct.Quota.Percent != nil {
-		badgeText = fmt.Sprintf("%d%%", *acct.Quota.Percent)
-	}
-	items = append(items, wire.Component{Type: "row", Title: l.t("现在还剩", "Left now"), Value: value,
-		Badge: &wire.Badge{Text: badgeText, Tone: quotaBadgeTone(acct.Quota.Tone)}})
-	for _, b := range acct.Quota.Buckets {
-		if b.ID == "" || seen[b.ID] {
-			continue
-		}
-		seen[b.ID] = true
-		choices = append(choices, wire.Choice{Value: b.ID, Title: quotaWords(l, b.Kind, b.Window, b.Percent)})
-	}
-	if !seen[val] {
-		choices = append(choices, wire.Choice{Value: val, Title: l.t("之前选的那项", "The one chosen before")})
-	}
-	choices = append(choices, wire.Choice{Value: protocol.QuotaDisplayOff, Title: l.t("不显示", "Off")})
-	items = append(items, wire.Component{
-		Type:    "segmented",
-		Name:    fieldQuotaDisplay,
-		Choices: choices,
-		Value:   val,
-		Action:  &wire.Action{ID: actQuotaDisplay},
-	})
-	return wire.Section{
-		Title: l.t("头像上显示哪项额度", "Which allowance the avatar shows"),
-		Footer: l.t("有的服务限制你每天、每分钟能用多少。Persona 会在这个账号的头像外画一圈「电量」，表示还剩多少；这里选画哪一项。",
-			"Some services limit how much you use per day or minute. Persona draws a battery ring around the avatar for what is left; choose which one."),
-		Items: items,
-	}
-}
-
 // quotaWords names an allowance the way people say it: "每天的次数 62%".
 func quotaWords(l lang, kind, window string, pct *int) string {
 	var per string
@@ -1090,6 +1062,10 @@ func quotaWords(l lang, kind, window string, pct *int) string {
 		per = l.t("每分钟的", "per minute ")
 	case "hour":
 		per = l.t("每小时的", "per hour ")
+	case "3h":
+		per = l.t("每 3 小时的", "per 3h ")
+	case "5h":
+		per = l.t("每 5 小时的", "per 5h ")
 	case "day":
 		per = l.t("每天的", "per day ")
 	case "week":
@@ -1512,6 +1488,14 @@ func statusBadge(l lang, acct protocol.Account) *wire.Badge {
 	case protocol.AccountActive:
 		if acct.LastError != "" {
 			return &wire.Badge{Text: l.t("有点小问题", "Hiccup"), Tone: wire.ToneCaution}
+		}
+		if acct.Quota != nil {
+			switch acct.Quota.State {
+			case protocol.QuotaExhausted:
+				return &wire.Badge{Text: l.t("额度用完", "Used up"), Tone: wire.ToneDanger}
+			case protocol.QuotaLow:
+				return &wire.Badge{Text: l.t("额度快用完", "Low"), Tone: wire.ToneCaution}
+			}
 		}
 		return &wire.Badge{Text: l.t("正常", "Working"), Tone: wire.TonePositive}
 	case protocol.AccountPaused:

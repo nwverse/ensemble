@@ -167,6 +167,9 @@ type Store interface {
 	MarkRead(ctx context.Context, sessionKey string, now int64) error
 	// Counts are an account's sessions and messages, removed or not.
 	Counts(ctx context.Context, accountID string) (Counts, error)
+	// CountUserMessagesSince returns how many user messages or confirmed sends this account has since `since` (Unix ms),
+	// used for local activity estimation when a provider does not expose real-time quota numbers.
+	CountUserMessagesSince(ctx context.Context, accountID string, since int64) (int, error)
 
 	// EnqueueOutbox writes a pending send; inserted is false when its client id is taken (the existing row is
 	// returned).

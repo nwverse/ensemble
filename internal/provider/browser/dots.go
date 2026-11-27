@@ -376,3 +376,132 @@ if (signedIn === "human check") {
 	}
 	return provider.SendResult{Status: provider.Sent, ExternalID: r.ID}, nil
 }
+
+// readQuota reads ChatGPT's rolling rate-limit windows from /backend-api/wham/usage inside the already-open tab.
+// Best-effort: returns nil when the endpoint is unavailable, while still propagating 429s.
+func (dotsSite) readQuota(ctx context.Context, a *Adapter, credential string) ([]provider.QuotaReading, error) {
+	script := dotsScript(dotsOrigin+"/", nil, `
+    const s = await __session();
+    const headers = { Authorization: "Bearer " + s.accessToken };
+    if (s.account && s.account.id) headers["ChatGPT-Account-Id"] = s.account.id;
+    const r = await fetch("/backend-api/wham/usage", { credentials: "include", headers });
+    if (r.status === 429) throw new Error("http 429");
+    if (!r.ok) return { unavailable: true };
+    const data = await r.json().catch(() => null);
+    if (!data || !data.rate_limit) return { unavailable: true };
+    return { rate_limit: data.rate_limit };
+`)
+	var r struct {
+		Error       string `json:"error"`
+		Unavailable bool   `json:"unavailable"`
+		RateLimit   *struct {
+			Allowed         *bool            `json:"allowed"`
+			LimitReached    bool             `json:"limit_reached"`
+			PrimaryWindow   *whamUsageWindow `json:"primary_window"`
+			SecondaryWindow *whamUsageWindow `json:"secondary_window"`
+		} `json:"rate_limit"`
+	}
+	if err := a.run(ctx, credential, script, &r); err != nil {
+		return nil, nil
+	}
+	if r.Error == "http 429" {
+		return nil, dotsError(r.Error)
+	}
+	if r.Error != "" || r.Unavailable || r.RateLimit == nil {
+		return nil, nil
+	}
+	nowMs := time.Now().UnixMilli()
+	var out []provider.QuotaReading
+	appendWindow := func(w *whamUsageWindow, fallbackWindow string, forceExhausted bool) {
+		if w == nil || w.UsedPercent == nil {
+			return
+		}
+		used := *w.UsedPercent
+		if used < 0 {
+			used = 0
+		}
+		if used > 100 {
+			used = 100
+		}
+		rem := 100 - used
+		if forceExhausted {
+			rem = 0
+		}
+		var resetsAt int64
+		if w.ResetAt >= 1e11 {
+			resetsAt = int64(w.ResetAt)
+		} else if w.ResetAt > 0 {
+			resetsAt = int64(w.ResetAt * 1000)
+		}
+		if resetsAt <= 0 && w.ResetAfterSeconds > 0 {
+			resetsAt = nowMs + int64(w.ResetAfterSeconds*1000)
+		}
+		out = append(out, provider.QuotaReading{
+			Kind:       protocol.QuotaKindWindow,
+			Window:     whamWindowName(int64(w.LimitWindowSeconds), fallbackWindow),
+			Limit:      100,
+			Remaining:  rem,
+			ResetsAt:   resetsAt,
+			Exhausted:  forceExhausted || rem <= 0,
+			SourceNote: "dots:wham/usage",
+		})
+	}
+	limited := r.RateLimit.LimitReached || (r.RateLimit.Allowed != nil && !*r.RateLimit.Allowed)
+	appendWindow(r.RateLimit.PrimaryWindow, "5h", limited && r.RateLimit.PrimaryWindow != nil && (r.RateLimit.SecondaryWindow == nil || (r.RateLimit.PrimaryWindow.UsedPercent != nil && *r.RateLimit.PrimaryWindow.UsedPercent >= 100)))
+	appendWindow(r.RateLimit.SecondaryWindow, "week", limited && r.RateLimit.SecondaryWindow != nil && r.RateLimit.SecondaryWindow.UsedPercent != nil && *r.RateLimit.SecondaryWindow.UsedPercent >= 100)
+	if limited {
+		if len(out) == 0 {
+			out = append(out, provider.QuotaReading{
+				Kind:       protocol.QuotaKindWindow,
+				Window:     "5h",
+				Limit:      100,
+				Remaining:  0,
+				Exhausted:  true,
+				SourceNote: "dots:wham/usage",
+			})
+		} else {
+			anyExhausted := false
+			for _, q := range out {
+				if q.Exhausted || q.Remaining <= 0 {
+					anyExhausted = true
+					break
+				}
+			}
+			if !anyExhausted {
+				out[0].Exhausted = true
+				out[0].Remaining = 0
+			}
+		}
+	}
+	return out, nil
+}
+
+type whamUsageWindow struct {
+	UsedPercent        *float64 `json:"used_percent"`
+	LimitWindowSeconds float64  `json:"limit_window_seconds"`
+	ResetAfterSeconds  float64  `json:"reset_after_seconds"`
+	ResetAt            float64  `json:"reset_at"`
+}
+
+func whamWindowName(seconds int64, fallback string) string {
+	switch {
+	case seconds <= 0:
+		return fallback
+	case seconds == 3600:
+		return "hour"
+	case seconds == 10800:
+		return "3h"
+	case seconds == 18000:
+		return "5h"
+	case seconds == 86400:
+		return "day"
+	case seconds == 604800:
+		return "week"
+	case seconds%86400 == 0:
+		return fmt.Sprintf("%dd", seconds/86400)
+	case seconds%3600 == 0:
+		return fmt.Sprintf("%dh", seconds/3600)
+	default:
+		return fallback
+	}
+}

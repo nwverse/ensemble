@@ -291,7 +291,7 @@ func Quota(h http.Header, now time.Time) []provider.QuotaReading {
 			continue
 		}
 		q := provider.QuotaReading{Kind: d.kind, Limit: limit, Remaining: left, Window: d.window}
-		if reset, err := time.ParseDuration(h.Get("x-ratelimit-reset-" + d.suffix)); err == nil && reset >= 0 {
+		if reset, err := time.ParseDuration(h.Get("x-ratelimit-reset-" + d.suffix)); err == nil && reset > 0 {
 			q.ResetsAt = now.Add(reset).UnixMilli()
 		}
 		out = append(out, q)

@@ -42,20 +42,22 @@ type Space struct {
 	store store.Store
 	vault vault.Vault
 
-	mu         sync.Mutex
-	syncing    map[string]*flight[struct{}]
-	refreshing map[string]*flight[string]
-	fetchedAt  map[string]int64
-	watching   map[string]context.CancelFunc
-	live       map[string]*liveEntry
-	logins     map[string]*login
-	quota      map[string]*quotaState
+	mu             sync.Mutex
+	syncing        map[string]*flight[struct{}]
+	refreshing     map[string]*flight[string]
+	fetchedAt      map[string]int64
+	watching       map[string]context.CancelFunc
+	live           map[string]*liveEntry
+	logins         map[string]*login
+	quota          map[string]*quotaState
+	quotaCheckedAt map[string]int64
 }
 
 func newSpace(name string, c *Club, st store.Store, v vault.Vault) *Space {
 	return &Space{name: name, club: c, store: st, vault: v, syncing: map[string]*flight[struct{}]{},
 		refreshing: map[string]*flight[string]{}, fetchedAt: map[string]int64{}, watching: map[string]context.CancelFunc{},
-		live: map[string]*liveEntry{}, logins: map[string]*login{}, quota: map[string]*quotaState{}}
+		live: map[string]*liveEntry{}, logins: map[string]*login{}, quota: map[string]*quotaState{},
+		quotaCheckedAt: map[string]int64{}}
 }
 
 // flight is one call others may join.
@@ -166,13 +168,15 @@ func (s *Space) accountViewWithBackends(ctx context.Context, a store.Account, ba
 		return protocol.Account{}, err
 	}
 	control, _ := ParseControl(a.AssistantControl)
+	now := s.now()
 	return protocol.Account{AccountID: a.AccountID, Provider: a.Provider, DisplayName: cmp.Or(titles.zh[a.AccountID], names.Title(names.Default, a.Provider, a.DisplayName, a.NameSource)),
 		DisplayNameEn: cmp.Or(titles.en[a.AccountID], names.Title("en", a.Provider, a.DisplayName, a.NameSource)),
 		OwnerName:     ownerName(a),
 		Email:         names.Email(a.Provider, a.DisplayName, a.NameSource),
 		Status:        a.Status, ExternalAccountID: a.ExternalAccountID, LastSyncedAt: a.LastSyncedAt, LastError: a.LastError,
 		SessionCount: len(sessions), AssistantControl: string(control), AssistantBackend: backends[a.AccountID],
-		InboxOff: s.InboxAccountsOff(ctx)[a.AccountID], ShowQuota: a.ShowQuota, QuotaDisplay: a.QuotaDisplay, Quota: s.quotaView(a, s.now()),
+		InboxOff: s.InboxAccountsOff(ctx)[a.AccountID], ShowQuota: a.ShowQuota, QuotaDisplay: a.QuotaDisplay, Quota: s.quotaView(a, now),
+		Usage:     s.accountUsage(ctx, a.AccountID, now),
 		AvatarURL: ownAvatar(sessions)}, nil
 }
 
@@ -389,6 +393,19 @@ func (s *Space) Send(ctx context.Context, p protocol.SendParams) (protocol.Messa
 		return protocol.Message{}, protocol.Conflict("the account is paused").Because(protocol.ReasonAccountPaused)
 	}
 	now := s.now()
+	// Check idempotency before the quota guard so retrying an already-enqueued client_id returns the existing row
+	// (or CLIENT_ID_IN_USE) even if that send exhausted the account's allowance.
+	if existing, ok, err := s.store.Outbox(ctx, p.ClientID); err != nil {
+		return protocol.Message{}, err
+	} else if ok {
+		if existing.SessionKey != sess.SessionKey {
+			return protocol.Message{}, protocol.Conflict("client_id is in use in another session").Because(protocol.ReasonClientIDInUse)
+		}
+		return localMessage(existing), nil
+	}
+	if q := s.quotaView(acct, now); quotaBlocksSend(q, now) {
+		return protocol.Message{}, protocol.Conflict(exhaustedSendMessage(acct, q, now)).Because(protocol.ReasonQuotaExhausted)
+	}
 	row, inserted, err := s.store.EnqueueOutbox(ctx, store.Outbox{ClientID: p.ClientID, SessionKey: sess.SessionKey,
 		AccountID: sess.AccountID, Text: text, CreatedAt: now})
 	if err != nil {
@@ -958,6 +975,7 @@ func (s *Space) RemoveAccount(ctx context.Context, p protocol.RemoveAccountParam
 	_ = s.SetInboxAccount(ctx, p.AccountID, true) // forget the switch: an account id is never reused
 	s.mu.Lock()
 	delete(s.quota, p.AccountID)
+	delete(s.quotaCheckedAt, p.AccountID)
 	s.mu.Unlock()
 	s.notify(nil)
 	return nil

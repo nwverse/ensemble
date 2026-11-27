@@ -248,6 +248,14 @@ type listedSession struct {
 	CanInterrupt bool   `json:"can_interrupt"`
 }
 
+type listedQuota struct {
+	State    string `json:"state"`
+	Percent  *int   `json:"percent,omitempty"`
+	ResetsAt string `json:"resets_at,omitempty"`
+	Source   string `json:"source,omitempty"`
+	Sent24h  int    `json:"sent_24h,omitempty"`
+}
+
 type listedAccount struct {
 	AccountID        string `json:"account_id"`
 	Provider         string `json:"provider"`
@@ -256,6 +264,7 @@ type listedAccount struct {
 	AssistantControl string `json:"assistant_control"`
 	// Problem is the account's last error in words, for the assistant to pass on to the user.
 	Problem  string          `json:"problem,omitempty"`
+	Quota    *listedQuota    `json:"quota,omitempty"`
 	Sessions []listedSession `json:"sessions"`
 }
 
@@ -279,6 +288,15 @@ func (t *tools) list(ctx context.Context, a listArgs) (wire.ConnectorCallResult,
 		}
 		la := listedAccount{AccountID: acct.AccountID, Provider: acct.Provider, Name: accountName(acct),
 			Status: acct.Status, AssistantControl: string(levels[acct.AccountID]), Sessions: []listedSession{}}
+		if acct.Quota != nil {
+			lq := &listedQuota{State: acct.Quota.State, Percent: acct.Quota.Percent, Source: acct.Quota.Source}
+			if acct.Quota.ResetsAt > 0 {
+				lq.ResetsAt = time.UnixMilli(acct.Quota.ResetsAt).UTC().Format(time.RFC3339)
+			}
+			la.Quota = lq
+		} else if acct.Usage != nil && acct.Usage.Sent24h > 0 {
+			la.Quota = &listedQuota{State: "estimated", Source: protocol.QuotaSourceEstimated, Sent24h: acct.Usage.Sent24h}
+		}
 		if p, ok := problemOf("zh", acct.LastError, places.of(ctx, acct, acct.LastError)); ok {
 			la.Problem = p.Text("zh")
 		}
@@ -402,7 +420,15 @@ func (t *tools) describe(ctx context.Context, p wire.ConnectorCallParams) (wire.
 		if err != nil {
 			return wire.ConnectorDescribeResult{}, err
 		}
-		return wire.ConnectorDescribeResult{Action: wire.ConnectorAction{Name: "以你的身份发给 " + providerName("zh", sess.Provider) + "「" + sess.Title + "」",
+		actionName := "以你的身份发给 " + providerName("zh", sess.Provider) + "「" + sess.Title + "」"
+		if sess.Quota != nil && sess.Quota.State == protocol.QuotaLow {
+			if sess.Quota.Percent != nil {
+				actionName += fmt.Sprintf("（额度偏低，仅剩 %d%%）", *sess.Quota.Percent)
+			} else {
+				actionName += "（额度偏低）"
+			}
+		}
+		return wire.ConnectorDescribeResult{Action: wire.ConnectorAction{Name: actionName,
 			Visible: providerName("zh", sess.Provider)}, Summary: strings.TrimSpace(a.Text)}, nil
 	case toolStart:
 		var a startArgs
@@ -419,7 +445,18 @@ func (t *tools) describe(ctx context.Context, p wire.ConnectorCallParams) (wire.
 		if strings.TrimSpace(a.Text) == "" {
 			return wire.ConnectorDescribeResult{}, protocol.Invalid("text is required")
 		}
-		return wire.ConnectorDescribeResult{Action: wire.ConnectorAction{Name: "以你的身份在 " + accountName(acct) + " 新开会话",
+		if err := exhausted(acct.Quota, t.club.Now().UnixMilli()); err != nil {
+			return wire.ConnectorDescribeResult{}, err
+		}
+		actionName := "以你的身份在 " + accountName(acct) + " 新开会话"
+		if acct.Quota != nil && acct.Quota.State == protocol.QuotaLow {
+			if acct.Quota.Percent != nil {
+				actionName += fmt.Sprintf("（额度偏低，仅剩 %d%%）", *acct.Quota.Percent)
+			} else {
+				actionName += "（额度偏低）"
+			}
+		}
+		return wire.ConnectorDescribeResult{Action: wire.ConnectorAction{Name: actionName,
 			Visible: providerName("zh", acct.Provider)}, Summary: strings.TrimSpace(a.Text)}, nil
 	case toolInterrupt:
 		var a interruptArgs
@@ -437,9 +474,21 @@ func (t *tools) describe(ctx context.Context, p wire.ConnectorCallParams) (wire.
 		if err != nil {
 			return wire.ConnectorDescribeResult{}, err
 		}
+		if strings.TrimSpace(a.Then) != "" {
+			if err := exhausted(sess.Quota, t.club.Now().UnixMilli()); err != nil {
+				return wire.ConnectorDescribeResult{}, err
+			}
+		}
 		name := "打断 " + providerName("zh", sess.Provider) + "「" + sess.Title + "」"
 		if op == core.OpSend {
 			name = "不能打断，改为排队发给 " + providerName("zh", sess.Provider) + "「" + sess.Title + "」"
+		}
+		if strings.TrimSpace(a.Then) != "" && sess.Quota != nil && sess.Quota.State == protocol.QuotaLow {
+			if sess.Quota.Percent != nil {
+				name += fmt.Sprintf("（额度偏低，仅剩 %d%%）", *sess.Quota.Percent)
+			} else {
+				name += "（额度偏低）"
+			}
 		}
 		return wire.ConnectorDescribeResult{Action: wire.ConnectorAction{Name: name, Visible: providerName("zh", sess.Provider)},
 			Summary: strings.TrimSpace(a.Then)}, nil
@@ -460,25 +509,28 @@ func (t *tools) sendable(ctx context.Context, key, text string, op core.Operatio
 		if strings.TrimSpace(text) == "" {
 			return nil, protocol.Session{}, "", protocol.Invalid("text is required")
 		}
-		if err := exhausted(sess.Quota); err != nil {
+		if err := exhausted(sess.Quota, t.club.Now().UnixMilli()); err != nil {
 			return nil, protocol.Session{}, "", err
 		}
 	}
 	return space, sess, level, nil
 }
 
-// exhausted refuses a send for the assistant when the account's quota is known to be used up: the assistant does
-// not try, where the user's own send still does.
-func exhausted(q *protocol.Quota) error {
-	if q == nil || q.State != protocol.QuotaExhausted {
+// exhausted refuses a send when the account's quota is known to be used up, giving a clear prompt before sending.
+func exhausted(q *protocol.Quota, now int64) error {
+	blocked, resetsAt := quotaExhaustedActive(q, now)
+	if !blocked {
 		return nil
 	}
 	// A rate limit (HTTP 429) is recorded here too: both are said, so the assistant does not tell the user the
 	// allowance is gone when the service only asked to slow down.
-	if q.ResetsAt != 0 {
-		return protocol.Conflict("这个账号的额度已用尽，或刚被对方限流（请求太多），" + time.UnixMilli(q.ResetsAt).UTC().Format(time.RFC3339) + " 恢复，现在不发送")
+	if resetsAt != 0 {
+		return protocol.Conflict("这个账号的额度已用尽，或刚被对方限流（请求太多），预计 " +
+			time.UnixMilli(resetsAt).UTC().Format(time.RFC3339) + " 恢复，暂不发送。如确认已恢复，请在账号页点「立即同步」。").
+			Because(protocol.ReasonQuotaExhausted)
 	}
-	return protocol.Conflict("这个账号的额度已用尽，或刚被对方限流（请求太多），现在不发送，稍后再试")
+	return protocol.Conflict("这个账号的额度已用尽，或刚被对方限流（请求太多），暂不发送，稍后再试或在账号页点「立即同步」。").
+		Because(protocol.ReasonQuotaExhausted)
 }
 
 func (t *tools) account(ctx context.Context, id string, op core.Operation) (protocol.Account, error) {
@@ -511,7 +563,11 @@ func (t *tools) do(ctx context.Context, p wire.ConnectorDoParams) (wire.Connecto
 		if err := args(p.Args, &a); err != nil {
 			return wire.ConnectorCallResult{}, err
 		}
-		if _, err := t.account(ctx, a.AccountID, core.OpStart); err != nil {
+		acct, err := t.account(ctx, a.AccountID, core.OpStart)
+		if err != nil {
+			return wire.ConnectorCallResult{}, err
+		}
+		if err := exhausted(acct.Quota, t.club.Now().UnixMilli()); err != nil {
 			return wire.ConnectorCallResult{}, err
 		}
 		var res json.RawMessage

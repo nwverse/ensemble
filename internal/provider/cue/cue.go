@@ -190,7 +190,7 @@ func (a *Adapter) Send(ctx context.Context, key string, s provider.SessionRef, m
 		"accept": "application/json", "content-type": "application/json", "x-manus-api-key": key},
 		map[string]any{"task_id": taskID(s), "message": map[string]any{"content": msg.Text}}, 0)
 	if r.OK && web.Record(r.Data)["ok"] == true {
-		return provider.SendResult{Status: provider.Sent}, nil
+		return provider.SendResult{Status: provider.Sent, Quota: parseRateHeaders(r.Header, time.Now())}, nil
 	}
 	if !r.OK && (r.Transport || r.Status >= 500) {
 		return provider.SendResult{Status: provider.Unconfirmed, Error: "SEND_UNCONFIRMED"}, nil
@@ -340,4 +340,37 @@ func planMark(status any) string {
 		return "✗"
 	}
 	return "○"
+}
+
+func parseRateHeaders(h http.Header, now time.Time) []provider.QuotaReading {
+	if h == nil {
+		return nil
+	}
+	var out []provider.QuotaReading
+	for _, d := range []struct{ suffix, kind, window string }{
+		{"requests", protocol.QuotaKindRequests, "day"},
+		{"credits", protocol.QuotaKindCredits, "day"},
+	} {
+		limit, err1 := strconv.ParseFloat(h.Get("x-ratelimit-limit-"+d.suffix), 64)
+		left, err2 := strconv.ParseFloat(h.Get("x-ratelimit-remaining-"+d.suffix), 64)
+		if err1 != nil || err2 != nil || limit <= 0 || left < 0 {
+			continue
+		}
+		q := provider.QuotaReading{Kind: d.kind, Limit: limit, Remaining: left, Window: d.window, SourceNote: "cue:headers"}
+		if raw := strings.TrimSpace(h.Get("x-ratelimit-reset-" + d.suffix)); raw != "" {
+			if reset, err := time.ParseDuration(raw); err == nil && reset > 0 {
+				q.ResetsAt = now.Add(reset).UnixMilli()
+			} else if secs, err := strconv.ParseFloat(raw, 64); err == nil && secs > 0 {
+				if secs >= 1e11 {
+					q.ResetsAt = int64(secs)
+				} else if secs >= 1e9 {
+					q.ResetsAt = int64(secs * 1000)
+				} else {
+					q.ResetsAt = now.Add(time.Duration(secs * float64(time.Second))).UnixMilli()
+				}
+			}
+		}
+		out = append(out, q)
+	}
+	return out
 }

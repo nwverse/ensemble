@@ -256,8 +256,16 @@ func oneLine(s string, n int) string {
 // row is one chat as an Inbox row, from the cache while nothing about the chat changed.
 func (h *inbox) row(ctx context.Context, space *core.Space, c chat, since int64, cfg inboxConfig) (cachedRow, error) {
 	s := c.sess
+	qfp := ""
+	if c.acct.Quota != nil {
+		pct := -1
+		if c.acct.Quota.Percent != nil {
+			pct = *c.acct.Quota.Percent
+		}
+		qfp = fmt.Sprint(c.acct.Quota.State, ":", pct, ":", c.acct.Quota.ResetsAt)
+	}
 	fp := fmt.Sprint(s.RankTimeMs, "|", s.UnreadCount, "|", s.Title, "|", s.CanSend, "|", s.PreviewText, "|", s.PreviewIsMine, "|",
-		s.AvatarURL, "|", c.acct.Status, "|", c.acct.DisplayName, "|", since, "|", cfg.Reply, "|", cfg.Rules)
+		s.AvatarURL, "|", c.acct.Status, "|", c.acct.DisplayName, "|", qfp, "|", since, "|", cfg.Reply, "|", cfg.Rules)
 	h.mu.Lock()
 	if r, ok := h.cache[s.SessionKey]; ok && r.fp == fp {
 		h.mu.Unlock()
@@ -338,6 +346,15 @@ func thingOf(c chat, msgs []protocol.Message, since int64, cfg inboxConfig) (wir
 	if canReply {
 		t.CanReply = true
 		t.ReplyTo = "以你的身份发到" + providerName("zh", s.Provider) + "「" + chatName + "」（只有你和这个 AI 账号能看到）"
+		if blocked, _ := quotaExhaustedActive(acct.Quota, 0); blocked {
+			t.ReplyTo = "注意：这个账号的额度已用完，现在发送会被提示拦截。" + t.ReplyTo
+		} else if acct.Quota != nil && acct.Quota.State == protocol.QuotaLow {
+			if acct.Quota.Percent != nil {
+				t.ReplyTo += fmt.Sprintf("（额度快用完，仅剩 %d%%）", *acct.Quota.Percent)
+			} else {
+				t.ReplyTo += "（额度快用完）"
+			}
+		}
 	}
 	attn := ""
 	switch {
@@ -400,7 +417,7 @@ func (h *inbox) send(ctx context.Context, thread, text, clientID string) error {
 	if !c.sess.CanSend {
 		return protocol.Conflict("这个对话是只读的，不能发消息")
 	}
-	if err := exhausted(c.sess.Quota); err != nil {
+	if err := exhausted(c.sess.Quota, h.club.Now().UnixMilli()); err != nil {
 		return err
 	}
 	msg, err := space.Send(ctx, protocol.SendParams{SessionKey: thread, ClientID: clientID, Text: text})
@@ -447,7 +464,7 @@ func digestOf(rows []cachedRow) string {
 	lines := make([]string, 0, len(rows))
 	for _, r := range rows {
 		t := r.thing
-		lines = append(lines, fmt.Sprint(t.Thread, "|", t.Last, "|", t.Read, "|", t.Done, "|", t.Tier, "|", t.CanReply))
+		lines = append(lines, fmt.Sprint(t.Thread, "|", t.Last, "|", t.Read, "|", t.Done, "|", t.Tier, "|", t.CanReply, "|", t.ReplyTo))
 	}
 	slices.Sort(lines)
 	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
@@ -573,10 +590,31 @@ func (h *inbox) itemView(ctx context.Context, r *ext.UIRequest) (*wire.View, err
 	{
 		sec := wire.Section{Title: l.t("它在等你选", "It is waiting for your choice"),
 			Footer: l.t("点一项，确认后就会把这一项作为你的下一条消息发给它。", "Tap one: after you confirm, it is sent to the chat as your next message.")}
+		clk := clock{now: h.club.Now(), loc: r.Location()}
+		confirmNote := ""
+		if blocked, resetsAt := quotaExhaustedActive(c.acct.Quota, clk.now.UnixMilli()); blocked {
+			when := ""
+			if resetsAt > 0 {
+				when = l.t("，预计 "+clk.at(l, resetsAt)+"恢复", ", expected back "+clk.at(l, resetsAt))
+			}
+			sec.Items = append(sec.Items, wire.Component{
+				Type:     "row",
+				Icon:     "warning",
+				Title:    l.t("这个账号的额度已用完", "This account is out of allowance"),
+				Subtitle: l.t("现在发送会被提示拦截"+when+"。如确认已恢复，请先到账号页点「立即同步」。", "Sends are stopped until reset"+when+". Tap Sync now on the account page if it already reset."),
+				Badge:    &wire.Badge{Text: l.t("额度用完", "Used up"), Tone: wire.ToneDanger},
+			})
+			confirmNote = l.t("注意：这个账号额度已用完"+when+"，发送会被拦截。", "Note: this account is out of allowance"+when+" and sending will be blocked. ")
+		} else if c.acct.Quota != nil && c.acct.Quota.State == protocol.QuotaLow {
+			if c.acct.Quota.Percent != nil {
+				confirmNote = l.t(fmt.Sprintf("提示：这个账号额度快用完（仅剩 %d%%）。", *c.acct.Quota.Percent),
+					fmt.Sprintf("Note: allowance is low (%d%% left). ", *c.acct.Quota.Percent))
+			}
+		}
 		for i, o := range row.opts {
 			sec.Items = append(sec.Items, wire.Component{Type: "button", Title: o.Label,
 				Action: &wire.Action{ID: actPick, Values: map[string]string{valOption: fmt.Sprint(i), valLast: row.thing.Last, valSum: optionSum(o)},
-					Confirm: l.t("把「"+oneLine(o.Reply, 80)+"」发给"+providerName("zh", c.sess.Provider)+"？", "Send \""+oneLine(o.Reply, 80)+"\" to "+providerName("en", c.sess.Provider)+"?")}})
+					Confirm: confirmNote + l.t("把「"+oneLine(o.Reply, 80)+"」发给"+providerName("zh", c.sess.Provider)+"？", "Send \""+oneLine(o.Reply, 80)+"\" to "+providerName("en", c.sess.Provider)+"?")}})
 		}
 		v.Sections = append(v.Sections, sec)
 	}
@@ -609,6 +647,15 @@ func (h *inbox) itemAction(ctx context.Context, r *ext.UIRequest) (*wire.ActionR
 		return &wire.ActionResult{Toast: l.t("它刚又回了新内容，选项变了，请重新看一下再选", "It just replied again and the choices changed; look again and pick")}, nil
 	}
 	if err := h.send(ctx, c.sess.SessionKey, o.Reply, replyClientID(c.sess.SessionKey, "pick|"+row.thing.Last+"|"+optionSum(o))); err != nil {
+		if protocol.ReasonOf(err) == protocol.ReasonQuotaExhausted {
+			clk := clock{now: h.club.Now(), loc: r.Location()}
+			if _, resetsAt := quotaExhaustedActive(c.acct.Quota, clk.now.UnixMilli()); resetsAt > 0 {
+				return &wire.ActionResult{Toast: l.t("这个账号的额度已用完，预计 "+clk.at(l, resetsAt)+"恢复，暂不发送。",
+					"This account's allowance is used up (expected back "+clk.at(l, resetsAt)+"); not sent.")}, nil
+			}
+			return &wire.ActionResult{Toast: l.t("这个账号的额度已用完或正在限流，暂不发送。如已恢复请先点「立即同步」。",
+				"This account's allowance is used up or rate limited; not sent. Tap Sync now if it already reset.")}, nil
+		}
 		return &wire.ActionResult{Toast: l.t("没有发出去：", "Not sent: ") + err.Error()}, nil
 	}
 	return &wire.ActionResult{Toast: l.t("已发出", "Sent")}, nil

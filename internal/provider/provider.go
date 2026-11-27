@@ -110,15 +110,24 @@ type SendResult struct {
 }
 
 // QuotaReading is one dimension of an account's allowance as a provider's answer reported it (Groq's rate limit
-// headers, for example).
+// headers, Grok Bot's usage status, Claude's /usage, ChatGPT's /wham/usage, etc.).
 type QuotaReading struct {
-	Kind      string // protocol.QuotaKindTokens, QuotaKindRequests, ...
+	Kind      string // protocol.QuotaKindTokens, QuotaKindRequests, QuotaKindCredits, QuotaKindWindow
 	Limit     float64
 	Remaining float64
 	// ResetsAt is when the window resets (Unix ms), 0 when not said.
 	ResetsAt int64
-	// Window names the window ("minute", "day"), when known.
+	// Window names the window ("minute", "5h", "day", "week", "month"), when known.
 	Window string
+	// Exhausted marks a reading whose provider explicitly refuses further sends even when Remaining > 0.
+	Exhausted bool
+	// SourceNote identifies where the reading came from (e.g. endpoint or header group), optional.
+	SourceNote string
+}
+
+// QuotaReader reads an account's current allowance from the provider, read-only (best-effort during sync).
+type QuotaReader interface {
+	ReadQuota(ctx context.Context, credential string) ([]QuotaReading, error)
 }
 
 // Adapter is one provider. A call that returns an *Error was refused by the provider (nothing was accepted); any

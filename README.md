@@ -265,11 +265,7 @@ Rules the core keeps:
   30 minutes, then the three read least recently); a refused credential is retried every 15 minutes, after one
   refresh where the provider has one.
 - **Credentials** go in and never come out: no method returns one, nothing logs one.
-- **Quota** comes only from what costs nothing: the readings a provider's answers carry and any 429. `state` is `ok`
-  (more than 20% left), `low` (20% or less) or `exhausted` (none left, or a 429, until its `Retry-After` or else for
-  five minutes); the tightest dimension is on top, the others in `details`; `stale` after 15 minutes without an
-  answer; `show` mirrors the account's `show_quota`. Unknown is no `quota` at all. A change of state or staleness is
-  announced with `agentsrc.updated`. Sends to an exhausted account are still tried.
+- **Quota** combines real provider readings (Groq's `x-ratelimit-*` headers, Grok Bot's `DashboardService/GetSandUsageStatus` and `GetCurrentPeriodUsage`, Claude Duet's `/api/organizations/<id>/usage`, ChatGPT Dots' `/backend-api/wham/usage`, optional Manus/muse2api rate-limit headers, and any 429) with honest local 5h/24h send-count estimates (`account.usage`) for services that do not publish real-time quota (Muse, Gemini, Cue, muse2api). `state` is `ok` (more than 20% left), `low` (20% or less) or `exhausted` (none left, provider refusal flag, or a 429 until `Retry-After` or five minutes); the tightest dimension is on top, all windows in `buckets`; `stale` after 15 minutes without an answer; `show` mirrors the account's `show_quota`. Unknown is no `quota` at all. A change of state or staleness is announced with `agentsrc.updated`. Sends to an account freshly known to be exhausted are refused before hitting the provider (`conflict`, `QUOTA_EXHAUSTED`) with the reset time so callers warn instead of failing silently; manual sync (`club.accounts.sync`) refreshes the reading immediately.
 - **Assistant control** per account (`off`, `read`, `confirm`, `auto`; `off` by default, and for every imported
   account): what the Persona assistant may do with that account's agents. With nobody present (scheduled tasks,
   background follow-ups) the assistant may only read, whatever the level.

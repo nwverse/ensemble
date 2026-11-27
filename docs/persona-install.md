@@ -25,6 +25,16 @@ shasum -a 256 -c personal-agent-club-<version>.tar.gz.sha256   # or: sha256sum -
 To hold the program to the hub's own checks without a hub (manifest and package as at install, handshake, error
 codes, every page drawable), run `scripts/persona-test.sh` with a `personad` on `PATH` (or `PERSONAD=/path/to/personad`).
 
+## What 0.7.3 adds
+
+Quota & usage across every account:
+- Real usage readings are fetched read-only on sync (throttled to every 5 minutes, immediate on manual Sync) for Grok Bot (`DashboardService/GetSandUsageStatus` / `GetCurrentPeriodUsage`), Claude Duet (`claude.ai/api/organizations/<id>/usage`), ChatGPT Dots (`chatgpt.com/backend-api/wham/usage`), alongside Groq's live `x-ratelimit-*` headers and 429 cooldowns.
+- Services that do not expose real-time quota numbers (Muse, Gemini, Cue, muse2api) show local 5-hour and 24-hour send-count estimates with their exact data source and estimation method.
+- The home page, Overview card, Accounts list and each account's detail page show remaining quota, reset times, per-window progress bars, and low/exhausted badges.
+- Sending to an account known to be exhausted stops before hitting the provider (`QUOTA_EXHAUSTED`) with a clear prompt and reset time across Agents, Inbox, Takeover, and assistant tools, instead of failing silently.
+
+No new permissions or configuration fields are added.
+
 ## What 0.7.2 adds
 
 Gemini and Claude Duet each have one main chat again, and sending to it works.
