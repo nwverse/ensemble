@@ -204,8 +204,8 @@ func TestBindReposFlow(t *testing.T) {
 
 func TestRepoToolsAreGated(t *testing.T) {
 	h, club, fd, id := startDuet(t)
-	if !strings.Contains(string(pac.Manifest), `"club_agent_*"`) {
-		t.Fatal("the manifest no longer confirms club_agent_* on the phone")
+	if !strings.Contains(string(pac.Manifest), `"club_agent_repo_authorize"`) || !strings.Contains(string(pac.Manifest), `"club_agent_repo_bind"`) {
+		t.Fatal("the manifest no longer confirms club_agent_repo_authorize and club_agent_repo_bind on the phone")
 	}
 	var reads, writes wire.ConnectorTools
 	_ = h.Call("connector.tools.list", wire.ConnectorParams{Contribution: Connector}, &reads)
@@ -263,6 +263,34 @@ func TestRepoToolsAreGated(t *testing.T) {
 		!strings.Contains(out, "https://github.com/nwverse/ensemble") {
 		t.Errorf("list at read: %q %v", out, err)
 	}
+	// Without channel, a repository mounted only in a side channel is mounted, and mounted_in names that channel.
+	fd.mu.Lock()
+	fd.channels["chan_01DCDvtmZrq32yBT59hH7XwF"] = []string{"https://github.com/nwverse/ensemble"}
+	fd.mu.Unlock()
+	out, err = call(toolReposList, map[string]any{"account_id": id, "repos": []string{"nwverse/ensemble", "nwverse/openlinkedin"}})
+	var listed struct {
+		Accounts []struct {
+			Check   []repoStatus `json:"check"`
+			CheckIn string       `json:"check_channel"`
+		} `json:"accounts"`
+	}
+	if err == nil {
+		err = json.Unmarshal([]byte(out[:strings.Index(out, "\n")]), &listed)
+	}
+	if err != nil || len(listed.Accounts) != 1 || len(listed.Accounts[0].Check) != 2 || listed.Accounts[0].CheckIn != "" {
+		t.Fatalf("list without channel: %q %v", out, err)
+	}
+	if c := listed.Accounts[0].Check; !c[0].Mounted || !slices.Equal(c[0].MountedIn, []string{"openbilibili（chan_01DCDvtmZrq32yBT59hH7XwF）"}) ||
+		c[1].Mounted || len(c[1].MountedIn) != 0 {
+		t.Errorf("mounted anywhere: %+v", c)
+	}
+	// With a channel, only that channel counts.
+	if out, _ := call(toolReposList, map[string]any{"account_id": id, "channel": "openlinkedin", "repos": []string{"nwverse/ensemble"}}); !strings.Contains(out, `"mounted":false`) || strings.Contains(out, "mounted_in") {
+		t.Errorf("list in a channel: %s", out)
+	}
+	fd.mu.Lock()
+	fd.channels["chan_01DCDvtmZrq32yBT59hH7XwF"] = []string{}
+	fd.mu.Unlock()
 	for _, n := range []string{toolRepoBind, toolRepoAuthorize} {
 		if _, err := describe(n, args); err == nil {
 			t.Errorf("%s described at read", n)
@@ -304,6 +332,52 @@ func TestRepoToolsAreGated(t *testing.T) {
 	fd.stop = ""
 	if out, err = do(toolRepoAuthorize, args); err != nil || !strings.Contains(out, "已挂好并读回确认") {
 		t.Errorf("authorize granted: %q %v", out, err)
+	}
+
+	// follow and auto: repository authorization and binding stay in confirm_always, never consume a FollowLease,
+	// never set Bypass=true in audit logs, and are always denied in unattended background calls.
+	space, _ := club.Space(context.Background(), core.DefaultSpace)
+	sessions, _ := space.Sessions(context.Background())
+	mainKey := sessions.Sessions[0].SessionKey
+	setControl(t, club, id, core.ControlFollow)
+	lease, err := space.GrantFollowLease(context.Background(), protocol.GrantFollowLeaseParams{
+		AccountID:       id,
+		SessionKey:      mainKey,
+		TTL:             "2h",
+		MaxTurns:        10,
+		AllowBackground: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, lvl := range []core.Control{core.ControlFollow, core.ControlAuto} {
+		setControl(t, club, id, lvl)
+		for _, tool := range []string{toolRepoBind, toolRepoAuthorize} {
+			raw, _ := json.Marshal(args)
+			var dRes wire.ConnectorDescribeResult
+			if err := h.Call("connector.actions.describe", wire.ConnectorCallParams{
+				Contribution: Connector,
+				Name:         tool,
+				Args:         raw,
+				TrackKind:    "background",
+			}, &dRes); err == nil {
+				t.Fatalf("level=%s tool=%s allowed in background", lvl, tool)
+			}
+			if _, err := describe(tool, args); err != nil {
+				t.Fatalf("level=%s tool=%s describe failed: %v", lvl, tool, err)
+			}
+			if _, err := do(tool, args); err != nil {
+				t.Fatalf("level=%s tool=%s do failed: %v", lvl, tool, err)
+			}
+		}
+	}
+	if curLease, ok, _ := space.Store().FollowLease(context.Background(), lease.LeaseID); !ok || curLease.UsedTurns != 0 {
+		t.Fatalf("repo tools must not consume FollowLease turns: %+v", curLease)
+	}
+	for _, a := range space.AuditEntries() {
+		if (a.Tool == toolRepoBind || a.Tool == toolRepoAuthorize) && a.Bypass {
+			t.Fatalf("repo tool audit entry must never mark Bypass=true: %+v", a)
+		}
 	}
 }
 

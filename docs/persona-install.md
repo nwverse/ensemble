@@ -25,6 +25,43 @@ shasum -a 256 -c personal-agent-club-<version>.tar.gz.sha256   # or: sha256sum -
 To hold the program to the hub's own checks without a hub (manifest and package as at install, handshake, error
 codes, every page drawable), run `scripts/persona-test.sh` with a `personad` on `PATH` (or `PERSONAD=/path/to/personad`).
 
+## What 0.7.12 adds
+
+Gemini accounts have a remote computer status card and confirmed WebShell on the Remote terminal page:
+- **Read-only remote computer status.** Gemini's Remote terminal page queries `/BardFrontendService.GetVmSettings`
+  (`W8adn`) and `MaZiqc` task counts read-only inside the signed-in browser tab without navigating an active
+  conversation or flipping any user setting. It shows whether task mode and remote computer internet access are enabled,
+  notes the 2 vCPU / 8 GB RAM / Debian 12 environment and persistent working directory, and links directly to
+  `https://gemini.google.com/gemini-spark` and the current cloud computer session. When internet access is off, it shows
+  a clear hint and link so the owner can enable it themselves.
+- **Dedicated Task-mode WebShell isolated from the main chat.** Confirmed commands run in a dedicated Task-mode
+  (`chat-spark-toggle` `data-value="40"`) conversation kept under `localStorage["ensemble.gemini.computer"]`, leaving
+  `main` (`data-value="0"`, `ensemble.gemini.main`) untouched. Terminal stdout/stderr is extracted from the task's
+  code blocks, stripped of ANSI control characters, capped at 16 KB, and retained in the last 5 runs on the page.
+- **Two-step confirmation and allowance guards.** Commands and read-only preset probes (`uname -srm && nproc && free -h
+  && df -h`, `ls -la`, `python3 --version && node -v`) go through `validateTerminalCommand`, staging with a one-shot
+  SHA-256 digest, the native `Confirm` dialog, quota-exhaustion blocking before consuming the staged command, and
+  `Unconfirmed` protection against blind retries.
+
+No new permissions or configuration fields are added.
+
+## What 0.7.11 adds
+
+Mounting repositories on Claude Duet works again:
+- **`club_agent_repo_bind` writes where Claude keeps a channel's repositories.** It sent the new list to the channel
+  itself (`PATCH /v1/code/channels/<chan>`, which answers 200 and drops `default_source_urls`), so every bind ended
+  `unconfirmed` with `mounted: []` and nothing changed. It now writes the channel's config
+  (`PATCH /v1/code/channels/<chan>/config` with `default_source_urls` and the added ones as `chosen_source_urls`), as
+  Claude's own channel settings do, keeping every repository the channel had, and reads it back.
+- **A refusal is a refusal.** Claude refuses a repository the GitHub App was not granted with 403 and the reason in
+  `error.resource` (`github_repo_access_denied`); that is `mount_refused` with its reason now, not "signed out".
+- **One write per channel at a time.** Two binds on one channel wait for each other even when they run in two
+  computers' browsers; each merges from what the channel has when it runs, so neither drops the other's repositories.
+- **`club_agent_repos_list` without `channel`** says a repository is mounted when any channel (main chat included)
+  has it, and names those channels in `mounted_in`; with `channel` it still checks only that channel.
+
+No new permissions or configuration fields are added.
+
 ## What 0.7.10 adds
 
 The account page no longer fails with HTTP 502 「扩展返回的界面无法显示」:
@@ -279,8 +316,7 @@ An account's page starts with its state (and, when it needs you, what to do, *�
 Bot account, *重新登录* / sign in again), then:
 
 - the name field (**名字**): rename it (shown only in Persona);
-- **助手指挥** (assistant control): *关闭* (off, the default), *只读* (read) or *可代发（逐次确认）* (confirm). An account set to *auto* shows *可代发（自动档）*;
-  its sends are still confirmed on the phone every time, since the manifest lists `club_agent_*` in `confirm_always`;
+- **助手指挥** (assistant control): *关闭* (off, the default), *只读* (read), *可代发（逐次确认）* (confirm), *持续跟进* (follow: chats with an active follow-up lease below can continue turns within their turn and time caps) or *直接放行* (auto: requires an explicit secondary confirmation card and is guarded by allowance pre-check, unconfirmed-send protection, per-chat burst limits, and mandatory phone confirmation for repository tools);
 - **主助手** (main assistant): the account itself answering as a Persona main assistant. With
   `assistant_runtime` off the page says to switch that on instead of offering a switch that does nothing;
 - syncing (sync now, pause, resume; for a Grok Bot account that works, *重新登录* waits here with a line saying it is
@@ -301,10 +337,10 @@ The connector `club` (**让 Persona 助手使用 Ensemble** in Settings › Conn
 `club_agent_repos_list`, `club_agent_repo_bind` and `club_agent_repo_authorize`:
 
 - An account the assistant may use is chosen on its page under **助手指挥** (assistant control): *关闭* (off, the
-  default for every account: the assistant does not see it), *只读* (read: list and read) or *可代发（逐次确认）*
-  (confirm: also write).
-- Every write is confirmed on your phone, every time, whatever your gate rules say: the manifest lists the writes in
-  `confirm_always`. A scheduled task or background follow-up, with nobody there to confirm, can only read.
+  default for every account: the assistant does not see it), *只读* (read: list and read), *可代发（逐次确认）*
+  (confirm: writes ask on your phone first), *持续跟进* (follow: continues turns in a chat holding an active `FollowLease` within its turn and TTL caps, degrading to confirm elsewhere), or *直接放行* (auto: writes without asking each time, subject to safety guards; see `docs/permission-model.md`).
+- Repository authorization and binding (`club_agent_repo_authorize`, `club_agent_repo_bind`) are listed in the manifest's
+  `confirm_always`, so they are always confirmed on your phone whatever the control level or gate rules say.
 - Starting a new session and interrupting a turn depend on the provider; where they are not available the tool says
   so before anything is asked.
 - The repository writes need *可代发* like a message. `club_agent_repo_bind` only mounts repositories the Claude GitHub

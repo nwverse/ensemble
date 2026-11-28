@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/nwverse/ensemble/internal/provider"
 )
@@ -14,8 +15,16 @@ import (
 //     source_url}], is_complete}: every repository the Claude GitHub App was granted and the account can see.
 //   - GET /v1/code/channels/<chan>/config: {config: {default_source_urls: [...]}}: the repositories mounted in a
 //     channel (the main chat's too), several per channel.
-//   - PATCH /v1/code/channels/<chan> {default_source_urls}: what the page sends to change them (updateChannel); a
-//     repository the app was not granted is refused (github_repo_access_denied, github_app_not_connected).
+//   - PATCH /v1/code/channels/<chan>/config {default_source_urls, chosen_source_urls}: what the page's settings send
+//     to change them (updateChannelConfig; chosen_source_urls are the ones added by this change). It answers
+//     {config: {default_source_urls…}} and a GET of the config right after already shows the change. A repository the
+//     app was not granted is refused with 403 {error: {type: permission_error, resource: github_repo_access_denied,
+//     sub_reason: read_denied}} (also github_app_not_connected, project_repo_unreachable, …), nothing changed.
+//   - PATCH /v1/code/channels/<chan> (updateChannel) is the channel itself (name, topic, context_sources…): it
+//     answers 200 to {default_source_urls} and drops the field, so a mount sent there changes nothing (read on
+//     2026-11-27: the cause of club_agent_repo_bind's unconfirmed / mounted:[]).
+// The page signs these writes (device_signature) only when the channel is device protected and a device key is
+// registered (the desktop app); a web page has none and sends them unsigned, as this does.
 // A repository the app was not granted is added on GitHub (github_app.go), not on claude.ai.
 
 var _ provider.RepoMounter = (*Adapter)(nil)
@@ -202,32 +211,43 @@ func mergeRepos(before, add []string) []string {
 }
 
 // duetMountScript reads the channel's repositories, writes them back with the new ones appended (only when one is
-// new), and reads them again. ARGS: {chan, add}. The merge is made in the page from what the channel has at that
-// moment (not from the inventory the caller read earlier); a config it cannot read fails the run without writing.
+// new) to the channel's config, and reads them again. ARGS: {chan, add}. The merge is made in the page from what the
+// channel has at that moment (not from the inventory the caller read earlier); a config it cannot read fails the run
+// without writing.
 const duetMountScript = `
-    const path = "/v1/code/channels/" + encodeURIComponent(ARGS.chan);
-    const read = async () => {
-      const cfg = await __api(path + "/config");
+    const path = "/v1/code/channels/" + encodeURIComponent(ARGS.chan) + "/config";
+    const urls = cfg => {
       // Fail closed: a config whose repositories cannot be read is never written back (it would drop them).
       if (!cfg || !cfg.config || !Array.isArray(cfg.config.default_source_urls)) throw new Error("shape");
       return cfg.config.default_source_urls.map(String);
     };
-    const before = await read();
+    const before = urls(await __api(path));
     const key = u => String(u).toLowerCase().replace(/\.git$/, "").replace(/\/+$/, "");
     const have = new Set(before.map(key));
     const next = before.slice();
-    for (const u of ARGS.add) if (!have.has(key(u))) { next.push(u); have.add(key(u)); }
-    if (next.length === before.length) return { before, after: before };
+    const added = [];
+    for (const u of ARGS.add) if (!have.has(key(u))) { next.push(u); added.push(u); have.add(key(u)); }
+    if (added.length === 0) return { before, after: before };
     const r = await fetch(path, { method: "PATCH", credentials: "include",
       headers: { "content-type": "application/json", "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ default_source_urls: next }) });
-    if (r.status === 401) throw new Error("auth");
+      body: JSON.stringify({ default_source_urls: next, chosen_source_urls: added }) });
+    let j = null;
+    try { j = await r.json(); } catch (e) {}
     if (!r.ok) {
-      let reason = "";
-      try { const j = await r.json(); reason = String((j && j.error && (j.error.reason || j.error.type)) || ""); } catch (e) {}
-      return { before, after: before, refused: reason || ("http " + r.status) };
+      const er = (j && j.error) || {};
+      const reason = String(er.reason || er.resource || er.sub_reason || "");
+      // A 403 naming a reason is Claude refusing the repositories (github_repo_access_denied); one naming none, or a
+      // 401, is a page that is not signed in.
+      if (r.status === 401 || (r.status === 403 && !reason)) throw new Error("auth");
+      return { before, after: before, refused: reason || String(er.type || "") || ("http " + r.status) };
     }
-    return { before, after: await read() };
+    let after;
+    try { after = urls(await __api(path)); } catch (e) {
+      if (String(e.message) === "auth") throw e;
+      // The write answered with the config it saved: that is the read back when the read itself fails.
+      after = urls(j);
+    }
+    return { before, after };
 `
 
 func (duetSite) mountRepos(ctx context.Context, a *Adapter, credential, workspace string, repos []string) (provider.MountResult, error) {
@@ -240,6 +260,13 @@ func (duetSite) mountRepos(ctx context.Context, a *Adapter, credential, workspac
 			return provider.MountResult{}, &provider.Error{Code: provider.CodeBadResponse}
 		}
 	}
+	// One write per channel at a time, whichever computer's browser runs it: each merges from what the channel has
+	// when it reads, so a second one waiting reads the first one's result (runSend only orders writes in one tab).
+	unlock, err := duetChanLocks.lock(ctx, workspace)
+	if err != nil {
+		return provider.MountResult{}, &provider.Error{Code: provider.CodeNetworkError, Retryable: true}
+	}
+	defer unlock()
 	script := duetScript(duetOrigin+"/duet", map[string]any{"chan": workspace, "add": add}, duetMountScript)
 	var r struct {
 		Error   string   `json:"error"`
@@ -255,4 +282,37 @@ func (duetSite) mountRepos(ctx context.Context, a *Adapter, credential, workspac
 	}
 	return provider.MountResult{Workspace: workspace, Before: canonicalAll(r.Before), After: canonicalAll(r.After),
 		Refused: r.Refused}, nil
+}
+
+// keyedLocks is a lock per key that a context can stop waiting for.
+type keyedLocks struct {
+	mu   sync.Mutex
+	held map[string]chan struct{}
+}
+
+var duetChanLocks = &keyedLocks{held: map[string]chan struct{}{}}
+
+// lock waits until key is free (or ctx ends) and holds it until unlock is called.
+func (k *keyedLocks) lock(ctx context.Context, key string) (unlock func(), err error) {
+	for {
+		k.mu.Lock()
+		ch, busy := k.held[key]
+		if !busy {
+			mine := make(chan struct{})
+			k.held[key] = mine
+			k.mu.Unlock()
+			return func() {
+				k.mu.Lock()
+				delete(k.held, key)
+				k.mu.Unlock()
+				close(mine)
+			}, nil
+		}
+		k.mu.Unlock()
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 }

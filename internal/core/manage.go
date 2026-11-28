@@ -49,11 +49,13 @@ func (s *Space) UpdateAccount(ctx context.Context, p protocol.UpdateAccountParam
 		owner := names.SourceOwner
 		patch.DisplayName, patch.NameSource = &name, &owner
 	}
+	var nextControl Control
 	if p.AssistantControl != nil {
 		c, err := ParseControl(*p.AssistantControl)
 		if err != nil || *p.AssistantControl == "" {
-			return protocol.Account{}, badInput("assistant_control must be off, read, confirm or auto")
+			return protocol.Account{}, badInput("assistant_control must be off, read, confirm, follow or auto")
 		}
+		nextControl = c
 		level := string(c)
 		patch.AssistantControl = &level
 	}
@@ -79,8 +81,30 @@ func (s *Space) UpdateAccount(ctx context.Context, p protocol.UpdateAccountParam
 		}
 		patch.Status, patch.LastError = &st, &empty
 	}
-	if err := s.store.UpdateAccount(ctx, a.AccountID, patch, s.now()); err != nil {
+	prevControl, _ := ParseControl(a.AssistantControl)
+	now := s.now()
+	if err := s.store.UpdateAccount(ctx, a.AccountID, patch, now); err != nil {
 		return protocol.Account{}, err
+	}
+	if p.AssistantControl != nil {
+		revoked := 0
+		if RevokesLeasesOnControlChange(nextControl) && (prevControl != nextControl || nextControl == ControlOff || nextControl == ControlRead) {
+			var revErr error
+			revoked, revErr = s.store.RevokeAccountFollowLeases(ctx, a.AccountID, "control_"+string(nextControl), now)
+			if revErr != nil {
+				return protocol.Account{}, revErr
+			}
+		}
+		s.RecordAudit(AuditEntry{
+			TimeMs:    now,
+			AccountID: a.AccountID,
+			Tool:      protocol.MethodClubAccountsUpdate,
+			Operation: OpManage,
+			Level:     nextControl,
+			Verdict:   Allow,
+			Reason:    "control_changed_to_" + string(nextControl),
+			LeaseUsed: revoked,
+		})
 	}
 	if p.AssistantBackend != nil {
 		if err := s.setAssistantBackend(ctx, a.AccountID, *p.AssistantBackend); err != nil {

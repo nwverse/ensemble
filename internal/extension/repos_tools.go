@@ -15,9 +15,9 @@ import (
 )
 
 // The assistant's repository tools (repos.go). club_agent_repos_list reads; club_agent_repo_bind and
-// club_agent_repo_authorize write, so the manifest's confirm_always (club_agent_*) has the user confirm each on the
-// phone, with describe's card naming the account, the channel, every repository and what will change. Writes need
-// the account at 逐次确认 (the level that lets the assistant send), as a message would.
+// club_agent_repo_authorize write, so the manifest's confirm_always (club_agent_repo_authorize, club_agent_repo_bind)
+// has the user confirm each on the phone, with describe's card naming the account, the channel, every repository and
+// what will change. Writes need the account at confirm, follow or auto, and are never bypassed without phone confirmation.
 const (
 	toolReposList     = "club_agent_repos_list"
 	toolRepoBind      = "club_agent_repo_bind"
@@ -28,7 +28,7 @@ const (
 const describeInventoryWait = 40 * time.Second
 
 var repoReadTool = wire.ConnectorTool{Name: toolReposList,
-	Description: "列出个人 Agent（目前是 Claude Duet）能看到的仓库：Claude GitHub App 已授权的仓库、每个频道（含主聊天）已挂载的仓库；带 repos 时逐个说明是否已授权、是否已挂到 channel。用户要给 Agent 挂仓库、问某个仓库它能不能用时先调它。",
+	Description: "列出个人 Agent（目前是 Claude Duet）能看到的仓库：Claude GitHub App 已授权的仓库、每个频道（含主聊天）已挂载的仓库；带 repos 时逐个说明是否已授权、是否已挂到 channel（不传 channel 时说明挂在哪些频道：mounted 为任一频道已挂，mounted_in 列出频道）。用户要给 Agent 挂仓库、问某个仓库它能不能用时先调它。",
 	InputSchema: schema(`{"type":"object","properties":{"account_id":{"type":"string","description":"只看这个账号；省略时列出所有能挂仓库的账号"},"channel":{"type":"string","description":"频道 id（chan_…）或名字，主聊天写 main"},"repos":{"type":"array","items":{"type":"string"},"description":"要检查的仓库，如 nwverse/openlinkedin 或 https://github.com/nwverse/openlinkedin"}}}`)}
 
 var repoWriteTools = []wire.ConnectorTool{
@@ -52,45 +52,42 @@ type repoArgs struct {
 }
 
 // repoAccount is an account the assistant may do op on whose agent mounts repositories.
-func (t *tools) repoAccount(ctx context.Context, id string, op core.Operation) (*core.Space, protocol.Account, error) {
-	acct, err := t.account(ctx, id, op)
+func (t *tools) repoAccount(ctx context.Context, id string, op core.Operation, unattended bool, toolName string) (*core.Space, protocol.Account, core.Control, error) {
+	space, acct, level, err := t.accountWithSpace(ctx, id, op, unattended, toolName)
 	if err != nil {
-		return nil, protocol.Account{}, err
-	}
-	space, err := t.club.Space(ctx, core.DefaultSpace)
-	if err != nil {
-		return nil, protocol.Account{}, err
+		return nil, protocol.Account{}, "", err
 	}
 	if !space.MountsRepos(ctx, acct.AccountID) {
-		return nil, protocol.Account{}, protocol.Unsupported(providerName("zh", acct.Provider) + " 没有可挂载的仓库（目前只有 Claude Duet 支持）")
+		return nil, protocol.Account{}, "", protocol.Unsupported(providerName("zh", acct.Provider) + " 没有可挂载的仓库（目前只有 Claude Duet 支持）")
 	}
-	return space, acct, nil
+	return space, acct, level, nil
 }
 
 // repoWriteArgs checks a write's arguments: the account, the channel named, the repositories well formed.
-func (t *tools) repoWriteArgs(ctx context.Context, raw json.RawMessage) (*core.Space, protocol.Account, repoArgs, []string, error) {
+// Repository authorization and binding are always in confirm_always and can never be bypassed by follow or auto.
+func (t *tools) repoWriteArgs(ctx context.Context, raw json.RawMessage, unattended bool, toolName string) (*core.Space, protocol.Account, core.Control, repoArgs, []string, error) {
 	var a repoArgs
 	if err := args(raw, &a); err != nil {
-		return nil, protocol.Account{}, a, nil, err
+		return nil, protocol.Account{}, "", a, nil, err
 	}
 	if strings.TrimSpace(a.Channel) == "" {
-		return nil, protocol.Account{}, a, nil, protocol.Invalid("channel is required")
+		return nil, protocol.Account{}, "", a, nil, protocol.Invalid("channel is required")
 	}
 	repos, bad := parseRepos(a.Repos)
 	if len(bad) > 0 {
-		return nil, protocol.Account{}, a, nil, protocol.Invalid("这些不是 GitHub 仓库：" + strings.Join(bad, "、") + "（写成 owner/name 或 https://github.com/owner/name）")
+		return nil, protocol.Account{}, "", a, nil, protocol.Invalid("这些不是 GitHub 仓库：" + strings.Join(bad, "、") + "（写成 owner/name 或 https://github.com/owner/name）")
 	}
 	if len(repos) == 0 {
-		return nil, protocol.Account{}, a, nil, protocol.Invalid("repos is required")
+		return nil, protocol.Account{}, "", a, nil, protocol.Invalid("repos is required")
 	}
 	if len(repos) > 20 {
-		return nil, protocol.Account{}, a, nil, protocol.Invalid("一次最多 20 个仓库")
+		return nil, protocol.Account{}, "", a, nil, protocol.Invalid("一次最多 20 个仓库")
 	}
-	space, acct, err := t.repoAccount(ctx, a.AccountID, core.OpSend)
+	space, acct, level, err := t.repoAccount(ctx, a.AccountID, core.OpSend, unattended, toolName)
 	if err != nil {
-		return nil, protocol.Account{}, a, nil, err
+		return nil, protocol.Account{}, "", a, nil, err
 	}
-	return space, acct, a, repos, nil
+	return space, acct, level, a, repos, nil
 }
 
 func (t *tools) repoList(ctx context.Context, raw json.RawMessage) (wire.ConnectorCallResult, error) {
@@ -139,19 +136,21 @@ func (t *tools) repoList(ctx context.Context, raw json.RawMessage) (wire.Connect
 		}
 		l.Complete, l.Channels, l.GrantURL = inv.Complete, inv.Workspaces, inv.GrantURL
 		if len(repos) > 0 {
-			ws, ok := inv.Workspace(a.Channel)
-			if a.Channel != "" && !ok {
-				l.Error = errNoChannel(a.Channel, inv).Error()
-			}
-			if ok {
+			if strings.TrimSpace(a.Channel) == "" {
+				// No channel named: mounted means mounted in any channel, which mounted_in names.
+				l.Check = checkEverywhere(inv, repos)
+			} else if ws, ok := inv.Workspace(a.Channel); ok {
 				l.CheckIn = ws.Name + "（" + ws.ID + "）"
+				l.Check = planRepos(inv, ws, repos).Statuses
+			} else {
+				l.Error = errNoChannel(a.Channel, inv).Error()
+				l.Check = checkEverywhere(inv, repos)
 			}
-			l.Check = planRepos(inv, ws, repos).Statuses
 		}
 		out = append(out, l)
 	}
 	if a.AccountID != "" && len(out) == 0 {
-		if _, _, err := t.repoAccount(ctx, a.AccountID, core.OpList); err != nil {
+		if _, _, _, err := t.repoAccount(ctx, a.AccountID, core.OpList, false, toolReposList); err != nil {
 			return wire.ConnectorCallResult{}, err
 		}
 	}
@@ -167,10 +166,22 @@ func (t *tools) repoList(ctx context.Context, raw json.RawMessage) (wire.Connect
 }
 
 func (t *tools) repoDescribe(ctx context.Context, p wire.ConnectorCallParams) (wire.ConnectorDescribeResult, error) {
-	space, acct, a, repos, err := t.repoWriteArgs(ctx, p.Args)
+	unattended := isUnattended(p.Track, p.TrackKind)
+	space, acct, level, a, repos, err := t.repoWriteArgs(ctx, p.Args, unattended, p.Name)
 	if err != nil {
 		return wire.ConnectorDescribeResult{}, err
 	}
+	space.RecordAudit(core.AuditEntry{
+		AccountID:  acct.AccountID,
+		Tool:       p.Name,
+		Operation:  core.OpSend,
+		Level:      level,
+		Unattended: unattended,
+		Verdict:    core.Confirm,
+		Bypass:     false,
+		Guard:      "repo_confirm_always",
+		Reason:     "repo_write_requires_phone_confirm",
+	})
 	authorize := p.Name == toolRepoAuthorize
 	chName, chID := a.Channel, ""
 	var plan *repoPlan
@@ -242,10 +253,23 @@ func repoSummary(acct protocol.Account, channel, channelID string, repos []strin
 
 func (t *tools) repoDo(ctx context.Context, p wire.ConnectorDoParams) (wire.ConnectorCallResult, error) {
 	// The checks again: the level may have changed between the card and the user's yes.
-	space, acct, a, repos, err := t.repoWriteArgs(ctx, p.Args)
+	// Repository tools are in confirm_always and never bypass confirmation or consume a FollowLease, even at follow or auto.
+	unattended := isUnattended(p.Track, p.TrackKind)
+	space, acct, level, a, repos, err := t.repoWriteArgs(ctx, p.Args, unattended, p.Name)
 	if err != nil {
 		return wire.ConnectorCallResult{}, err
 	}
+	space.RecordAudit(core.AuditEntry{
+		AccountID:  acct.AccountID,
+		Tool:       p.Name,
+		Operation:  core.OpSend,
+		Level:      level,
+		Unattended: unattended,
+		Verdict:    core.Confirm,
+		Bypass:     false,
+		Guard:      "repo_confirm_always",
+		Reason:     "repo_write_confirmed_by_owner",
+	})
 	out, err := bindRepos(ctx, space, acct.AccountID, a.Channel, repos, p.Name == toolRepoAuthorize)
 	if err != nil {
 		return wire.ConnectorCallResult{}, t.explained(ctx, acct.AccountID, err)

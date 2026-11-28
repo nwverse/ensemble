@@ -105,6 +105,22 @@ CREATE TABLE IF NOT EXISTS club_settings (
   key text PRIMARY KEY NOT NULL,
   value text NOT NULL
 );
+CREATE TABLE IF NOT EXISTS agent_follow_leases (
+  lease_id text PRIMARY KEY NOT NULL,
+  account_id text NOT NULL,
+  session_key text NOT NULL,
+  created_at integer NOT NULL,
+  expires_at integer NOT NULL,
+  max_turns integer NOT NULL,
+  used_turns integer NOT NULL DEFAULT 0,
+  allow_background integer NOT NULL DEFAULT 0,
+  revoked_at integer NOT NULL DEFAULT 0,
+  revoke_reason text NOT NULL DEFAULT '',
+  note text NOT NULL DEFAULT '',
+  updated_at integer NOT NULL
+);
+CREATE INDEX IF NOT EXISTS agent_follow_leases_account_idx ON agent_follow_leases (account_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS agent_follow_leases_session_idx ON agent_follow_leases (session_key, created_at DESC);
 `
 
 // SQLite is a Store in one SQLite file (WAL).
@@ -392,7 +408,13 @@ func (s *SQLite) RemoveAccount(ctx context.Context, id string, deleteData bool, 
 			return ErrNotFound
 		}
 		if !deleteData {
+			if _, err := tx.ExecContext(ctx, `UPDATE agent_follow_leases SET revoked_at = ?1, revoke_reason = 'account_removed', updated_at = ?1 WHERE account_id = ?2 AND revoked_at = 0`, now, id); err != nil && !isNoFollowLeasesTable(err) {
+				return err
+			}
 			_, err := tx.ExecContext(ctx, `UPDATE agent_accounts SET status = 'removed', updated_at = ? WHERE account_id = ?`, now, id)
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM agent_follow_leases WHERE account_id = ?`, id); err != nil && !isNoFollowLeasesTable(err) {
 			return err
 		}
 		for _, q := range []string{
@@ -924,6 +946,122 @@ func (s *SQLite) PutSetting(ctx context.Context, key, value string) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO club_settings (key, value) VALUES (?, ?)
 		ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, value)
 	return err
+}
+
+const followLeaseColumns = `lease_id, account_id, session_key, created_at, expires_at, max_turns, used_turns,
+  allow_background, revoked_at, revoke_reason, note, updated_at`
+
+func isNoFollowLeasesTable(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such table: agent_follow_leases")
+}
+
+func scanFollowLease(r scanner) (FollowLease, error) {
+	var l FollowLease
+	var allowBg int
+	err := r.Scan(&l.LeaseID, &l.AccountID, &l.SessionKey, &l.CreatedAt, &l.ExpiresAt, &l.MaxTurns, &l.UsedTurns,
+		&allowBg, &l.RevokedAt, &l.RevokeReason, &l.Note, &l.UpdatedAt)
+	l.AllowBackground = allowBg != 0
+	return l, err
+}
+
+func (s *SQLite) followLeaseRows(ctx context.Context, q string, args ...any) ([]FollowLease, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		if isNoFollowLeasesTable(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FollowLease
+	for rows.Next() {
+		l, err := scanFollowLease(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) oneFollowLease(ctx context.Context, q string, args ...any) (FollowLease, bool, error) {
+	rows, err := s.followLeaseRows(ctx, q, args...)
+	if err != nil || len(rows) == 0 {
+		return FollowLease{}, false, err
+	}
+	return rows[0], true, nil
+}
+
+func (s *SQLite) PutFollowLease(ctx context.Context, l FollowLease) error {
+	if l.UpdatedAt == 0 {
+		l.UpdatedAt = l.CreatedAt
+	}
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_follow_leases SET revoked_at = ?1, revoke_reason = 'replaced', updated_at = ?1
+			WHERE session_key = ?2 AND lease_id <> ?3 AND revoked_at = 0`, l.CreatedAt, l.SessionKey, l.LeaseID); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO agent_follow_leases (`+followLeaseColumns+`)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, l.LeaseID, l.AccountID, l.SessionKey, l.CreatedAt, l.ExpiresAt,
+			l.MaxTurns, l.UsedTurns, boolInt(l.AllowBackground), l.RevokedAt, l.RevokeReason, l.Note, l.UpdatedAt)
+		return err
+	})
+}
+
+func (s *SQLite) FollowLease(ctx context.Context, leaseID string) (FollowLease, bool, error) {
+	return s.oneFollowLease(ctx, `SELECT `+followLeaseColumns+` FROM agent_follow_leases WHERE lease_id = ?`, leaseID)
+}
+
+func (s *SQLite) ActiveFollowLease(ctx context.Context, sessionKey string, now int64) (FollowLease, bool, error) {
+	return s.oneFollowLease(ctx, `SELECT `+followLeaseColumns+` FROM agent_follow_leases
+		WHERE session_key = ?1 AND revoked_at = 0 AND expires_at > ?2 AND used_turns < max_turns
+		ORDER BY created_at DESC, lease_id DESC LIMIT 1`, sessionKey, now)
+}
+
+func (s *SQLite) AccountFollowLeases(ctx context.Context, accountID string) ([]FollowLease, error) {
+	return s.followLeaseRows(ctx, `SELECT `+followLeaseColumns+` FROM agent_follow_leases
+		WHERE account_id = ? ORDER BY created_at DESC, lease_id DESC`, accountID)
+}
+
+func (s *SQLite) ConsumeFollowLease(ctx context.Context, sessionKey string, unattended bool, now int64) (FollowLease, bool, error) {
+	return s.oneFollowLease(ctx, `UPDATE agent_follow_leases
+		SET used_turns = used_turns + 1, updated_at = ?1
+		WHERE lease_id = (
+			SELECT lease_id FROM agent_follow_leases
+			WHERE session_key = ?2 AND revoked_at = 0 AND expires_at > ?1 AND used_turns < max_turns
+			  AND (?3 = 0 OR allow_background = 1)
+			ORDER BY created_at DESC, lease_id DESC LIMIT 1
+		)
+		AND revoked_at = 0 AND expires_at > ?1 AND used_turns < max_turns
+		AND (?3 = 0 OR allow_background = 1)
+		RETURNING `+followLeaseColumns, now, sessionKey, boolInt(unattended))
+}
+
+func (s *SQLite) RevokeFollowLease(ctx context.Context, leaseID, reason string, now int64) (FollowLease, bool, error) {
+	if reason == "" {
+		reason = "manual"
+	}
+	return s.oneFollowLease(ctx, `UPDATE agent_follow_leases
+		SET revoked_at = ?1, revoke_reason = ?2, updated_at = ?1
+		WHERE lease_id = ?3 AND revoked_at = 0
+		RETURNING `+followLeaseColumns, now, reason, leaseID)
+}
+
+func (s *SQLite) RevokeAccountFollowLeases(ctx context.Context, accountID, reason string, now int64) (int, error) {
+	if reason == "" {
+		reason = "revoked"
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE agent_follow_leases
+		SET revoked_at = ?1, revoke_reason = ?2, updated_at = ?1
+		WHERE account_id = ?3 AND revoked_at = 0`, now, reason, accountID)
+	if err != nil {
+		if isNoFollowLeasesTable(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
 }
 
 func (s *SQLite) Import(ctx context.Context, rows Import) error {

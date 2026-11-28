@@ -54,6 +54,11 @@ type Space struct {
 	takeovers      map[string]*takeoverRun
 	quota          map[string]*quotaState
 	quotaCheckedAt map[string]int64
+
+	burstWrites       map[string][]int64
+	burstReqSeen      map[string]int64
+	consumedReqLeases map[string]consumedLeaseEntry
+	audits            []AuditEntry
 }
 
 func newSpace(name string, c *Club, st store.Store, v vault.Vault) *Space {
@@ -964,10 +969,12 @@ func (s *Space) RemoveAccount(ctx context.Context, p protocol.RemoveAccountParam
 	if _, err := s.requireAccount(ctx, p.AccountID); err != nil {
 		return err
 	}
+	now := s.now()
+	_, _ = s.store.RevokeAccountFollowLeases(ctx, p.AccountID, "account_removed", now)
 	if err := s.vault.Delete(ctx, p.AccountID); err != nil {
 		return err
 	}
-	if err := s.store.RemoveAccount(ctx, p.AccountID, p.DeleteData, s.now()); err != nil {
+	if err := s.store.RemoveAccount(ctx, p.AccountID, p.DeleteData, now); err != nil {
 		return err
 	}
 	_ = s.setAssistantBackend(ctx, p.AccountID, false)
@@ -977,6 +984,14 @@ func (s *Space) RemoveAccount(ctx context.Context, p protocol.RemoveAccountParam
 	delete(s.quota, p.AccountID)
 	delete(s.quotaCheckedAt, p.AccountID)
 	s.mu.Unlock()
+	s.RecordAudit(AuditEntry{
+		TimeMs:    now,
+		AccountID: p.AccountID,
+		Tool:      protocol.MethodClubAccountsRemove,
+		Operation: OpManage,
+		Verdict:   Allow,
+		Reason:    "account_removed",
+	})
 	s.notify(nil)
 	return nil
 }

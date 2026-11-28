@@ -115,3 +115,83 @@ func TestAccountSSHTargetAndBoxState(t *testing.T) {
 		t.Fatalf("ssh target not cleaned up after RemoveAccount: %+v %v", m, err)
 	}
 }
+
+type computerTestProvider struct {
+	boxStateProvider
+	supportsBox bool
+	supportsCmp bool
+	ranCmd      string
+	runResult   provider.ComputerRunResult
+	runErr      error
+}
+
+func (c *computerTestProvider) SupportsBoxState() bool { return c.supportsBox }
+func (c *computerTestProvider) SupportsComputer() bool { return c.supportsCmp }
+func (c *computerTestProvider) RunComputer(_ context.Context, _, cmd string) (provider.ComputerRunResult, error) {
+	c.ranCmd = cmd
+	if c.runErr != nil {
+		return provider.ComputerRunResult{}, c.runErr
+	}
+	return c.runResult, nil
+}
+
+func TestAccountBoxStateSupporterAndRunComputer(t *testing.T) {
+	netOn := true
+	gemini := &computerTestProvider{
+		boxStateProvider: boxStateProvider{
+			name: "gemini_tasks",
+			state: provider.BoxState{
+				State:          "running",
+				Image:          "Debian 12 · 2 vCPU · 8 GB",
+				InternetAccess: &netOn,
+			},
+		},
+		supportsBox: true,
+		supportsCmp: true,
+		runResult: provider.ComputerRunResult{
+			Status:    provider.Sent,
+			SessionID: "comp_123",
+			Output:    "Linux localhost 6.6.137+ x86_64",
+			Answered:  true,
+		},
+	}
+	duet := &computerTestProvider{
+		boxStateProvider: boxStateProvider{name: "claude_duet"},
+		supportsBox:      false,
+		supportsCmp:      false,
+	}
+	club := New(Options{Registry: provider.NewRegistry(gemini, duet), FollowUps: []time.Duration{}})
+	t.Cleanup(club.Close)
+	ctx := context.Background()
+	space, err := club.Space(ctx, DefaultSpace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gAcct, err := space.AddAccount(ctx, protocol.AddAccountParams{Provider: "gemini_tasks", Credential: "fixture-gemini-cred"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dAcct, err := space.AddAccount(ctx, protocol.AddAccountParams{Provider: "claude_duet", Credential: "fixture-duet-cred"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, supported, err := space.AccountBoxState(ctx, dAcct.AccountID); err != nil || supported {
+		t.Fatalf("duet AccountBoxState supported=%v err=%v, want false, nil", supported, err)
+	}
+	if space.SupportsAccountComputer(ctx, dAcct.AccountID) {
+		t.Fatal("duet should not support AccountComputer")
+	}
+
+	gst, supported, err := space.AccountBoxState(ctx, gAcct.AccountID)
+	if err != nil || !supported || gst.State != "running" || gst.InternetAccess == nil || !*gst.InternetAccess {
+		t.Fatalf("gemini AccountBoxState = %+v, supported=%v, err=%v", gst, supported, err)
+	}
+	if !space.SupportsAccountComputer(ctx, gAcct.AccountID) {
+		t.Fatal("gemini should support AccountComputer")
+	}
+	res, err := space.RunAccountComputer(ctx, gAcct.AccountID, "uname -srm")
+	if err != nil || res.Status != provider.Sent || res.Output != "Linux localhost 6.6.137+ x86_64" || gemini.ranCmd != "uname -srm" {
+		t.Fatalf("RunAccountComputer = %+v, %v (cmd=%q)", res, err, gemini.ranCmd)
+	}
+}

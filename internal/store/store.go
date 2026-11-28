@@ -138,6 +138,58 @@ type Counts struct {
 	LatestMessageMs int64
 }
 
+// FollowLease status values.
+const (
+	LeaseActive    = "active"
+	LeaseExpired   = "expired"
+	LeaseExhausted = "exhausted"
+	LeaseRevoked   = "revoked"
+)
+
+// FollowLease is a session-scoped lease authorizing the assistant to continue turns in one session without asking each
+// time, bounded by both MaxTurns and ExpiresAt.
+type FollowLease struct {
+	LeaseID         string
+	AccountID       string
+	SessionKey      string
+	CreatedAt       int64
+	ExpiresAt       int64
+	MaxTurns        int
+	UsedTurns       int
+	AllowBackground bool
+	RevokedAt       int64
+	RevokeReason    string
+	Note            string
+	UpdatedAt       int64
+}
+
+// Status returns the lease's effective status at now (Unix ms).
+func (l FollowLease) Status(now int64) string {
+	switch {
+	case l.RevokedAt > 0:
+		return LeaseRevoked
+	case l.ExpiresAt <= now:
+		return LeaseExpired
+	case l.UsedTurns >= l.MaxTurns:
+		return LeaseExhausted
+	default:
+		return LeaseActive
+	}
+}
+
+// IsActive reports whether the lease is unrevoked, unexpired at now, and has remaining turns.
+func (l FollowLease) IsActive(now int64) bool {
+	return l.Status(now) == LeaseActive
+}
+
+// RemainingTurns returns how many turns are left before exhaustion.
+func (l FollowLease) RemainingTurns() int {
+	if l.UsedTurns >= l.MaxTurns {
+		return 0
+	}
+	return l.MaxTurns - l.UsedTurns
+}
+
 // Import is rows to write as they are (club.import). Accounts and sessions replace rows with the same key, messages
 // are upserted, and outbox rows whose client id is taken are left alone.
 type Import struct {
@@ -208,6 +260,24 @@ type Store interface {
 	// Search finds messages of listed accounts, newest first: full-text matches of the query's words or of its
 	// CJK n-grams, then substring matches among the most recent messages.
 	Search(ctx context.Context, q string, limit int) ([]protocol.SearchHit, error)
+
+	// PutFollowLease stores a follow lease for a session, automatically revoking any prior unrevoked lease for the
+	// same session_key with reason "replaced" at l.CreatedAt.
+	PutFollowLease(ctx context.Context, l FollowLease) error
+	// FollowLease looks up one lease by id.
+	FollowLease(ctx context.Context, leaseID string) (FollowLease, bool, error)
+	// ActiveFollowLease returns the active (unrevoked, unexpired at now, used_turns < max_turns) lease for sessionKey.
+	ActiveFollowLease(ctx context.Context, sessionKey string, now int64) (FollowLease, bool, error)
+	// AccountFollowLeases returns all follow leases for accountID, newest first.
+	AccountFollowLeases(ctx context.Context, accountID string) ([]FollowLease, error)
+	// ConsumeFollowLease atomically increments used_turns by 1 on the active lease for sessionKey at now if and only if
+	// the lease is unrevoked, expires_at > now, used_turns < max_turns, and (!unattended || allow_background).
+	// Returns the updated lease and ok=true when a turn was consumed, or ok=false when no eligible active lease exists.
+	ConsumeFollowLease(ctx context.Context, sessionKey string, unattended bool, now int64) (FollowLease, bool, error)
+	// RevokeFollowLease revokes leaseID at now with reason; ok is false when not found or already revoked.
+	RevokeFollowLease(ctx context.Context, leaseID, reason string, now int64) (FollowLease, bool, error)
+	// RevokeAccountFollowLeases revokes all unrevoked leases for accountID at now with reason, returning the count revoked.
+	RevokeAccountFollowLeases(ctx context.Context, accountID, reason string, now int64) (int, error)
 
 	// Setting is a space setting's JSON, ok false when unset.
 	Setting(ctx context.Context, key string) (value string, ok bool, err error)

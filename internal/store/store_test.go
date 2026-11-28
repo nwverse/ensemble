@@ -630,3 +630,163 @@ func TestFirstSeenEstimateOnlyForNewMessages(t *testing.T) {
 		}
 	})
 }
+
+func TestFollowLeasesLifecycleAndConcurrentConsume(t *testing.T) {
+	each(t, func(t *testing.T, s Store) {
+		seed(t, s)
+		l1 := FollowLease{
+			LeaseID:         "fl_000000000001",
+			AccountID:       acct,
+			SessionKey:      key,
+			CreatedAt:       now,
+			ExpiresAt:       now + 2*3_600_000,
+			MaxTurns:        10,
+			UsedTurns:       0,
+			AllowBackground: false,
+			Note:            "第一条租约",
+		}
+		must(t, s.PutFollowLease(ctx, l1))
+		got, ok, err := s.ActiveFollowLease(ctx, key, now+1000)
+		must(t, err)
+		if !ok || got.LeaseID != l1.LeaseID || got.RemainingTurns() != 10 || got.Status(now+1000) != LeaseActive {
+			t.Fatalf("active lease: %+v %v", got, ok)
+		}
+		// Unattended consumption fails when AllowBackground is false.
+		if _, ok, err := s.ConsumeFollowLease(ctx, key, true, now+1000); err != nil || ok {
+			t.Fatalf("unattended consume should be rejected when allow_background=false: %v %v", ok, err)
+		}
+		// Attended consumption succeeds.
+		consumed, ok, err := s.ConsumeFollowLease(ctx, key, false, now+1000)
+		must(t, err)
+		if !ok || consumed.UsedTurns != 1 || consumed.RemainingTurns() != 9 {
+			t.Fatalf("consumed: %+v %v", consumed, ok)
+		}
+
+		// Putting a new lease for the same session automatically revokes the prior active lease as "replaced".
+		l2 := FollowLease{
+			LeaseID:         "fl_000000000002",
+			AccountID:       acct,
+			SessionKey:      key,
+			CreatedAt:       now + 2000,
+			ExpiresAt:       now + 6*3_600_000,
+			MaxTurns:        5,
+			UsedTurns:       0,
+			AllowBackground: true,
+			Note:            "替换后的租约",
+		}
+		must(t, s.PutFollowLease(ctx, l2))
+		old1, ok, err := s.FollowLease(ctx, l1.LeaseID)
+		must(t, err)
+		if !ok || old1.RevokedAt != now+2000 || old1.RevokeReason != "replaced" || old1.Status(now+2000) != LeaseRevoked {
+			t.Fatalf("old lease should be replaced: %+v", old1)
+		}
+
+		// Concurrent atomic consumption: 24 goroutines racing for MaxTurns=5 must succeed exactly 5 times.
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var winners []int
+		for i := range 24 {
+			unattended := i%2 == 0
+			wg.Go(func() {
+				c, ok, err := s.ConsumeFollowLease(ctx, key, unattended, now+3000)
+				if err != nil {
+					t.Errorf("consume err: %v", err)
+					return
+				}
+				if ok {
+					mu.Lock()
+					winners = append(winners, c.UsedTurns)
+					mu.Unlock()
+				}
+			})
+		}
+		wg.Wait()
+		slices.Sort(winners)
+		if !slices.Equal(winners, []int{1, 2, 3, 4, 5}) {
+			t.Fatalf("expected atomic turns [1 2 3 4 5], got %v", winners)
+		}
+		after, ok, err := s.FollowLease(ctx, l2.LeaseID)
+		must(t, err)
+		if !ok || after.UsedTurns != 5 || after.Status(now+3000) != LeaseExhausted || after.RemainingTurns() != 0 {
+			t.Fatalf("exhausted lease: %+v", after)
+		}
+		if _, ok, _ := s.ActiveFollowLease(ctx, key, now+3000); ok {
+			t.Fatal("exhausted lease still reported as active")
+		}
+
+		// Expired lease cannot be consumed.
+		l3 := FollowLease{
+			LeaseID:         "fl_000000000003",
+			AccountID:       acct,
+			SessionKey:      key,
+			CreatedAt:       now + 4000,
+			ExpiresAt:       now + 10_000,
+			MaxTurns:        10,
+			AllowBackground: true,
+		}
+		must(t, s.PutFollowLease(ctx, l3))
+		if _, ok, _ := s.ConsumeFollowLease(ctx, key, false, now+10_000); ok {
+			t.Fatal("expired lease at boundary was consumed")
+		}
+		if got3, _, _ := s.FollowLease(ctx, l3.LeaseID); got3.Status(now+10_000) != LeaseExpired {
+			t.Fatalf("status at expiry: %s", got3.Status(now+10_000))
+		}
+
+		// Manual revoke of an active lease.
+		rev, ok, err := s.RevokeFollowLease(ctx, l3.LeaseID, "owner_revoked", now+5000)
+		must(t, err)
+		if !ok || rev.RevokedAt != now+5000 || rev.RevokeReason != "owner_revoked" {
+			t.Fatalf("revoked: %+v %v", rev, ok)
+		}
+		if _, ok, _ := s.RevokeFollowLease(ctx, l3.LeaseID, "again", now+6000); ok {
+			t.Fatal("revoked twice")
+		}
+
+		// Account batch revoke and RemoveAccount revocation/cleanup.
+		l4 := FollowLease{
+			LeaseID:    "fl_000000000004",
+			AccountID:  acct,
+			SessionKey: key,
+			CreatedAt:  now + 7000,
+			ExpiresAt:  now + 3_600_000,
+			MaxTurns:   10,
+		}
+		l5 := FollowLease{
+			LeaseID:    "fl_000000000005",
+			AccountID:  acct,
+			SessionKey: sub,
+			CreatedAt:  now + 8000,
+			ExpiresAt:  now + 3_600_000,
+			MaxTurns:   20,
+		}
+		must(t, s.PutFollowLease(ctx, l4))
+		must(t, s.PutFollowLease(ctx, l5))
+		n, err := s.RevokeAccountFollowLeases(ctx, acct, "control_downgraded", now+9000)
+		must(t, err)
+		if n != 2 {
+			t.Fatalf("revoked %d leases, want 2", n)
+		}
+		if _, ok, _ := s.ActiveFollowLease(ctx, key, now+9000); ok {
+			t.Fatal("lease still active after account batch revoke")
+		}
+
+		// Re-grant and test RemoveAccount(deleteData=false) revokes active leases, and RemoveAccount(deleteData=true) deletes them.
+		l6 := FollowLease{
+			LeaseID:    "fl_000000000006",
+			AccountID:  acct,
+			SessionKey: key,
+			CreatedAt:  now + 9500,
+			ExpiresAt:  now + 3_600_000,
+			MaxTurns:   10,
+		}
+		must(t, s.PutFollowLease(ctx, l6))
+		must(t, s.RemoveAccount(ctx, acct, false, now+9600))
+		if got6, ok, _ := s.FollowLease(ctx, l6.LeaseID); !ok || got6.RevokedAt != now+9600 || got6.RevokeReason != "account_removed" {
+			t.Fatalf("RemoveAccount(deleteData=false) did not revoke lease: %+v %v", got6, ok)
+		}
+		must(t, s.RemoveAccount(ctx, acct, true, now+9700))
+		if all, _ := s.AccountFollowLeases(ctx, acct); len(all) != 0 {
+			t.Fatalf("RemoveAccount(deleteData=true) left leases: %+v", all)
+		}
+	})
+}
